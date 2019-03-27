@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -68,30 +69,25 @@ func IsRepositoryDir(name string) bool {
 	return true
 }
 
-type RepoApi struct {
+type RepoHandler struct {
 	Credentials  map[string]string
 	Repositories map[string]*Repository
-	Router       chi.Router
 }
 
-func NewRepoApi() *RepoApi {
-	r := chi.NewRouter()
-
-	repoApi := &RepoApi{
+func NewRepoHandler() *RepoHandler {
+	r := &RepoHandler{
 		Credentials: map[string]string{
 			"test": "123456",
 		},
-		Router:       r,
 		Repositories: map[string]*Repository{},
 	}
 
-	r.Get("/", repoApi.View)
-	r.Post("/{repoName}", repoApi.Create)
-	repoApi.Explorer()
-	return repoApi
+	r.Explorer()
+
+	return r
 }
 
-func (repoApi RepoApi) Explorer() {
+func (handler RepoHandler) Explorer() {
 	root := GetSettings().GitRoot
 	files, err := ioutil.ReadDir(root)
 	if err != nil {
@@ -101,7 +97,7 @@ func (repoApi RepoApi) Explorer() {
 		if file.IsDir() {
 			repo, err := CheckRepository(file.Name())
 			if err == nil {
-				repoApi.AddRepository(repo)
+				handler.AddRepository(repo)
 			} else {
 				log.Print(err.Error())
 			}
@@ -109,43 +105,92 @@ func (repoApi RepoApi) Explorer() {
 	}
 }
 
-func (repoApi RepoApi) AddRepository(repo *Repository) {
-	repoApi.Repositories[repo.Name] = repo
-
-	// handler := http.FileServer(http.Dir(RepositoryDir(repo.Name)))
-	// path, _ := os.Getwd()
-	// handler := http.FileServer(http.Dir(path))
-	// repoApi.Router.HandleFunc(fmt.Sprintf("/%s.git/*", repo.Name), handler.ServeHTTP)
-	// repoApi.Router.HandleFunc(fmt.Sprintf("/%s.git/*", repo.Name), handler.ServeHTTP)
-	repoApi.Router.HandleFunc(fmt.Sprintf("/%s.git/*", repo.Name), func(w http.ResponseWriter, r *http.Request) {
-		upath := r.URL.Path
-		p1 := strings.TrimPrefix(upath, "/repo")
-		http.ServeFile(w, r, filepath.Join(GetSettings().GitRoot, p1))
-	})
+func (handler RepoHandler) AddRepository(repo *Repository) {
+	handler.Repositories[repo.Name] = repo
 	log.Printf("Add Repository %s", repo.Name)
 }
 
-func (repoApi RepoApi) GetRouters() chi.Router {
-	return repoApi.Router
+func (handler RepoHandler) StaticFiles(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/repo")
+	http.ServeFile(w, r, filepath.Join(GetSettings().GitRoot, path))
 }
 
-func (repoApi RepoApi) Create(w http.ResponseWriter, r *http.Request) {
+func (handler RepoHandler) InfoRefs(w http.ResponseWriter, r *http.Request) {
+	repoName := chi.URLParam(r, "repoName")
+	repopath := filepath.Join(GetSettings().GitRoot, repoName)
+	service := r.FormValue("service")
+	if len(service) > 0 {
+		w.Header().Add("Content-type", fmt.Sprintf("application/x-%s-advertisement", service))
+		gitLocalCmd := exec.Command(
+			"git",
+			string(service[4:]),
+			"--stateless-rpc",
+			"--advertise-refs",
+			repopath)
+		out, err := gitLocalCmd.CombinedOutput()
+		if err != nil {
+			w.WriteHeader(500)
+			fmt.Fprintln(w, "Internal Server Error")
+			w.Write(out)
+		} else {
+			serverAdvert := fmt.Sprintf("# service=%s", service)
+			length := len(serverAdvert) + 4
+			fmt.Fprintf(w, "%04x%s0000", length, serverAdvert)
+			w.Write(out)
+		}
+	} else {
+		fmt.Fprintln(w, "Invalid request")
+		w.WriteHeader(400)
+	}
+}
+
+func (handler RepoHandler) Command(w http.ResponseWriter, r *http.Request) {
+	repoName := chi.URLParam(r, "repoName")
+	repopath := filepath.Join(GetSettings().GitRoot, repoName)
+	command := chi.URLParam(r, "command")
+	if len(command) > 0 {
+
+		w.Header().Add("Content-type", fmt.Sprintf("application/x-git-%s-result", command))
+		w.WriteHeader(200)
+
+		gitCmd := exec.Command("git", command, "--stateless-rpc", repopath)
+
+		cmdIn, _ := gitCmd.StdinPipe()
+		cmdOut, _ := gitCmd.StdoutPipe()
+		body := r.Body
+
+		gitCmd.Start()
+
+		io.Copy(cmdIn, body)
+		io.Copy(w, cmdOut)
+
+		if command == "receive-pack" {
+			updateCmd := exec.Command("git", "--git-dir", repopath, "update-server-info")
+			updateCmd.Start()
+		}
+	} else {
+		w.WriteHeader(400)
+		fmt.Fprintln(w, "Invalid Request")
+	}
+}
+
+func (handler RepoHandler) Create(w http.ResponseWriter, r *http.Request) {
 	repoName := chi.URLParam(r, "repoName")
 	repo := &Repository{
 		Name: repoName,
 	}
 	err := repo.InitBare()
 	if err != nil {
-		repoApi.AddRepository(repo)
+		handler.AddRepository(repo)
 	}
 }
 
-func (repoApi RepoApi) Delete(w http.ResponseWriter, r *http.Request) {
-
+func (handler RepoHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
 }
 
-func (repoApi RepoApi) View(w http.ResponseWriter, r *http.Request) {
-	output, err := json.Marshal(repoApi.Repositories)
+func (handler RepoHandler) View(w http.ResponseWriter, r *http.Request) {
+	output, err := json.Marshal(handler.Repositories)
 	if err != nil {
 		w.WriteHeader(http.StatusExpectationFailed)
 		w.Write([]byte(err.Error()))

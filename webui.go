@@ -8,10 +8,10 @@ import (
 	"github.com/go-chi/chi"
 )
 
-type View struct {
+type WebUI struct {
 }
 
-func (v View) GetRouters() chi.Router {
+func (v WebUI) GetRouters() chi.Router {
 	r := chi.NewRouter()
 	// r.Use() // some middleware..
 
@@ -20,7 +20,7 @@ func (v View) GetRouters() chi.Router {
 	return r
 }
 
-func (v View) Handler() http.HandlerFunc {
+func (v WebUI) Handler() http.HandlerFunc {
 	workDir, _ := os.Getwd()
 	filesDir := filepath.Join(workDir, "static")
 	fs := http.FileServer(http.Dir(filesDir))
