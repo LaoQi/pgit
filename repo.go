@@ -180,9 +180,14 @@ func (handler RepoHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Name: repoName,
 	}
 	err := repo.InitBare()
-	if err != nil {
+	if err == nil {
 		handler.AddRepository(repo)
+		w.WriteHeader(http.StatusOK)
+	} else {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, err.Error())
 	}
+
 }
 
 func (handler RepoHandler) Delete(w http.ResponseWriter, r *http.Request) {
