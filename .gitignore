@@ -1,0 +1,5 @@
+vendor/
+*.swp
+repo/
+*.exe
+pgit

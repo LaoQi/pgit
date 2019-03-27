@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pgit - personal git server</title>
+    <link rel="stylesheet" href="/css/bulma.0.7.4.min.css" />
+    <script data-main="/js/data-main.js" src="/js/require.v2.3.6.min.js"></script>
+</head>
+
+<body>
+    <div id="app">
+        <Navbar v-bind:message="message"></Navbar>
+        <br><br><br>
+        <div id="container" class="container">
+            <router-view></router-view>
+        </div>
+        <br><br>
+        <footer class="footer">
+            <!-- <div class="content has-text-centered">
+                <p>
+                    <strong>Bulma</strong> by <a href="https://jgthms.com">Jeremy Thomas</a>. The source code is
+                    licensed
+                    <a href="http://opensource.org/licenses/mit-license.php">MIT</a>. The website content
+                    is licensed <a href="http://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY NC SA 4.0</a>.
+                </p>
+            </div> -->
+        </footer>
+    </div>
+</body>
+
+</html>
