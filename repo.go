@@ -129,7 +129,7 @@ func (handler RepoHandler) InfoRefs(w http.ResponseWriter, r *http.Request) {
 			repopath)
 		out, err := gitLocalCmd.CombinedOutput()
 		if err != nil {
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprintln(w, "Internal Server Error")
 			w.Write(out)
 		} else {
@@ -140,7 +140,7 @@ func (handler RepoHandler) InfoRefs(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		fmt.Fprintln(w, "Invalid request")
-		w.WriteHeader(400)
+		w.WriteHeader(http.StatusBadRequest)
 	}
 }
 
@@ -151,7 +151,7 @@ func (handler RepoHandler) Command(w http.ResponseWriter, r *http.Request) {
 	if len(command) > 0 {
 
 		w.Header().Add("Content-type", fmt.Sprintf("application/x-git-%s-result", command))
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 
 		gitCmd := exec.Command("git", command, "--stateless-rpc", repopath)
 
@@ -169,7 +169,7 @@ func (handler RepoHandler) Command(w http.ResponseWriter, r *http.Request) {
 			updateCmd.Start()
 		}
 	} else {
-		w.WriteHeader(400)
+		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprintln(w, "Invalid Request")
 	}
 }
@@ -192,7 +192,7 @@ func (handler RepoHandler) Delete(w http.ResponseWriter, r *http.Request) {
 func (handler RepoHandler) View(w http.ResponseWriter, r *http.Request) {
 	output, err := json.Marshal(handler.Repositories)
 	if err != nil {
-		w.WriteHeader(http.StatusExpectationFailed)
+		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(err.Error()))
 		return
 	}
