@@ -1,0 +1,44 @@
+<div class="columns is-centered">
+    <div class="column is-half">
+        <div>
+            <strong>Create a new repository</strong>
+            <p>A repository contains all project files, including the revision history. </p>
+        </div>
+        <hr>
+        <div class="field">
+            <label class="label">{{ message.repo_name }}</label>
+            <div class="control">
+                <input class="input" type="text" placeholder="e.g Alex Smith">
+            </div>
+        </div>
+
+        <div class="field">
+            <label class="label">{{ message.repo_description }}</label>
+            <div class="control">
+                <input class="input" type="email" placeholder="e.g. alexsmith@gmail.com">
+            </div>
+        </div>
+
+        <div class="field">
+            <div class="control">
+                <input type="checkbox">
+                Initialize this repository with a README
+            </div>
+        </div>
+
+        <div class="field">
+            <div class="select">
+                <select>
+                    <option>Add .gitignore</option>
+                    <option>https://github.com/github/gitignore</option>
+                </select>
+            </div>
+            <div class="select">
+                <select>
+                    <option>Add license</option>
+                    <option>choosealicense.com</option>
+                </select>
+            </div>
+        </div>
+    </div>
+</div>

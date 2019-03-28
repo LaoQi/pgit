@@ -18,15 +18,18 @@
             <router-link to="/dashboard" class="navbar-item">
                 {{ message.dashboard }}
             </router-link>
-            
+
             <router-link to="/repositories" class="navbar-item">
                 {{ message.repositories }}
             </router-link>
 
             <router-link to="/settings" class="navbar-item">
-                {{ message.settings }}
+                {{ message.task }}
             </router-link>
 
+            <router-link to="/settings" class="navbar-item">
+                {{ message.settings }}
+            </router-link>
 
             <!-- <div class="navbar-item has-dropdown is-hoverable">
                 <a class="navbar-link">
@@ -51,17 +54,12 @@
             </div> -->
         </div>
 
-        <!-- <div class="navbar-end">
-                <div class="navbar-item">
-                    <div class="buttons">
-                        <a class="button is-primary">
-                            <strong>Sign up</strong>
-                        </a>
-                        <a class="button is-light">
-                            Log in
-                        </a>
-                    </div>
-                </div>
-            </div> -->
+        <div class="navbar-end">
+            <div class="navbar-item">
+                <router-link to="/new" class="button is-primary">
+                    <strong>{{ message.new_repositories }}</strong>
+                </router-link>
+            </div>
+        </div>
     </div>
 </nav>

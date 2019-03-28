@@ -12,6 +12,7 @@ type Settings struct {
 	Port       int
 	GitRoot    string
 	PathPrefix string
+	Credentials  map[string]string
 }
 
 func (s Settings) getListenAddr() string {
@@ -28,6 +29,10 @@ func InitSettings() {
 		GitRoot: gitRoot,
 		Port:    3000,
 		Address: "0.0.0.0",
+		PathPrefix: "repo",
+		Credentials: map[string]string{
+			"test": "123456",
+		},
 	}
 }
 

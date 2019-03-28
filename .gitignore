@@ -12,6 +12,7 @@
 *.out
 *.swp
 
+.idea
 vendor/
 repo/
 pgit

@@ -12,7 +12,7 @@ requirejs.config({
         router: "/js/vue-router.v3.0.2.min",
         fontawesome: "/js/fontawesome.v5.3.1.min",
         lang: "/js/lang",
-
+        api: "/js/api",
         component: "/js/component",
     }
 });
@@ -29,6 +29,7 @@ require(["vue", "router", "lang", "component"], function(Vue, VueRouter, lang, c
             { path: '/dashboard', component: component.dashboard, alias: '/' },
             { path: '/settings', component: component.settings },
             { path: '/repositories', component: component.repositories },
+            { path: '/new', component: component.newRepo },
         ]
     }) 
     App = new Vue({

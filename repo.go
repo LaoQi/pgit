@@ -22,17 +22,17 @@ type Repository struct {
 
 func (repo Repository) InitBare() error {
 	repopath := RepositoryDir(repo.Name)
-	_, err := os.Stat(repopath)
-	if os.IsExist(err) {
-		return fmt.Errorf("Cannot init repository %s, Directory exist!", repo.Name)
-	}
 	gitInitCmd := exec.Command("git", "init", "--bare", repopath)
-	_, err = gitInitCmd.CombinedOutput()
+	_, err := gitInitCmd.CombinedOutput()
 	if err != nil {
 		return err
 	}
 
-	return nil
+	desc := fmt.Sprintf("%s;%s", repo.Name, repo.Description)
+	err = ioutil.WriteFile(
+		filepath.Join(repopath, "description"), []byte(desc), os.ModePerm)
+
+	return err
 }
 
 func CheckRepository(name string) (*Repository, error) {
@@ -60,7 +60,6 @@ func IsRepositoryDir(name string) bool {
 	if !strings.HasSuffix(name, ".git") {
 		return false
 	}
-
 	_, err := os.Stat(filepath.Join(GetSettings().GitRoot, name, "description"))
 	if os.IsNotExist(err) {
 		return false
@@ -121,25 +120,25 @@ func (handler RepoHandler) InfoRefs(w http.ResponseWriter, r *http.Request) {
 	service := r.FormValue("service")
 	if len(service) > 0 {
 		w.Header().Add("Content-type", fmt.Sprintf("application/x-%s-advertisement", service))
-		gitLocalCmd := exec.Command(
+		cmd := exec.Command(
 			"git",
 			string(service[4:]),
 			"--stateless-rpc",
 			"--advertise-refs",
 			repopath)
-		out, err := gitLocalCmd.CombinedOutput()
+		out, err := cmd.CombinedOutput()
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintln(w, "Internal Server Error")
-			w.Write(out)
+			_, _ = fmt.Fprintln(w, "Internal Server Error")
+			_, _ = w.Write(out)
 		} else {
 			serverAdvert := fmt.Sprintf("# service=%s", service)
 			length := len(serverAdvert) + 4
-			fmt.Fprintf(w, "%04x%s0000", length, serverAdvert)
-			w.Write(out)
+			_, _ = fmt.Fprintf(w, "%04x%s0000", length, serverAdvert)
+			_, _ = w.Write(out)
 		}
 	} else {
-		fmt.Fprintln(w, "Invalid request")
+		_, _ = fmt.Fprintln(w, "Invalid request")
 		w.WriteHeader(http.StatusBadRequest)
 	}
 }
@@ -153,31 +152,37 @@ func (handler RepoHandler) Command(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Content-type", fmt.Sprintf("application/x-git-%s-result", command))
 		w.WriteHeader(http.StatusOK)
 
-		gitCmd := exec.Command("git", command, "--stateless-rpc", repopath)
+		cmd := exec.Command("git", command, "--stateless-rpc", repopath)
 
-		cmdIn, _ := gitCmd.StdinPipe()
-		cmdOut, _ := gitCmd.StdoutPipe()
+		cmdIn, _ := cmd.StdinPipe()
+		cmdOut, _ := cmd.StdoutPipe()
 		body := r.Body
 
-		gitCmd.Start()
+		_ = cmd.Start()
 
-		io.Copy(cmdIn, body)
-		io.Copy(w, cmdOut)
+		_, _ = io.Copy(cmdIn, body)
+		_, _ = io.Copy(w, cmdOut)
 
 		if command == "receive-pack" {
 			updateCmd := exec.Command("git", "--git-dir", repopath, "update-server-info")
-			updateCmd.Start()
+			_ = updateCmd.Start()
 		}
 	} else {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintln(w, "Invalid Request")
+		_, _ = fmt.Fprintln(w, "Invalid Request")
 	}
 }
 
 func (handler RepoHandler) Create(w http.ResponseWriter, r *http.Request) {
 	repoName := chi.URLParam(r, "repoName")
+	description := r.FormValue("description")
+	if _, exist := handler.Repositories[repoName]; exist {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, "%s existed!", repoName)
+	}
 	repo := &Repository{
 		Name: repoName,
+		Description:description,
 	}
 	err := repo.InitBare()
 	if err == nil {
@@ -185,9 +190,8 @@ func (handler RepoHandler) Create(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	} else {
 		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, err.Error())
+		_, _ = fmt.Fprintf(w, err.Error())
 	}
-
 }
 
 func (handler RepoHandler) Delete(w http.ResponseWriter, r *http.Request) {
@@ -198,9 +202,9 @@ func (handler RepoHandler) View(w http.ResponseWriter, r *http.Request) {
 	output, err := json.Marshal(handler.Repositories)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
+		_, _ = w.Write([]byte(err.Error()))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Write(output)
+	_, _ = w.Write(output)
 }
