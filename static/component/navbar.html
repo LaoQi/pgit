@@ -5,15 +5,14 @@
             <h1><strong>PGIT</strong></h1>
         </a>
 
-        <a role="button" class="navbar-burger burger" aria-label="menu" aria-expanded="false"
-            data-target="navbarBasicExample">
+        <a role="button" class="navbar-burger burger" aria-label="menu" aria-expanded="false" v-on:click="toggleMenu">
             <span aria-hidden="true"></span>
             <span aria-hidden="true"></span>
             <span aria-hidden="true"></span>
         </a>
     </div>
 
-    <div class="navbar-menu">
+    <div class="navbar-menu" v-bind:class="{ 'is-active': menuActive }" v-on:click="closeMenu">
         <div class="navbar-start">
             <router-link to="/dashboard" class="navbar-item">
                 {{ message.dashboard }}
@@ -23,9 +22,9 @@
                 {{ message.repositories }}
             </router-link>
 
-            <router-link to="/settings" class="navbar-item">
+            <!-- <router-link to="/settings" class="navbar-item">
                 {{ message.task }}
-            </router-link>
+            </router-link> -->
 
             <router-link to="/settings" class="navbar-item">
                 {{ message.settings }}
@@ -56,7 +55,7 @@
 
         <div class="navbar-end">
             <div class="navbar-item">
-                <router-link to="/new" class="button is-primary">
+                <router-link to="/new" class="button is-success">
                     <strong>{{ message.new_repositories }}</strong>
                 </router-link>
             </div>

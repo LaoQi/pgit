@@ -1,43 +1,60 @@
 <div class="columns is-centered">
     <div class="column is-half">
-        <div>
-            <strong>Create a new repository</strong>
-            <p>A repository contains all project files, including the revision history. </p>
-        </div>
-        <hr>
         <div class="field">
             <label class="label">{{ message.repo_name }}</label>
             <div class="control">
-                <input class="input" type="text" placeholder="e.g Alex Smith">
+                <input class="input" type="text" v-model="name" placeholder="">
             </div>
         </div>
 
         <div class="field">
             <label class="label">{{ message.repo_description }}</label>
             <div class="control">
-                <input class="input" type="email" placeholder="e.g. alexsmith@gmail.com">
+                <input class="input" type="email" v-model="description" placeholder="">
             </div>
         </div>
 
+        <hr>
         <div class="field">
             <div class="control">
-                <input type="checkbox">
-                Initialize this repository with a README
+                <input type="checkbox" v-model="readme">
+                {{ message.initialize_with_README }}
             </div>
         </div>
-
         <div class="field">
-            <div class="select">
-                <select>
-                    <option>Add .gitignore</option>
-                    <option>https://github.com/github/gitignore</option>
-                </select>
+            <div class="field-body">
+                <div class="field">
+                    <p class="control is-expanded has-icons-left">
+                        <span class="select is-fullwidth">
+                            <select>
+                                <option>Add .gitignore</option>
+                                <!-- <option>https://github.com/github/gitignore</option> -->
+                            </select>
+                        </span>
+                        <span class="icon is-small is-left">
+                            <i class="fas fa-eye-slash"></i>
+                        </span>
+                    </p>
+                </div>
+                <div class="field">
+                    <p class="control is-expanded has-icons-left">
+                        <span class="select is-fullwidth">
+                            <select>
+                                <option>Add license</option>
+                                <option>choosealicense.com</option>
+                            </select>
+                        </span>
+                        <span class="icon is-small is-left">
+                            <i class="fas fa-balance-scale"></i>
+                        </span>
+                    </p>
+                </div>
             </div>
-            <div class="select">
-                <select>
-                    <option>Add license</option>
-                    <option>choosealicense.com</option>
-                </select>
+        </div>
+        <hr>
+        <div class="field is-grouped">
+            <div class="control is-expanded ">
+                <button class="button is-link is-fullwidth" v-on:click="submit">{{ message.submit }}</button>
             </div>
         </div>
     </div>

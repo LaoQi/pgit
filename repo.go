@@ -35,19 +35,21 @@ func (repo Repository) InitBare() error {
 	return err
 }
 
-func CheckRepository(name string) (*Repository, error) {
-	if !IsRepositoryDir(name) {
-		return nil, fmt.Errorf("%s Not Repository directory", name)
+func CheckRepository(repoDir string) (*Repository, error) {
+	if !IsRepositoryDir(repoDir) {
+		return nil, fmt.Errorf("%s Not Repository directory", repoDir)
 	}
-	description, err := ioutil.ReadFile(filepath.Join(GetSettings().GitRoot, name, "description"))
+	raw, err := ioutil.ReadFile(filepath.Join(GetSettings().GitRoot, repoDir, "description"))
 	if err != nil {
 		return nil, err
 	}
+	name := strings.TrimSuffix(repoDir, ".git")
+	description := strings.TrimPrefix(string(raw), fmt.Sprintf("%s;", name))
 
 	// load metadata
 	repo := &Repository{
-		Name:        strings.TrimSuffix(name, ".git"),
-		Description: string(description),
+		Name:        name,
+		Description: description,
 	}
 	return repo, nil
 }
@@ -181,8 +183,8 @@ func (handler RepoHandler) Create(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, "%s existed!", repoName)
 	}
 	repo := &Repository{
-		Name: repoName,
-		Description:description,
+		Name:        repoName,
+		Description: description,
 	}
 	err := repo.InitBare()
 	if err == nil {
@@ -199,7 +201,13 @@ func (handler RepoHandler) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (handler RepoHandler) View(w http.ResponseWriter, r *http.Request) {
-	output, err := json.Marshal(handler.Repositories)
+
+	repositories := make([]*Repository, 0)
+	for _, repo := range handler.Repositories {
+		repositories = append(repositories, repo)
+	}
+
+	output, err := json.Marshal(repositories)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(err.Error()))

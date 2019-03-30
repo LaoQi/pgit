@@ -11,13 +11,14 @@
 </head>
 
 <body>
-    <div id="app">
+    <section class="section" id="app">
         <Navbar v-bind:message="message"></Navbar>
-        <br><br><br>
+        <br>
         <div id="container" class="container">
-            <router-view v-bind:message="message"></router-view>
+            <keep-alive>
+                <router-view v-bind:message="message"></router-view>
+            </keep-alive>
         </div>
-        <br><br>
         <!-- <footer class="footer">
             <div class="content has-text-centered">
                 <p>
@@ -28,7 +29,7 @@
                 </p>
             </div> 
         </footer>-->
-    </div>
+    </section>
 </body>
 
 </html>
