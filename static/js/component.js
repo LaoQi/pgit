@@ -7,7 +7,7 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                     props: ["message"],
                     data(){
                         return {
-                            menuActive: false
+                            menuActive: false,
                         }
                     },
                     methods: {
@@ -44,14 +44,19 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                         return {
                             repositories: [],
                             sortBy: "name",
-                            reverse: false
+                            reverse: false,
+                            keywords: "",
                         }
                     },
                     computed: {
                         sorted(){
-                            return this.repositories.sort(function(a, b){
-                                return this.reverse ? a[this.sortBy] < b[this.sortBy] : a[this.sortBy] > b[this.sortBy]
-                            }.bind(this))
+                            return this.repositories
+                                .filter((item, index) =>
+                                    item.name.indexOf(this.keywords) > -1 || item.description.indexOf(this.keywords) > -1
+                                )
+                                .sort((a, b) =>
+                                    this.reverse ? a[this.sortBy] < b[this.sortBy] : a[this.sortBy] > b[this.sortBy]
+                                )
                         }
                     },
                     activated() {

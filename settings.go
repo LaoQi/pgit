@@ -8,15 +8,17 @@ import (
 )
 
 type Settings struct {
-	Address    string
-	Port       int
-	GitRoot    string
-	PathPrefix string
-	Credentials  map[string]string
+	HTTPPort    int
+	HTTPAddress string
+	SSHPort     int
+	SSHAddress  string
+	GitRoot     string
+	PathPrefix  string
+	Credentials map[string]string
 }
 
-func (s Settings) getListenAddr() string {
-	return fmt.Sprintf("%s:%d", s.Address, s.Port)
+func (s Settings) getHttpListenAddr() string {
+	return fmt.Sprintf("%s:%d", s.HTTPAddress, s.HTTPPort)
 }
 
 var instance *Settings
@@ -26,10 +28,12 @@ func InitSettings() {
 	workDir, _ := os.Getwd()
 	gitRoot := filepath.Join(workDir, "repo")
 	instance = &Settings{
-		GitRoot: gitRoot,
-		Port:    3000,
-		Address: "0.0.0.0",
-		PathPrefix: "repo",
+		GitRoot:     gitRoot,
+		HTTPPort:    3000,
+		HTTPAddress: "0.0.0.0",
+		SSHPort:     3022,
+		SSHAddress:  "0.0.0.0",
+		PathPrefix:  "repo",
 		Credentials: map[string]string{
 			"test": "123456",
 		},

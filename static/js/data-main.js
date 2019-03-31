@@ -10,14 +10,12 @@ requirejs.config({
         text: "/js/text.v2.0.12.min",
         vue: "/js/vue.v2.6.10.min",
         router: "/js/vue-router.v3.0.2.min",
-        fontawesome: "/js/fontawesome.v5.3.1.min",
         lang: "/js/lang",
         api: "/js/api",
         component: "/js/component",
-    }
+    },
+    waitSeconds: 0
 });
-
-require(["fontawesome"])
 
 require(["vue", "router", "lang", "component"], function(Vue, VueRouter, lang, component){
     

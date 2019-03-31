@@ -1,41 +1,44 @@
-<div>
+<div class="container">
     <div v-if="repositories.length == 0">
         <br><br>
         <p class="subtitle is-5">
             <router-link to="/new">{{ message.empty_repositories }}</router-link>
         </p>
     </div>
-    <div v-else>
-        <div class="field is-horizontal has-addons">
-            <!-- <div class="field-label is-normal">
+    <div class="field is-horizontal has-addons" v-else>
+        <!-- <div class="field-label is-normal">
                 <label class="label">From</label>
             </div> -->
-            <div class="field-body">
-                <p class="control">
-                    <span class="select">
-                        <select>
-                            <option>name</option>
-                            <option>date</option>
-                        </select>
+        <div class="field-body">
+            <p class="control" v-on:click="reverse = !reverse">
+                <a class="button" v-if="reverse">
+                    <span class="icon is-small">
+                        <i class="fas fa-sort-amount-up" aria-hidden="true"></i>
                     </span>
-                </p>
-                <p class="control" v-on:click="reverse = !reverse">
-                    <a class="button" v-if="reverse">
-                        <span class="icon is-small">
-                            <i class="fas fa-sort-amount-up" aria-hidden="true"></i>
-                        </span>
-                    </a>
-                    <a class="button" v-else>
-                        <span class="icon is-small">
-                            <i class="fas fa-sort-amount-down" aria-hidden="true"></i>
-                        </span>
-                    </a>
-                </p>
-            </div>
+                </a>
+                <a class="button" v-else>
+                    <span class="icon is-small">
+                        <i class="fas fa-sort-amount-down" aria-hidden="true"></i>
+                    </span>
+                </a>
+            </p>
+            <p class="control">
+                <span class="select">
+                    <select>
+                        <option>name</option>
+                        <option>date</option>
+                    </select>
+                </span>
+            </p>
+            <p class="control has-icons-left">
+                <input class="input" type="text" placeholder="Search" v-model="keywords">
+                <span class="icon is-small is-left">
+                    <i class="fas fa-search"></i>
+                </span>
+            </p>
         </div>
-        <hr>
     </div>
-    <div v-for="item, key in sorted" class="box">
+    <div v-for="item, key in sorted" class="box repository-box">
         <article class="media">
             <div class="media-content">
                 <div class="content">
@@ -45,7 +48,7 @@
                         {{ item.description }}
                     </p>
                 </div>
-                <nav class="level is-mobile">
+                <!-- <nav class="level is-mobile">
                     <div class="level-left">
                         <a class="level-item" aria-label="reply">
                             <span class="icon is-small">
@@ -63,7 +66,7 @@
                             </span>
                         </a>
                     </div>
-                </nav>
+                </nav> -->
             </div>
         </article>
     </div>

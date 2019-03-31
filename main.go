@@ -1,17 +1,25 @@
 package main
 
 import (
-	"github.com/coredns/coredns/plugin/pkg/log"
+	"log"
 	"net/http"
 )
+
+func serverHttp() {
+	err := http.ListenAndServe(GetSettings().getHttpListenAddr(), NewRouters())
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func serverSSH() {
+
+}
 
 func main() {
 
 	InitSettings()
-	settings := GetSettings()
 
-	err := http.ListenAndServe(settings.getListenAddr(), NewRouters())
-	if err != nil {
-		log.Fatal(err)
-	}
+	go serverHttp()
+	go serverSSH()
 }

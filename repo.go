@@ -35,6 +35,12 @@ func (repo Repository) InitBare() error {
 	return err
 }
 
+func (repo Repository) Delete() error {
+	repopath := RepositoryDir(repo.Name)
+	err := os.RemoveAll(repopath)
+	return err
+}
+
 func CheckRepository(repoDir string) (*Repository, error) {
 	if !IsRepositoryDir(repoDir) {
 		return nil, fmt.Errorf("%s Not Repository directory", repoDir)
@@ -197,7 +203,29 @@ func (handler RepoHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (handler RepoHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
+	confirm := r.FormValue("confirm")
+	repoName := chi.URLParam(r, "repoName")
+	repo, exist := handler.Repositories[repoName]
+	if !exist {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, "%s not existed!", repoName)
+		return
+	}
+
+	if confirm != repoName {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, "%s not confirm!", repoName)
+		return
+	}
+
+	err := repo.Delete()
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprintf(w, err.Error())
+		return
+	}
+	delete(handler.Repositories, repoName)
+	w.WriteHeader(http.StatusOK)
 }
 
 func (handler RepoHandler) View(w http.ResponseWriter, r *http.Request) {
