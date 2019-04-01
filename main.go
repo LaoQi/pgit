@@ -13,13 +13,15 @@ func serverHttp() {
 }
 
 func serverSSH() {
-
+	ssh := &SSHServer{}
+	key, _ := ssh.GenerateKey()
+	ssh.SavePrivateKey(GetSettings().SSHHostKey, key)
 }
 
 func main() {
 
 	InitSettings()
 
-	go serverHttp()
-	go serverSSH()
+	// go serverHttp()
+	serverSSH()
 }
