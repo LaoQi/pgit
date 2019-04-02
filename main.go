@@ -14,8 +14,17 @@ func serverHttp() {
 
 func serverSSH() {
 	ssh := &SSHServer{}
-	key, _ := ssh.GenerateKey()
-	ssh.SavePrivateKey(GetSettings().SSHHostKey, key)
+	// key, _ := ssh.GenerateKey()
+	// ssh.SaveKey(filepath.Join(GetSettings().GitRoot, "private.pem"), key, true)
+	// ssh.SaveKey(filepath.Join(GetSettings().GitRoot, "public.pem"), key, false)
+	err := ssh.LoadPrivateKey(GetSettings().SSHHostKey)
+	if err != nil {
+		log.Printf("Failed to start SSH server: %v", err)
+	}
+	err = ssh.ListenAndServe()
+	if err != nil {
+		log.Printf("Failed to start SSH server: %v", err)
+	}
 }
 
 func main() {
