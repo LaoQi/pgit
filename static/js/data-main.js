@@ -27,6 +27,7 @@ require(["vue", "router", "lang", "component"], function(Vue, VueRouter, lang, c
             { path: '/dashboard', component: component.dashboard, alias: '/' },
             { path: '/settings', component: component.settings },
             { path: '/repositories', component: component.repositories },
+            { path: '/repository/:name', component: component.repository, props: true },
             { path: '/new', component: component.newRepo },
         ]
     }) 

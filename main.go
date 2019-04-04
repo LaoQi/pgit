@@ -31,6 +31,6 @@ func main() {
 
 	InitSettings()
 
-	// go serverHttp()
-	serverSSH()
+	serverHttp()
+	// serverSSH()
 }

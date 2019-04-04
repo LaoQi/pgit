@@ -5,6 +5,12 @@ define([], function () {
                 method: 'GET',
             }).then(response => response.json())
         },
+
+        repository(name) {
+            return fetch("/repo/" + name, {
+                method: 'GET',
+            }).then(response => response.json())
+        },
         create(name, description, readme, gitignore, license) {
             var body = new URLSearchParams()
             body.append('name', name)

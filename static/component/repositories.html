@@ -5,11 +5,10 @@
             <router-link to="/new">{{ message.empty_repositories }}</router-link>
         </p>
     </div>
-    <div class="field is-horizontal has-addons" v-else>
+    <div class="field has-addons" v-else>
         <!-- <div class="field-label is-normal">
                 <label class="label">From</label>
             </div> -->
-        <div class="field-body">
             <p class="control" v-on:click="reverse = !reverse">
                 <a class="button" v-if="reverse">
                     <span class="icon is-small">
@@ -36,14 +35,15 @@
                     <i class="fas fa-search"></i>
                 </span>
             </p>
-        </div>
     </div>
     <div v-for="item, key in sorted" class="box repository-box">
         <article class="media">
             <div class="media-content">
                 <div class="content">
                     <p>
-                        <strong>{{ item.name }}</strong>
+                        <router-link v-bind:to="'/repository/' + item.name">
+                            <strong>{{ item.name }}</strong>
+                        </router-link>
                         <br>
                         {{ item.description }}
                     </p>

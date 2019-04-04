@@ -5,13 +5,13 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -74,7 +74,7 @@ func (s *SSHServer) LoadPrivateKey(path string) error {
 	return err
 }
 
-func handleConn(chans <-chan ssh.NewChannel) {
+func handleChannels(chans <-chan ssh.NewChannel) {
 	for newChan := range chans {
 		if newChan.ChannelType() != "session" {
 			newChan.Reject(ssh.UnknownChannelType, "unknown channel type")
@@ -90,31 +90,23 @@ func handleConn(chans <-chan ssh.NewChannel) {
 		go func(in <-chan *ssh.Request) {
 			defer ch.Close()
 			for req := range in {
-				payload := string(req.Payload)
+				log.Printf("SSH: Req.Type: '%#v'", req.Type)
+
 				switch req.Type {
 				case "env":
-					args := strings.Split(strings.Replace(payload, "\x00", "", -1), "\v")
-					if len(args) != 2 {
-						log.Printf("SSH: Invalid env arguments: '%#v'", args)
-						continue
-					}
-					args[0] = strings.TrimLeft(args[0], "\x04")
-					cmd := exec.Command("env", fmt.Sprintf("%s=%s", args[0], args[1]))
-					err := cmd.Run()
-					if err != nil {
-						log.Printf("env: %v", err)
+					log.Printf("SSH: Invalid env arguments: '%#v'", string(req.Payload))
+				case "exec":
+					if len(req.Payload) < 5 {
+						log.Printf("SSH: Payload Empty: %v", req.Payload)
 						return
 					}
-				case "exec":
-					cmdName := strings.TrimLeft(payload, " ")
+					payload := strings.SplitN(string(req.Payload[4:]), " ", 2)
 					// cmdName := payload
-					log.Printf("SSH: Payload: %v", cmdName)
+					log.Printf("SSH: Payload: %v", payload)
+					path := filepath.Join(GetSettings().GitRoot, strings.Trim(payload[1], "':"))
 
-					cmd := exec.Command(cmdName)
-					// cmd.Env = append(
-					// 	os.Environ(),
-					// )
-
+					log.Printf("SSH: Payload path: %v", path)
+					cmd := exec.Command(payload[0], path)
 					stdout, err := cmd.StdoutPipe()
 					if err != nil {
 						log.Printf("SSH: StdoutPipe: %v", err)
@@ -150,6 +142,7 @@ func handleConn(chans <-chan ssh.NewChannel) {
 					ch.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
 					return
 				default:
+					return
 				}
 			}
 		}(reqs)
@@ -158,11 +151,6 @@ func handleConn(chans <-chan ssh.NewChannel) {
 
 func (s *SSHServer) ListenAndServe() error {
 	config := &ssh.ServerConfig{
-		// Config: ssh.Config{
-		// 	Ciphers:      ciphers,
-		// 	KeyExchanges: keyExchanges,
-		// 	MACs:         macs,
-		// },
 		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 			// @todo auth force-command
 			// if conn.User() == "foo" {
@@ -190,17 +178,11 @@ func (s *SSHServer) ListenAndServe() error {
 		return err
 	}
 	for {
-		// Once a ServerConfig has been configured, connections can be accepted.
 		conn, err := listener.Accept()
 		if err != nil {
 			log.Printf("SSH: Error accepting incoming connection: %v", err)
 			continue
 		}
-
-		// Before use, a handshake must be performed on the incoming net.Conn.
-		// It must be handled in a separate goroutine,
-		// otherwise one user could easily block entire loop.
-		// For example, user could be asked to trust server key fingerprint and hangs.
 		go func() {
 			log.Printf("SSH: Handshaking for %s", conn.RemoteAddr())
 			sConn, chans, reqs, err := ssh.NewServerConn(conn, config)
@@ -216,8 +198,7 @@ func (s *SSHServer) ListenAndServe() error {
 			log.Printf("SSH: Connection from %s (%s)", sConn.RemoteAddr(), sConn.ClientVersion())
 			// The incoming Request channel must be serviced.
 			go ssh.DiscardRequests(reqs)
-			go handleConn(chans)
+			go handleChannels(chans)
 		}()
 	}
-	return nil
 }

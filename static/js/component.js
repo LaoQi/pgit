@@ -69,6 +69,29 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                 })
             })
         },
+        repository: function(resolve, reject) {
+            require(["text!/component/repository.html"], function (template) {
+                resolve({
+                    template: template,
+                    props: ["message", "name"],
+                    data () {
+                        return {
+                            metadata: {
+                                name: "",
+                                description: ""
+                            },
+                            tree: [],
+                        }
+                    },
+                    activated() {
+                        console.log(this.name)
+                        Api.repository(this.name).then(function (data) {
+                            this.metadata = data.metadata
+                        }.bind(this))
+                    },
+                })
+            })
+        },
         newRepo: function (resolve, reject) {
             require(["text!/component/new.html"], function (template) {
                 resolve({
