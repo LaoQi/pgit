@@ -16,6 +16,11 @@ type Repository struct {
 	UpdateAt    uint32   `json:updateAt`
 }
 
+type TreeNode struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+}
+
 func (repo Repository) InitBare() error {
 	repopath := RepositoryDir(repo.Name)
 	gitInitCmd := exec.Command("git", "init", "--bare", repopath)
@@ -39,6 +44,31 @@ func (repo Repository) Delete() error {
 
 func (repo Repository) UpdateRepository() error {
 	return nil
+}
+
+func (repo Repository) Tree(branch string, subtree string) ([]TreeNode, error) {
+	repopath := RepositoryDir(repo.Name)
+	tree := make([]TreeNode, 0)
+	cmd := exec.Command("git", "ls-tree", branch)
+	cmd.Dir = repopath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, err
+	}
+	raw := strings.Trim(string(output), "\n ")
+	files := strings.Split(raw, "\n")
+
+	for _, row := range files {
+		if len(row) < 53 {
+			return nil, fmt.Errorf("Read tree error '%s'", row)
+		}
+		tree = append(tree, TreeNode{
+			Type: row[7:11],
+			Name: row[53:],
+		})
+	}
+
+	return tree, nil
 }
 
 func CheckRepository(repoDir string) (*Repository, error) {

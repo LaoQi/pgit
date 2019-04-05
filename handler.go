@@ -213,7 +213,25 @@ func (handler RepoHandler) Detail(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(output)
 }
 
-func (handler RepoHandler) Tree(w http.ResponseWriter, r *http.Request) {}
+func (handler RepoHandler) Tree(w http.ResponseWriter, r *http.Request) {
+	repoName := chi.URLParam(r, "repoName")
+	branch := chi.URLParam(r, "branch")
+	repo, exist := handler.Repositories[repoName]
+	if !exist {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, "%s not existed!", repoName)
+		return
+	}
+	files, err := repo.Tree(branch, "")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, "error %v", err)
+		return
+	}
+	output, _ := json.Marshal(files)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(output)
+}
 
 func (handler RepoHandler) Blob(w http.ResponseWriter, r *http.Request) {}
 
