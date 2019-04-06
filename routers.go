@@ -37,7 +37,7 @@ func NewRouters() chi.Router {
 
 	r.Get("/repo/{repoName}/tree/{branch}/*", handler.Tree)
 	r.Get("/repo/{repoName}/blob/{branch}/*", handler.Blob)
-	r.Get("/repo/{repoName}/archive/{branch}.zip", handler.Archive)
+	r.Get("/repo/{repoName}/archive/{branch}", handler.Archive)
 	r.Get("/repo/{repoName}/commit/{commit}", handler.Commit)
 	r.Get("/repo/{repoName}/commits/{branch}", handler.Commits)
 

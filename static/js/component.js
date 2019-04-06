@@ -80,11 +80,12 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                                 name: "",
                                 description: ""
                             },
+                            download: "",
                             tree: [],
                         }
                     },
                     activated() {
-                        console.log(this.name)
+                        this.download = "/repo/" + this.name + "/archive/master"
                         Api.repository(this.name).then(function (data) {
                             this.metadata = data.metadata
                         }.bind(this))

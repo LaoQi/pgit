@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ type Repository struct {
 
 type TreeNode struct {
 	Type string `json:"type"`
+	Hash string `json:"hash"`
 	Name string `json:"name"`
 }
 
@@ -46,10 +48,10 @@ func (repo Repository) UpdateRepository() error {
 	return nil
 }
 
-func (repo Repository) Tree(branch string, subtree string) ([]TreeNode, error) {
+func (repo Repository) Tree(tree_ish string, subtree string) ([]TreeNode, error) {
 	repopath := RepositoryDir(repo.Name)
 	tree := make([]TreeNode, 0)
-	cmd := exec.Command("git", "ls-tree", branch)
+	cmd := exec.Command("git", "ls-tree", tree_ish)
 	cmd.Dir = repopath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -58,17 +60,34 @@ func (repo Repository) Tree(branch string, subtree string) ([]TreeNode, error) {
 	raw := strings.Trim(string(output), "\n ")
 	files := strings.Split(raw, "\n")
 
+	//100644 blob 2bb65d4c4017c1b1fec26ea46bb6e740d343ba7a\tREADME.md
 	for _, row := range files {
 		if len(row) < 53 {
 			return nil, fmt.Errorf("Read tree error '%s'", row)
 		}
 		tree = append(tree, TreeNode{
 			Type: row[7:11],
+			Hash: row[12:52],
 			Name: row[53:],
 		})
 	}
 
 	return tree, nil
+}
+
+func (repo Repository) Archive(tree_ish string) (io.ReadCloser, error) {
+	repopath := RepositoryDir(repo.Name)
+	cmd := exec.Command(
+		"git", "archive", "--format=zip",
+		fmt.Sprintf("--prefix=%s/", repo.Name),
+		tree_ish)
+	cmd.Dir = repopath
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Start()
+	return output, nil
 }
 
 func CheckRepository(repoDir string) (*Repository, error) {

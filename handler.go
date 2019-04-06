@@ -233,9 +233,29 @@ func (handler RepoHandler) Tree(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(output)
 }
 
-func (handler RepoHandler) Blob(w http.ResponseWriter, r *http.Request) {}
+func (handler RepoHandler) Archive(w http.ResponseWriter, r *http.Request) {
+	repoName := chi.URLParam(r, "repoName")
+	branch := chi.URLParam(r, "branch")
+	repo, exist := handler.Repositories[repoName]
+	if !exist {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, "%s not existed!", repoName)
+		return
+	}
+	body, err := repo.Archive(branch)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(err.Error()))
+		return
+	}
 
-func (handler RepoHandler) Archive(w http.ResponseWriter, r *http.Request) {}
+	w.Header().Add("Content-type", "application/octet-stream")
+	w.Header().Add("Content-Disposition", fmt.Sprintf("attachment; filename=%s.zip", repoName))
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, body)
+}
+
+func (handler RepoHandler) Blob(w http.ResponseWriter, r *http.Request) {}
 
 func (handler RepoHandler) Commit(w http.ResponseWriter, r *http.Request) {}
 
