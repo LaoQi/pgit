@@ -78,6 +78,7 @@ func (handler RepoHandler) InfoRefs(w http.ResponseWriter, r *http.Request) {
 			"--stateless-rpc",
 			"--advertise-refs",
 			repopath)
+		cmd.Dir = repopath
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -105,6 +106,7 @@ func (handler RepoHandler) Command(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 
 		cmd := exec.Command("git", command, "--stateless-rpc", repopath)
+		cmd.Dir = repopath
 
 		cmdIn, _ := cmd.StdinPipe()
 		cmdOut, _ := cmd.StdoutPipe()
@@ -222,7 +224,9 @@ func (handler RepoHandler) Tree(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, "%s not existed!", repoName)
 		return
 	}
-	files, err := repo.Tree(branch, "")
+	path := chi.URLParam(r, "*")
+
+	files, err := repo.Tree(branch, path)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = fmt.Fprintf(w, "error %v", err)
@@ -255,7 +259,34 @@ func (handler RepoHandler) Archive(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, body)
 }
 
-func (handler RepoHandler) Blob(w http.ResponseWriter, r *http.Request) {}
+func (handler RepoHandler) Blob(w http.ResponseWriter, r *http.Request) {
+	repoName := chi.URLParam(r, "repoName")
+	branch := chi.URLParam(r, "branch")
+	repo, exist := handler.Repositories[repoName]
+	if !exist {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, "%s not existed!", repoName)
+		return
+	}
+
+	path := chi.URLParam(r, "*")
+	if len(path) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("Bad Request"))
+		return
+	}
+
+	body, err := repo.Blob(branch, path)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(err.Error()))
+		return
+	}
+
+	w.Header().Add("Content-type", "text/plain")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, body)
+}
 
 func (handler RepoHandler) Commit(w http.ResponseWriter, r *http.Request) {}
 

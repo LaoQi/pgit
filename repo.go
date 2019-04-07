@@ -51,7 +51,13 @@ func (repo Repository) UpdateRepository() error {
 func (repo Repository) Tree(tree_ish string, subtree string) ([]TreeNode, error) {
 	repopath := RepositoryDir(repo.Name)
 	tree := make([]TreeNode, 0)
-	cmd := exec.Command("git", "ls-tree", tree_ish)
+	var cmd *exec.Cmd
+	if len(subtree) > 0 {
+		cmd = exec.Command("git", "ls-tree", tree_ish, subtree)
+	} else {
+		cmd = exec.Command("git", "ls-tree", tree_ish)
+	}
+
 	cmd.Dir = repopath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -62,17 +68,56 @@ func (repo Repository) Tree(tree_ish string, subtree string) ([]TreeNode, error)
 
 	//100644 blob 2bb65d4c4017c1b1fec26ea46bb6e740d343ba7a\tREADME.md
 	for _, row := range files {
-		if len(row) < 53 {
-			return nil, fmt.Errorf("Read tree error '%s'", row)
+		if len(row) == 0 {
+			continue
 		}
+		if len(row) < 53 {
+			return nil, fmt.Errorf("Read tree failed '%s'", row)
+		}
+
+		index := 53 + len(subtree)
+		// log.Printf("index %d subtree %s row %s", index, subtree, row)
+		if index > len(row) {
+			return nil, fmt.Errorf("Read tree failed '%s'", row)
+		}
+
 		tree = append(tree, TreeNode{
 			Type: row[7:11],
 			Hash: row[12:52],
-			Name: row[53:],
+			Name: row[index:],
 		})
 	}
 
 	return tree, nil
+}
+
+func (repo Repository) Blob(tree_ish string, path string) (io.ReadCloser, error) {
+	repopath := RepositoryDir(repo.Name)
+	cmd := exec.Command("git", "ls-tree", tree_ish, path)
+	cmd.Dir = repopath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, err
+	}
+	raw := strings.Trim(string(output), "\n ")
+
+	if len(raw) < 53 || raw[7:11] != "blob" {
+		return nil, fmt.Errorf("Not blob file")
+	}
+	return repo.Object(raw[12:52])
+}
+
+func (repo Repository) Object(hash string) (io.ReadCloser, error) {
+	repopath := RepositoryDir(repo.Name)
+	cmd := exec.Command(
+		"git", "cat-file", "blob", hash)
+	cmd.Dir = repopath
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Start()
+	return output, nil
 }
 
 func (repo Repository) Archive(tree_ish string) (io.ReadCloser, error) {

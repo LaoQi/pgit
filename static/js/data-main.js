@@ -13,6 +13,7 @@ requirejs.config({
         lang: "/js/lang",
         api: "/js/api",
         component: "/js/component",
+        marked: "/js/marked.v0.6.2.min",
     },
     waitSeconds: 0
 });

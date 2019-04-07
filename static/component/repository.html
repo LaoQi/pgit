@@ -26,7 +26,7 @@
                     <div class="dropdown-content">
                         <div class="dropdown-item">
                             <div class="control has-icons-right">
-                                <input class="input is-small" type="email" placeholder="Email">
+                                <input class="input is-small" type="text" placeholder="">
                                 <span class="icon is-small is-right">
                                     <i class="fas fa-search"></i>
                                 </span>
@@ -85,7 +85,7 @@
             </div>
         </div>
     </div>
-    <div class="columns is-centered">
+    <!-- <div class="columns is-centered">
         <div class="column">
             <nav class="breadcrumb repository-breadcrumb" aria-label="breadcrumbs">
                 <ul>
@@ -96,70 +96,48 @@
                 </ul>
             </nav>
         </div>
-    </div>
+    </div> -->
     <div class="columns">
         <div class="column">
             <div class="panel">
                 <div class="panel-heading">
-                    -
+                    <nav class="breadcrumb repository-breadcrumb" aria-label="breadcrumbs">
+                        <ul>
+                            <!-- <li v-if="paths.length == 0">-</li> -->
+                            <li><a v-on:click="prev()">{{ metadata.name }}</a></li>
+                            <li v-for="item in paths"><a v-on:click="prev(item)">{{ item }}</a></li>
+                        </ul>
+                    </nav>
                 </div>
                 <div class="panel-block repository-tree-block">
                     <table class="table is-striped is-narrow is-hoverable is-fullwidth">
                         <tbody>
-                            <tr>
-                                <th>1</th>
-                                <td><a href="https://en.wikipedia.org/wiki/Leicester_City_F.C."
-                                        title="Leicester City F.C.">Leicester City</a> <strong>(C)</strong>
-                                </td>
-                                <td>38</td>
-
-                            </tr>
-                            <tr>
-                                <th>2</th>
-                                <td><a href="https://en.wikipedia.org/wiki/Arsenal_F.C."
-                                        title="Arsenal F.C.">Arsenal</a>
-                                </td>
-                                <td>38</td>
-
-                            </tr>
-                            <tr>
-                                <th>3</th>
-                                <td><a href="https://en.wikipedia.org/wiki/Tottenham_Hotspur_F.C."
-                                        title="Tottenham Hotspur F.C.">Tottenham Hotspur</a></td>
-                                <td>38</td>
-
-                            </tr>
-                           
-                            <tr>
-                                <th>5</th>
-                                <td><a href="https://en.wikipedia.org/wiki/Manchester_United_F.C."
-                                        title="Manchester United F.C.">Manchester United</a></td>
-                                <td>38</td>
-
-                            </tr>
-                            <tr>
-                                <th>6</th>
-                                <td><a href="https://en.wikipedia.org/wiki/Southampton_F.C."
-                                        title="Southampton F.C.">Southampton</a></td>
-                                <td>38</td>
-
-                            </tr>
-                            <tr>
-                                <td>
-                                    <i class="fas fa-book" aria-hidden="true"></i>
-                                    <a>marksheet</a>
-                                </td>
-                                <td><a href="https://en.wikipedia.org/wiki/West_Ham_United_F.C."
-                                        title="West Ham United F.C.">West Ham United</a></td>
-                                <td>38</td>
-
+                            <tr v-for="item in tree" :key="item.hash">
+                                <th>
+                                    <i v-if="item.type == 'tree'" class="fas fa-folder"></i>
+                                    <i v-else class="fas fa-file"></i>
+                                    <a v-on:click="next(item)">{{ item.name }}</a>
+                                </th>
+                                <td></td>
+                                <td></td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
-
             </div>
         </div>
 
+    </div>
+    <div class="columns" v-if="readme">
+        <div class="column">
+            <div class="panel">
+                <div class="panel-heading">
+                    Readme.md
+                </div>
+                <div class="panel-block">
+                    <div class="pgit-markdown-contianer markdown-body" v-html="readme"></div>
+                </div>
+            </div>
+        </div>
     </div>
 </div>

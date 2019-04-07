@@ -21,6 +21,7 @@ html {
 
 .repository-breadcrumb a {
     padding: 0 .35em;
+    font-weight: 400;
 }
 
 .repository-tree-block {
@@ -30,4 +31,12 @@ html {
 
 .branch-tabs {
     margin-bottom: 0rem !important;
+}
+
+.pgit-markdown-contianer {
+    padding: 1rem;
+}
+
+.pgit-markdown-contianer ul {
+    list-style: disc outside none;
 }

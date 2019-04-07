@@ -11,6 +11,17 @@ define([], function () {
                 method: 'GET',
             }).then(response => response.json())
         },
+        tree(name, path) {
+            subpath = path ? path : ""
+            return fetch("/repo/" + name + "/tree/master/" + subpath, {
+                method: 'GET',
+            }).then(response => response.json())
+        },
+        blob(name, path) {
+            return fetch("/repo/" + name + "/blob/master/" + path, {
+                method: 'GET',
+            }).then(response => response.text())
+        },
         create(name, description, readme, gitignore, license) {
             var body = new URLSearchParams()
             body.append('name', name)
