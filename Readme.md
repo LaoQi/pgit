@@ -10,7 +10,3 @@ personal git server
 * search
 * mirror hook webhook
 
-
-## fixme
-
-* A few times, cannot clone repository 

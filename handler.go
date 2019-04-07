@@ -68,7 +68,7 @@ func (handler RepoHandler) StaticFiles(w http.ResponseWriter, r *http.Request) {
 
 func (handler RepoHandler) InfoRefs(w http.ResponseWriter, r *http.Request) {
 	repoName := chi.URLParam(r, "repoName")
-	repopath := filepath.Join(GetSettings().GitRoot, repoName)
+	repopath := RepositoryDir(repoName)
 	service := r.FormValue("service")
 	if len(service) > 0 {
 		w.Header().Add("Content-type", fmt.Sprintf("application/x-%s-advertisement", service))
@@ -81,6 +81,7 @@ func (handler RepoHandler) InfoRefs(w http.ResponseWriter, r *http.Request) {
 		cmd.Dir = repopath
 		out, err := cmd.CombinedOutput()
 		if err != nil {
+			log.Printf("error %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = fmt.Fprintln(w, "Internal Server Error")
 			_, _ = w.Write(out)
@@ -98,7 +99,7 @@ func (handler RepoHandler) InfoRefs(w http.ResponseWriter, r *http.Request) {
 
 func (handler RepoHandler) Command(w http.ResponseWriter, r *http.Request) {
 	repoName := chi.URLParam(r, "repoName")
-	repopath := filepath.Join(GetSettings().GitRoot, repoName)
+	repopath := RepositoryDir(repoName)
 	command := chi.URLParam(r, "command")
 	if len(command) > 0 {
 
