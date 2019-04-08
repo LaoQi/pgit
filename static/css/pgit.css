@@ -35,6 +35,10 @@ html {
 
 .pgit-markdown-contianer {
     padding: 1rem;
+    background-color: #fff;
+    border: 1px solid #d1d5da;
+    border-radius: 3px;
+    border-top: inherit;
 }
 
 .pgit-markdown-contianer ul {

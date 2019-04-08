@@ -51,26 +51,18 @@
                 <div class="control"></div>
             </div>
         </div>
-        <div class="column">
-            <div class="control is-mobile">
-                <div class="buttons has-addons is-small">
-                    <span class="button is-small">new file</span>
-                    <span class="button is-small">upload</span>
-                </div>
-            </div>
-        </div>
-        <div class="column">
+        <div class="column is-half">
             <div class="field has-addons">
                 <p class="control">
                     <span class="select is-small">
-                        <select>
-                            <option>HTTP</option>
-                            <option>SSH</option>
+                        <select v-model="cloneType">
+                            <option value="http">HTTP</option>
+                            <option value="ssh">SSH</option>
                         </select>
                     </span>
                 </p>
                 <p class="control is-expanded">
-                    <input class="input is-small" type="text" placeholder="Amount of money">
+                    <input class="input is-small" type="text" v-model="address" readonly>
                 </p>
                 <p class="control">
                     <a class="button is-small">
@@ -80,23 +72,26 @@
             </div>
         </div>
         <div class="column">
-            <div class="control">
-                <a v-bind:href="download" class="button is-success is-small">Download ZIP</a>
+            <div class="field has-addons has-addons-right">
+                <p class="control">
+                    <span class="button is-small">new file</span>
+                </p>
+                <p class="control">
+                    <span class="button is-small">upload</span>
+                </p>
+                <p class="control">
+                    <a v-bind:href="download" class="button is-success is-small">Download ZIP</a>
+                </p>
             </div>
+            <!-- <div class="control">
+                <div class="buttons has-addons is-small is-right">
+                    <span class="button is-small">new file</span>
+                    <span class="button is-small">upload</span>
+                    <a v-bind:href="download" class="button is-success is-small">Download ZIP</a>
+                </div>
+            </div> -->
         </div>
     </div>
-    <!-- <div class="columns is-centered">
-        <div class="column">
-            <nav class="breadcrumb repository-breadcrumb" aria-label="breadcrumbs">
-                <ul>
-                    <li><a>Bulma</a></li>
-                    <li><a>Documentation</a></li>
-                    <li><a>Components</a></li>
-                    <li class="is-active"><a aria-current="page">Breadcrumb</a></li>
-                </ul>
-            </nav>
-        </div>
-    </div> -->
     <div class="columns">
         <div class="column">
             <div class="panel">
@@ -134,8 +129,8 @@
                 <div class="panel-heading">
                     Readme.md
                 </div>
-                <div class="panel-block">
-                    <div class="pgit-markdown-contianer markdown-body" v-html="readme"></div>
+                <div class="pgit-markdown-contianer">
+                    <div class="markdown-body" v-html="readme"></div>
                 </div>
             </div>
         </div>

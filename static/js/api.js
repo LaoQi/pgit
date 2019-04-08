@@ -1,5 +1,10 @@
 define([], function () {
     return {
+        dashboard() {
+            return fetch("dashboard", {
+                method: 'GET',
+            }).then(response => response.json())
+        },
         repositories() {
             return fetch("/repo", {
                 method: 'GET',

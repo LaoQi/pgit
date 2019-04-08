@@ -8,8 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
-	"path/filepath"
-	"strings"
 
 	"github.com/go-chi/chi"
 )
@@ -59,11 +57,6 @@ func (handler RepoHandler) Explorer() {
 func (handler RepoHandler) AddRepository(repo *Repository) {
 	handler.Repositories[repo.Name] = repo
 	log.Printf("Add Repository %s", repo.Name)
-}
-
-func (handler RepoHandler) StaticFiles(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/repo")
-	http.ServeFile(w, r, filepath.Join(GetSettings().GitRoot, path))
 }
 
 func (handler RepoHandler) InfoRefs(w http.ResponseWriter, r *http.Request) {
@@ -292,3 +285,16 @@ func (handler RepoHandler) Blob(w http.ResponseWriter, r *http.Request) {
 func (handler RepoHandler) Commit(w http.ResponseWriter, r *http.Request) {}
 
 func (handler RepoHandler) Commits(w http.ResponseWriter, r *http.Request) {}
+
+type DashboardResult struct {
+	Total int `json:"total"`
+}
+
+func (handler RepoHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
+	dr := DashboardResult{
+		Total: len(handler.Repositories),
+	}
+	output, _ := json.Marshal(dr)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(output)
+}

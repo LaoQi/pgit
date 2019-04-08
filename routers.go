@@ -30,6 +30,8 @@ func NewRouters() chi.Router {
 
 	handler := NewRepoHandler()
 
+	r.Get("/dashboard", handler.Dashboard)
+
 	r.Get("/repo", handler.View)
 	r.Get("/repo/{repoName}", handler.Detail)
 	r.Post("/repo/{repoName}", handler.Create)
@@ -43,7 +45,6 @@ func NewRouters() chi.Router {
 
 	r.Get("/repo/{repoName}.git/info/refs", handler.InfoRefs)
 	r.Post("/repo/{repoName}.git/git-{command}", handler.Command)
-	r.HandleFunc("/repo/{repoName}.git/*", handler.StaticFiles)
 
 	return r
 }

@@ -24,7 +24,21 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
         dashboard: function (resolve, reject) {
             require(["text!/component/dashboard.html"], function (template) {
                 resolve({
-                    template: template
+                    template: template,
+                    props: ["message"],
+                    data(){
+                        return {
+                            total: 0,
+                            commits: 0,
+                        }
+                    },
+                    activated() {
+                        Api.dashboard().then(
+                            data => {
+                                this.total = data.total
+                            }
+                        )
+                    },
                 })
             })
         },
@@ -57,7 +71,7 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                                 .sort((a, b) =>
                                     this.reverse ? (a[this.sortBy] < b[this.sortBy] ? 1 : -1) : (a[this.sortBy] > b[this.sortBy] ? 1 : -1)
                                 )
-                        }
+                        },
                     },
                     activated() {
                         Api.repositories().then(function (data) {
@@ -84,7 +98,8 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                             tree: [],
                             branch: "master",
                             paths: [],
-                            readme: ""
+                            readme: "",
+                            cloneType: "http"
                         }
                     },
                     computed: {
@@ -93,6 +108,11 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                                 return this.paths.join("/") + "/"
                             }
                             return ""
+                        },
+                        address() {
+                            return this.cloneType == "ssh" ? 
+                            "ssh://" + window.location.host + "/" + this.metadata.name + ".git"  :
+                            "http://" + window.location.host + "/repo/" + this.metadata.name + ".git"
                         }
                     },
                     activated() {
