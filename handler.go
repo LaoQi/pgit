@@ -14,8 +14,12 @@ import (
 
 type RepoDetail struct {
 	Metadata *Repository `json:"metadata"`
-	Files    []string    `json:"files"`
-	Branch   []string    `json:"branch"`
+	Refs     []*Ref      `json:"refs"`
+}
+
+type DashboardResult struct {
+	Total        int           `json:"total"`
+	Repositories []*Repository `json:"repositories"`
 }
 
 type RepoHandler struct {
@@ -31,12 +35,12 @@ func NewRepoHandler() *RepoHandler {
 		Repositories: map[string]*Repository{},
 	}
 
-	r.Explorer()
+	r.CheckRepositories()
 
 	return r
 }
 
-func (handler RepoHandler) Explorer() {
+func (handler RepoHandler) CheckRepositories() {
 	root := GetSettings().GitRoot
 	files, err := ioutil.ReadDir(root)
 	if err != nil {
@@ -168,14 +172,19 @@ func (handler RepoHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (handler RepoHandler) View(w http.ResponseWriter, r *http.Request) {
+func (handler RepoHandler) Explorer(w http.ResponseWriter, r *http.Request) {
 
 	repositories := make([]*Repository, 0)
 	for _, repo := range handler.Repositories {
 		repositories = append(repositories, repo)
 	}
 
-	output, err := json.Marshal(repositories)
+	dr := DashboardResult{
+		Total:        len(repositories),
+		Repositories: repositories,
+	}
+
+	output, err := json.Marshal(dr)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(err.Error()))
@@ -195,8 +204,16 @@ func (handler RepoHandler) Detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	refs, err := repo.ForEachRef()
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(err.Error()))
+		return
+	}
+
 	detail := RepoDetail{
 		Metadata: repo,
+		Refs:     refs,
 	}
 
 	output, err := json.Marshal(detail)
@@ -285,16 +302,3 @@ func (handler RepoHandler) Blob(w http.ResponseWriter, r *http.Request) {
 func (handler RepoHandler) Commit(w http.ResponseWriter, r *http.Request) {}
 
 func (handler RepoHandler) Commits(w http.ResponseWriter, r *http.Request) {}
-
-type DashboardResult struct {
-	Total int `json:"total"`
-}
-
-func (handler RepoHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
-	dr := DashboardResult{
-		Total: len(handler.Repositories),
-	}
-	output, _ := json.Marshal(dr)
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_, _ = w.Write(output)
-}

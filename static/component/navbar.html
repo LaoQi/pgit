@@ -14,10 +14,7 @@
 
     <div class="navbar-menu" v-bind:class="{ 'is-active': menuActive }" v-on:click="closeMenu">
         <div class="navbar-start">
-            <router-link to="/dashboard" class="navbar-item">
-                {{ message.dashboard }}
-            </router-link>
-
+            
             <router-link to="/repositories" class="navbar-item">
                 {{ message.repositories }}
             </router-link>

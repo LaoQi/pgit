@@ -14,6 +14,7 @@ requirejs.config({
         api: "/js/api",
         component: "/js/component",
         marked: "/js/marked.v0.6.2.min",
+        clipboard: "/js/clipboard.2.0.0.min"
     },
     waitSeconds: 0
 });
@@ -25,9 +26,9 @@ require(["vue", "router", "lang", "component"], function(Vue, VueRouter, lang, c
 
     const router = new VueRouter({
         routes: [
-            { path: '/dashboard', component: component.dashboard, alias: '/' },
+            { path: '/dashboard', component: component.dashboard },
             { path: '/settings', component: component.settings },
-            { path: '/repositories', component: component.repositories },
+            { path: '/repositories', component: component.repositories, alias: '/' },
             { path: '/repository/:name', component: component.repository, props: true },
             { path: '/new', component: component.newRepo },
         ]

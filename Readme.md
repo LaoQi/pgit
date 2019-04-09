@@ -7,6 +7,7 @@ personal git server
 * http api √
 * embed ssh √
 * webUI √
+* dashboard
 * search
 * mirror hook webhook
 

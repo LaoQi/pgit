@@ -74,8 +74,8 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                         },
                     },
                     activated() {
-                        Api.repositories().then(function (data) {
-                            this.repositories = data.sort(function(a, b){
+                        Api.explore().then(function (data) {
+                            this.repositories = data.repositories.sort(function(a, b){
                                 return a.name > b.name ? 1 : -1
                             })
                         }.bind(this))
@@ -84,7 +84,7 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
             })
         },
         repository: function(resolve, reject) {
-            require(["text!/component/repository.html", "marked"], function (template, marked) {
+            require(["text!/component/repository.html", "marked", "clipboard"], function (template, marked, Clipboard) {
                 resolve({
                     template: template,
                     props: ["message", "name"],
@@ -94,12 +94,13 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                                 name: "",
                                 description: ""
                             },
+                            empty: false,
                             download: "",
                             tree: [],
                             branch: "master",
                             paths: [],
                             readme: "",
-                            cloneType: "http"
+                            cloneType: "http",
                         }
                     },
                     computed: {
@@ -113,9 +114,21 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                             return this.cloneType == "ssh" ? 
                             "ssh://" + window.location.host + "/" + this.metadata.name + ".git"  :
                             "http://" + window.location.host + "/repo/" + this.metadata.name + ".git"
+                        },
+                        helpCreateCommand() {
+                            return "touch README.md\ngit init\ngit add README.md\ngit commit -m \"first commit\"\ngit remote add origin " +
+                            this.address + "\ngit push -u origin master"
+                        },
+                        helpPushCommand() {
+                            return "git remote add origin " + this.address + "\ngit push -u origin master"
                         }
                     },
                     activated() {
+                        var clipboard = new Clipboard(".clipboard-button")
+                        clipboard.on('success', function(e) {
+                            console.info('Trigger:', e.trigger);  
+                            e.clearSelection();
+                        });
                         this.download = "/repo/" + this.name + "/archive/" + this.branch
                         this.paths = []
                         this.metadata = { name: "", description: "" }
@@ -132,20 +145,27 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                             }
                         },
                         prev(name) {
-                            var index = this.paths.indexOf(name)
-                            this.paths = this.paths.slice(0,  index + 1)
+                            if (typeof name === "undefined") {
+                                this.paths.pop()
+                            } else {
+                                var index = this.paths.indexOf(name)
+                                this.paths = this.paths.slice(0,  index + 1)
+                            }
                             this.updateTree()
                         },
                         updateTree() {
                             // this.tree = []
                             Api.tree(this.name, this.subpath).then(
                                 data => {
+                                    this.empty = data.length === 0
                                     this.readme = ""
                                     this.tree = data.sort((a, b) => a.type < b.type ? 1 : -1)
                                     this.updateReadme()
                                 }
                             ).catch(
-                                reason => console.log(reason)
+                                reason => {
+                                    this.empty = true
+                                }
                             )
                         },
                         updateReadme() {

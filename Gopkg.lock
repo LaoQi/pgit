@@ -12,12 +12,49 @@
   revision = "da24bba8dcd4021cafac38724bf10dccc97c3e36"
   version = "v4.0.2"
 
+[[projects]]
+  digest = "1:f0e250669d871593014396f654700bb5db49dfb17f9fac9764256c6342ccd74e"
+  name = "github.com/go-chi/docgen"
+  packages = ["."]
+  pruneopts = "UT"
+  revision = "c94a1e40c06f53a447a809bad19c5f3c4047acc5"
+  version = "v1.0.5"
+
+[[projects]]
+  branch = "master"
+  digest = "1:09d4ba0a111bd85dffabc19b9b6d89e89bef285790103ced8824d823813dcdab"
+  name = "golang.org/x/crypto"
+  packages = [
+    "curve25519",
+    "ed25519",
+    "ed25519/internal/edwards25519",
+    "internal/chacha20",
+    "internal/subtle",
+    "poly1305",
+    "ssh",
+  ]
+  pruneopts = "UT"
+  revision = "38d8ce5564a5b71b2e3a00553993f1b9a7ae852f"
+
+[[projects]]
+  branch = "master"
+  digest = "1:d78755393cc6ee9bd63b4debeed9be209517adc3296e61ecdf97590b15260f45"
+  name = "golang.org/x/sys"
+  packages = [
+    "cpu",
+    "unix",
+  ]
+  pruneopts = "UT"
+  revision = "4b34438f7a67ee5f45cc6132e2bad873a20324e9"
+
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
   input-imports = [
     "github.com/go-chi/chi",
     "github.com/go-chi/chi/middleware",
+    "github.com/go-chi/docgen",
+    "golang.org/x/crypto/ssh",
   ]
   solver-name = "gps-cdcl"
   solver-version = 1

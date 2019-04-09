@@ -33,6 +33,14 @@ html {
     margin-bottom: 0rem !important;
 }
 
+.branch-dropdown-content {
+    min-width: 20rem;
+}
+
+.branch-dropdown-item {
+    padding: 0;
+}
+
 .pgit-markdown-contianer {
     padding: 1rem;
     background-color: #fff;

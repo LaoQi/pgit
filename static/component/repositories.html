@@ -24,8 +24,9 @@
             <p class="control">
                 <span class="select">
                     <select>
-                        <option>name</option>
-                        <option>date</option>
+                        <option value="name">{{ message.repo_name }}</option>
+                        <option value="last_commit_time">{{ message.last_commit_time }}</option>
+                        <option value="created_time">{{ message.created_time }}</option>
                     </select>
                 </span>
             </p>

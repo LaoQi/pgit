@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,10 +12,16 @@ import (
 )
 
 type Repository struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Branch      []string `json:"branch"`
-	UpdateAt    uint32   `json:updateAt`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	UpdateAt    uint32 `json:updateAt`
+}
+
+type Ref struct {
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Creator string `json:"creator"`
+	Subject string `json:"subject"`
 }
 
 type TreeNode struct {
@@ -133,6 +140,31 @@ func (repo Repository) Archive(tree_ish string) (io.ReadCloser, error) {
 	}
 	cmd.Start()
 	return output, nil
+}
+
+func (repo Repository) ForEachRef() ([]*Ref, error) {
+	repopath := RepositoryDir(repo.Name)
+	// git for-each-ref --format="%(objecttype) %(refname:short) %(creator) %(contents:subject)"
+	cmd := exec.Command("git", "for-each-ref", "--format=%(objecttype)%07%(refname:short)%07%(creator)%07%(contents:subject)")
+	cmd.Dir = repopath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, err
+	}
+	raw := strings.Trim(string(output), "\n ")
+
+	refs := make([]*Ref, 0)
+	for _, row := range strings.Split(raw, "\n") {
+		r := strings.Split(row, fmt.Sprintf("%c", 0x07))
+		log.Printf("%v", r)
+		refs = append(refs, &Ref{
+			Type:    r[0],
+			Name:    r[1],
+			Creator: r[2],
+			Subject: r[3],
+		})
+	}
+	return refs, nil
 }
 
 func CheckRepository(repoDir string) (*Repository, error) {
