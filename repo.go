@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,24 +99,8 @@ func (repo Repository) Tree(tree_ish string, subtree string) ([]TreeNode, error)
 
 func (repo Repository) Blob(tree_ish string, path string) (io.ReadCloser, error) {
 	repopath := RepositoryDir(repo.Name)
-	cmd := exec.Command("git", "ls-tree", tree_ish, path)
-	cmd.Dir = repopath
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, err
-	}
-	raw := strings.Trim(string(output), "\n ")
-
-	if len(raw) < 53 || raw[7:11] != "blob" {
-		return nil, fmt.Errorf("Not blob file")
-	}
-	return repo.Object(raw[12:52])
-}
-
-func (repo Repository) Object(hash string) (io.ReadCloser, error) {
-	repopath := RepositoryDir(repo.Name)
 	cmd := exec.Command(
-		"git", "cat-file", "blob", hash)
+		"git", "cat-file", "blob", fmt.Sprintf("%s:%s", tree_ish, path))
 	cmd.Dir = repopath
 	output, err := cmd.StdoutPipe()
 	if err != nil {
@@ -156,7 +139,9 @@ func (repo Repository) ForEachRef() ([]*Ref, error) {
 	refs := make([]*Ref, 0)
 	for _, row := range strings.Split(raw, "\n") {
 		r := strings.Split(row, fmt.Sprintf("%c", 0x07))
-		log.Printf("%v", r)
+		if len(r) != 4 {
+			continue
+		}
 		refs = append(refs, &Ref{
 			Type:    r[0],
 			Name:    r[1],
