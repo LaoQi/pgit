@@ -7,20 +7,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 type Repository struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	UpdateAt    uint32 `json:updateAt`
+	UpdateAt    uint64 `json:updateAt`
 }
 
 type Ref struct {
-	Type    string `json:"type"`
-	Name    string `json:"name"`
-	Creator string `json:"creator"`
-	Subject string `json:"subject"`
+	Type      string `json:"type"`
+	Name      string `json:"name"`
+	Author    string `json:"author"`
+	Email     string `json:"email"`
+	Timestamp uint64 `json:"timestamp"`
+	Subject   string `json:"subject"`
 }
 
 type TreeNode struct {
@@ -142,12 +145,20 @@ func (repo Repository) ForEachRef() ([]*Ref, error) {
 		if len(r) != 4 {
 			continue
 		}
-		refs = append(refs, &Ref{
+		ref := &Ref{
 			Type:    r[0],
 			Name:    r[1],
-			Creator: r[2],
 			Subject: r[3],
-		})
+		}
+
+		creator := strings.Split(r[2], " ")
+		timestamp, _ := strconv.ParseUint(creator[2], 10, 0)
+		if len(creator) > 2 {
+			ref.Author = creator[0]
+			ref.Email = creator[1]
+			ref.Timestamp = timestamp
+		}
+		refs = append(refs, ref)
 	}
 	return refs, nil
 }

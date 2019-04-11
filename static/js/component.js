@@ -94,10 +94,11 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                                 name: "",
                                 description: ""
                             },
+                            refs: [],
                             empty: false,
                             download: "",
                             tree: [],
-                            branch: "master",
+                            ref: "master",
                             paths: [],
                             readme: "",
                             cloneType: "http",
@@ -121,6 +122,9 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                         },
                         helpPushCommand() {
                             return "git remote add origin " + this.address + "\ngit push -u origin master"
+                        },
+                        branches() {
+                            return this.refs.filter(item => item.type === "commit")
                         }
                     },
                     activated() {
@@ -129,12 +133,16 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                             console.info('Trigger:', e.trigger);  
                             e.clearSelection();
                         });
-                        this.download = "/repo/" + this.name + "/archive/" + this.branch
+                        this.download = "/repo/" + this.name + "/archive/" + this.ref
                         this.paths = []
                         this.metadata = { name: "", description: "" }
                         this.tree = []
                         this.readme = ""
-                        Api.repository(this.name).then( data => this.metadata = data.metadata)
+                        Api.repository(this.name).then( 
+                            data => {
+                                this.metadata = data.metadata
+                                this.refs = data.refs
+                            })
                         this.updateTree()
                     },
                     methods: {
@@ -153,9 +161,13 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                             }
                             this.updateTree()
                         },
+                        checkout(name) {
+                            this.ref = name;
+                            this.updateTree();
+                        },
                         updateTree() {
                             // this.tree = []
-                            Api.tree(this.name, this.subpath).then(
+                            Api.tree(this.name, this.ref, this.subpath).then(
                                 data => {
                                     this.empty = data.length === 0
                                     this.readme = ""
@@ -170,10 +182,10 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                         },
                         updateReadme() {
                             var index = this.tree.findIndex(
-                                item => item.name.toLowerCase() == "readme.md" || item.name.toLowerCase() == "readme.markdown"
+                                item => ["readme.md", "readme.markdown", "readme"].indexOf(item.name.toLowerCase()) > -1
                             )
                             if (index > -1) {
-                                Api.blob(this.name, this.subpath + this.tree[index].name).then(
+                                Api.blob(this.name, this.ref, this.subpath + this.tree[index].name).then(
                                     data => this.readme = marked(data)
                                 )
                             }

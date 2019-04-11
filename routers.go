@@ -36,11 +36,11 @@ func NewRouters() chi.Router {
 	r.Post("/repo/{repoName}", handler.Create)
 	r.Delete("/repo/{repoName}", handler.Delete)
 
-	r.Get("/repo/{repoName}/tree/{branch}/*", handler.Tree)
-	r.Get("/repo/{repoName}/blob/{branch}/*", handler.Blob)
-	r.Get("/repo/{repoName}/archive/{branch}", handler.Archive)
+	r.Get("/repo/{repoName}/tree/{ref}/*", handler.Tree)
+	r.Get("/repo/{repoName}/blob/{ref}/*", handler.Blob)
+	r.Get("/repo/{repoName}/archive/{ref}", handler.Archive)
 	r.Get("/repo/{repoName}/commit/{commit}", handler.Commit)
-	r.Get("/repo/{repoName}/commits/{branch}", handler.Commits)
+	r.Get("/repo/{repoName}/commits/{ref}", handler.Commits)
 
 	r.Get("/repo/{repoName}.git/info/refs", handler.InfoRefs)
 	r.Post("/repo/{repoName}.git/git-{command}", handler.Command)

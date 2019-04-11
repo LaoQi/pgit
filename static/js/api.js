@@ -11,14 +11,16 @@ define([], function () {
                 method: 'GET',
             }).then(response => response.json())
         },
-        tree(name, path) {
+        tree(name, ref, path) {
             subpath = path ? path : ""
-            return fetch("/repo/" + name + "/tree/master/" + subpath, {
+            var url = "/repo/" + encodeURIComponent(name) + "/tree/" + encodeURIComponent(ref) + "/" + subpath;
+            return fetch(url, {
                 method: 'GET',
             }).then(response => response.json())
         },
-        blob(name, path) {
-            return fetch("/repo/" + name + "/blob/master/" + path, {
+        blob(name, ref, path) {
+            var url = "/repo/" + encodeURIComponent(name) + "/blob/" + encodeURIComponent(ref) + "/" + path;
+            return fetch(url, {
                 method: 'GET',
             }).then(response => response.text())
         },

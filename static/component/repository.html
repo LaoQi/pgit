@@ -16,7 +16,7 @@
                 <!-- <div class="dropdown is-active"> -->
                 <div class="dropdown-trigger">
                     <button class="button is-small" aria-haspopup="true" aria-controls="dropdown-branch-search">
-                        <span>Branch: <strong>master</strong></span>
+                        <span>Branch: <strong>{{ ref }}</strong></span>
                         <span class="icon is-small">
                             <i class="fas fa-angle-down" aria-hidden="true"></i>
                         </span>
@@ -41,8 +41,8 @@
                                         <li><a>Tags</a></li>
                                     </ul>
                                 </div>
-                                <ul class="menu-list">
-                                    <li><a>master</a></li>
+                                <ul class="menu-list branch-list">
+                                    <li v-for="item in branches"><a v-on:click="checkout(item.name)">{{ item.name }}</a></li>
                                 </ul>
                             </div>
                         </div>
@@ -129,7 +129,7 @@
         <div class="column">
             <div class="panel">
                 <div class="panel-heading">
-                    Readme.md
+                    Readme
                 </div>
                 <div class="pgit-markdown-contianer">
                     <div class="markdown-body" v-html="readme"></div>

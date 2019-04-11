@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os/exec"
 
 	"github.com/go-chi/chi"
@@ -227,8 +228,18 @@ func (handler RepoHandler) Detail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (handler RepoHandler) Tree(w http.ResponseWriter, r *http.Request) {
-	repoName := chi.URLParam(r, "repoName")
-	branch := chi.URLParam(r, "branch")
+	repoName, err := url.QueryUnescape(chi.URLParam(r, "repoName"))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	ref, err := url.QueryUnescape(chi.URLParam(r, "ref"))
+	if err != nil {
+		ref = "master"
+	}
+
 	repo, exist := handler.Repositories[repoName]
 	if !exist {
 		w.WriteHeader(http.StatusBadRequest)
@@ -237,7 +248,7 @@ func (handler RepoHandler) Tree(w http.ResponseWriter, r *http.Request) {
 	}
 	path := chi.URLParam(r, "*")
 
-	files, err := repo.Tree(branch, path)
+	files, err := repo.Tree(ref, path)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = fmt.Fprintf(w, "error %v", err)
@@ -250,14 +261,14 @@ func (handler RepoHandler) Tree(w http.ResponseWriter, r *http.Request) {
 
 func (handler RepoHandler) Archive(w http.ResponseWriter, r *http.Request) {
 	repoName := chi.URLParam(r, "repoName")
-	branch := chi.URLParam(r, "branch")
+	ref := chi.URLParam(r, "ref")
 	repo, exist := handler.Repositories[repoName]
 	if !exist {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = fmt.Fprintf(w, "%s not existed!", repoName)
 		return
 	}
-	body, err := repo.Archive(branch)
+	body, err := repo.Archive(ref)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(err.Error()))
@@ -272,7 +283,10 @@ func (handler RepoHandler) Archive(w http.ResponseWriter, r *http.Request) {
 
 func (handler RepoHandler) Blob(w http.ResponseWriter, r *http.Request) {
 	repoName := chi.URLParam(r, "repoName")
-	branch := chi.URLParam(r, "branch")
+	ref, err := url.QueryUnescape(chi.URLParam(r, "ref"))
+	if err != nil {
+		ref = "master"
+	}
 	repo, exist := handler.Repositories[repoName]
 	if !exist {
 		w.WriteHeader(http.StatusBadRequest)
@@ -287,7 +301,7 @@ func (handler RepoHandler) Blob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := repo.Blob(branch, path)
+	body, err := repo.Blob(ref, path)
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(err.Error()))

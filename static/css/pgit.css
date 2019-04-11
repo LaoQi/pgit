@@ -41,6 +41,11 @@ html {
     padding: 0;
 }
 
+.branch-list {
+    max-height: 19rem;
+    overflow-y: scroll;
+}
+
 .pgit-markdown-contianer {
     padding: 1rem;
     background-color: #fff;
