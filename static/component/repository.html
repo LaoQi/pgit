@@ -16,7 +16,7 @@
                 <!-- <div class="dropdown is-active"> -->
                 <div class="dropdown-trigger">
                     <button class="button is-small" aria-haspopup="true" aria-controls="dropdown-branch-search">
-                        <span>Branch: <strong>{{ ref }}</strong></span>
+                        <span>{{ refsTabsTag }}: <strong>{{ ref }}</strong></span>
                         <span class="icon is-small">
                             <i class="fas fa-angle-down" aria-hidden="true"></i>
                         </span>
@@ -26,7 +26,7 @@
                     <div class="dropdown-content branch-dropdown-content">
                         <div class="dropdown-item">
                             <div class="control has-icons-right">
-                                <input class="input is-small" type="text" placeholder="">
+                                <input class="input is-small" type="text" placeholder="" v-model="refsTabsKW">
                                 <span class="icon is-small is-right">
                                     <i class="fas fa-search"></i>
                                 </span>
@@ -37,12 +37,15 @@
                             <div class="is-boxed">
                                 <div class="branch-tabs tabs is-small">
                                     <ul>
-                                        <li class="is-active"><a>Branch</a></li>
-                                        <li><a>Tags</a></li>
+                                        <li v-bind:class="{'is-active' : refsTabs == 'branch'}"><a v-on:click="refsTabs = 'branch'">Branch</a></li>
+                                        <li v-bind:class="{'is-active' : refsTabs == 'tags'}"><a v-on:click="refsTabs = 'tags'">Tags</a></li>
                                     </ul>
                                 </div>
-                                <ul class="menu-list branch-list">
+                                <ul class="menu-list branch-list" v-if="refsTabs == 'branch'">
                                     <li v-for="item in branches"><a v-on:click="checkout(item.name)">{{ item.name }}</a></li>
+                                </ul>
+                                <ul class="menu-list branch-list" v-else>
+                                    <li v-for="item in tags"><a v-on:click="checkout(item.name)">{{ item.name }}</a></li>
                                 </ul>
                             </div>
                         </div>
@@ -51,7 +54,7 @@
                 <div class="control"></div>
             </div>
         </div>
-        <div class="column is-half">
+        <div class="column is-two-thirds">
             <div class="field has-addons">
                 <p class="control">
                     <span class="select is-small">
@@ -98,7 +101,10 @@
                         </ul>
                     </nav>
                 </div>
-                <div class="panel-block repository-tree-block">
+                <div class="pgit-code-contianer" v-if="currentNodeType === 'blob'">
+                    <HighlightBlock v-bind:code="blobContent" v-bind:message="message" v-bind:name="currentNodeName" v-if="blobContent !== ''"></HighlightBlock>
+                </div>
+                <div class="panel-block repository-tree-block" v-else>
                     <table class="table is-striped is-narrow is-hoverable is-fullwidth">
                         <tbody>
                             <tr v-if="paths.length > 0">

@@ -260,8 +260,16 @@ func (handler RepoHandler) Tree(w http.ResponseWriter, r *http.Request) {
 }
 
 func (handler RepoHandler) Archive(w http.ResponseWriter, r *http.Request) {
-	repoName := chi.URLParam(r, "repoName")
-	ref := chi.URLParam(r, "ref")
+	repoName, err := url.QueryUnescape(chi.URLParam(r, "repoName"))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	ref, err := url.QueryUnescape(chi.URLParam(r, "ref"))
+	if err != nil {
+		ref = "master"
+	}
 	repo, exist := handler.Repositories[repoName]
 	if !exist {
 		w.WriteHeader(http.StatusBadRequest)
@@ -276,7 +284,7 @@ func (handler RepoHandler) Archive(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Add("Content-type", "application/octet-stream")
-	w.Header().Add("Content-Disposition", fmt.Sprintf("attachment; filename=%s.zip", repoName))
+	w.Header().Add("Content-Disposition", fmt.Sprintf("attachment; filename=%s-%s.zip", repoName, ref))
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, body)
 }

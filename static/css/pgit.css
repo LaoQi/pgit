@@ -57,3 +57,27 @@ html {
 .pgit-markdown-contianer ul {
     list-style: disc outside none;
 }
+
+.pgit-code-contianer {
+    padding: 0.2rem;
+    background-color: #fff;
+    border: 1px solid #d1d5da;
+    border-radius: 3px;
+    border-top: inherit;
+    overflow-x: scroll;
+    width: 100%;
+}
+
+.hljs ol {
+    list-style: decimal;
+    margin: 0px 0px 0 40px !important;
+    padding: 0px;
+}
+
+.hljs ol li {
+    list-style: decimal-leading-zero;
+    border-left: 1px solid #ddd !important;
+    padding: 5px!important;
+    margin: 0 !important;
+    white-space: pre;
+}

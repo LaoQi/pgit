@@ -100,10 +100,10 @@ func (repo Repository) Tree(tree_ish string, subtree string) ([]TreeNode, error)
 	return tree, nil
 }
 
-func (repo Repository) Blob(tree_ish string, path string) (io.ReadCloser, error) {
+func (repo Repository) Blob(ref string, path string) (io.ReadCloser, error) {
 	repopath := RepositoryDir(repo.Name)
 	cmd := exec.Command(
-		"git", "cat-file", "blob", fmt.Sprintf("%s:%s", tree_ish, path))
+		"git", "cat-file", "blob", fmt.Sprintf("%s:%s", ref, path))
 	cmd.Dir = repopath
 	output, err := cmd.StdoutPipe()
 	if err != nil {
@@ -113,12 +113,12 @@ func (repo Repository) Blob(tree_ish string, path string) (io.ReadCloser, error)
 	return output, nil
 }
 
-func (repo Repository) Archive(tree_ish string) (io.ReadCloser, error) {
+func (repo Repository) Archive(ref string) (io.ReadCloser, error) {
 	repopath := RepositoryDir(repo.Name)
 	cmd := exec.Command(
 		"git", "archive", "--format=zip",
 		fmt.Sprintf("--prefix=%s/", repo.Name),
-		tree_ish)
+		ref)
 	cmd.Dir = repopath
 	output, err := cmd.StdoutPipe()
 	if err != nil {

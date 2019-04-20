@@ -8,6 +8,7 @@ personal git server
 * embed ssh √
 * webUI √
 * dashboard
+* highlight style switch
 * search
 * mirror hook webhook
 

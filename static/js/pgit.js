@@ -14,7 +14,8 @@ requirejs.config({
         api: "/js/api",
         component: "/js/component",
         marked: "/js/marked.v0.6.2.min",
-        clipboard: "/js/clipboard.2.0.0.min"
+        clipboard: "/js/clipboard.2.0.0.min",
+        hljs: "/highlight/highlight.pack"
     },
     waitSeconds: 0
 });
@@ -23,6 +24,7 @@ require(["vue", "router", "lang", "component"], function(Vue, VueRouter, lang, c
     
     Vue.use(VueRouter)
     Vue.component("Navbar", component.navbar)
+    Vue.component("HighlightBlock", component.highlightBlock)
 
     const router = new VueRouter({
         routes: [

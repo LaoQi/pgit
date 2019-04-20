@@ -21,6 +21,32 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                 })
             })
         },
+        highlightBlock: function(resolve, reject) {
+            require(["hljs"], function (hljs) {
+                resolve({
+                    template: '<pre class="hljs"><code v-html="content"></code></pre>',
+                    props: ["message", "code", "name"],
+                    data(){
+                        return {
+                            content: ""
+                        }
+                    },
+                    mounted() {
+                        // onmouted, code is ready
+                        this.content = "<ol><li>" + this.parse().replace(/\n/g,"\n</li><li>") +"\n</li></ol>"
+                    },
+                    methods: {
+                        parse(){
+                            return hljs.highlightAuto(this.code, this.languageSubset()).value
+                        },
+                        languageSubset() {
+                            console.log(this.name)
+                            return ['go']
+                        }
+                    }
+                })
+            })
+        },
         dashboard: function (resolve, reject) {
             require(["text!/component/dashboard.html"], function (template) {
                 resolve({
@@ -96,12 +122,17 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                             },
                             refs: [],
                             empty: false,
-                            download: "",
                             tree: [],
                             ref: "master",
                             paths: [],
                             readme: "",
                             cloneType: "http",
+                            refsTabs: "branch",
+                            refsTabsTag: "Branch",
+                            refsTabsKW: "",
+                            currentNodeType: "tree",
+                            currentNodeName: "",
+                            blobContent: ""
                         }
                     },
                     computed: {
@@ -110,6 +141,9 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                                 return this.paths.join("/") + "/"
                             }
                             return ""
+                        },
+                        download() {
+                            return "/repo/" + encodeURIComponent(this.name) + "/archive/" + encodeURIComponent(this.ref)
                         },
                         address() {
                             return this.cloneType == "ssh" ? 
@@ -124,7 +158,14 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                             return "git remote add origin " + this.address + "\ngit push -u origin master"
                         },
                         branches() {
-                            return this.refs.filter(item => item.type === "commit")
+                            return this.refs.filter(item => {
+                                return item.type === "commit" && (this.refsTabsKW == "" || item.name.indexOf(this.refsTabsKW) >= 0)
+                            })
+                        },
+                        tags() {
+                            return this.refs.filter(item => {
+                                return item.type === "tag" && (this.refsTabsKW == "" || item.name.indexOf(this.refsTabsKW) >= 0)
+                            })
                         }
                     },
                     activated() {
@@ -133,11 +174,17 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                             console.info('Trigger:', e.trigger);  
                             e.clearSelection();
                         });
-                        this.download = "/repo/" + this.name + "/archive/" + this.ref
-                        this.paths = []
-                        this.metadata = { name: "", description: "" }
-                        this.tree = []
-                        this.readme = ""
+                        this.ref = "master",
+                        this.paths = [],
+                        this.metadata = { name: "", description: "" },
+                        this.tree = [],
+                        this.readme = "",
+                        this.refsTabs = "branch",
+                        this.refsTabsTag = "Branch",
+                        this.refsTabsKW = "",
+                        this.currentNodeType = "tree",
+                        this.currentNodeName = "",
+                        this.blobContent = ""
                         Api.repository(this.name).then( 
                             data => {
                                 this.metadata = data.metadata
@@ -147,9 +194,18 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                     },
                     methods: {
                         next(node) {
+                            this.currentNodeType = node.type,
+                            this.currentNodeName = node.name
                             if (node.type === "tree") {
                                 this.paths.push(node.name)
                                 this.updateTree()
+                            } else if (node.type === "blob") {
+                                this.readme = ""
+                                this.blobContent = ""
+                                Api.blob(this.name, this.ref, this.subpath + node.name).then(
+                                    data => this.blobContent = data
+                                )
+                                this.paths.push(node.name)
                             }
                         },
                         prev(name) {
@@ -159,10 +215,14 @@ define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
                                 var index = this.paths.indexOf(name)
                                 this.paths = this.paths.slice(0,  index + 1)
                             }
+                            this.currentNodeType = "tree"
                             this.updateTree()
                         },
                         checkout(name) {
                             this.ref = name;
+                            this.paths = [];
+                            this.refsTabsTag = this.refsTabs === "branch" ? "Branch" : "Tag";
+                            this.currentNodeType = "tree"
                             this.updateTree();
                         },
                         updateTree() {
