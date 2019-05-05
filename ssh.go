@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
@@ -9,7 +8,6 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -24,53 +22,53 @@ var allowedCommands = map[string]bool{
 }
 
 type SSHServer struct {
-	HostKey *rsa.PrivateKey
+	HostKey     *rsa.PrivateKey
+	PublicKey   *rsa.PublicKey
+	SrvListener net.Listener
+	Stop        chan bool
 }
 
-func (s *SSHServer) GenerateKey() (*rsa.PrivateKey, error) {
-	reader := rand.Reader
-	bitSize := 2048
-
-	key, err := rsa.GenerateKey(reader, bitSize)
-
+func NewSSHServer() (*SSHServer, error) {
+	ssh := &SSHServer{
+		Stop: make(chan bool),
+	}
+	err := ssh.LoadPrivateKey(Settings.SSHHostKey)
 	if err != nil {
+		log.Printf("Failed to start SSH server: %v", err)
 		return nil, err
 	}
-	return key, err
-}
 
-func (s *SSHServer) SaveKey(path string, key *rsa.PrivateKey, isPrivate bool) error {
-
-	outFile, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer outFile.Close()
-
-	skey := &pem.Block{}
-
-	if isPrivate {
-		skey.Type = "PRIVATE KEY"
-		skey.Bytes = x509.MarshalPKCS1PrivateKey(key)
-	} else {
-		skey.Type = "PUBLIC KEY"
-		skey.Bytes = x509.MarshalPKCS1PublicKey(&key.PublicKey)
-	}
-
-	err = pem.Encode(outFile, skey)
-	return err
+	return ssh, nil
 }
 
 func (s *SSHServer) LoadPrivateKey(path string) error {
-	// var err error
-	// s.HostKey, err = s.GenerateKey()
+	var err error
+	if FileExist(path) {
+		pkey, err := ioutil.ReadFile(path)
+		if err != nil {
+			return err
+		}
+
+		skey, _ := pem.Decode(pkey)
+		s.HostKey, err = x509.ParsePKCS1PrivateKey(skey.Bytes)
+		return err
+	} else {
+		s.HostKey, err = GenerateKey()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *SSHServer) LoadPublicKey(path string) error {
 	pkey, err := ioutil.ReadFile(path)
 	if err != nil {
 		return err
 	}
 
 	skey, _ := pem.Decode(pkey)
-	s.HostKey, err = x509.ParsePKCS1PrivateKey(skey.Bytes)
+	s.PublicKey, err = x509.ParsePKCS1PublicKey(skey.Bytes)
 	return err
 }
 
@@ -173,12 +171,12 @@ func (s *SSHServer) ListenAndServe(addr string) error {
 	}
 	config.AddHostKey(hostKey)
 
-	listener, err := net.Listen("tcp", addr)
+	s.SrvListener, err = net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 	for {
-		conn, err := listener.Accept()
+		conn, err := s.SrvListener.Accept()
 		if err != nil {
 			log.Printf("SSH: Error accepting incoming connection: %v", err)
 			continue
@@ -201,4 +199,11 @@ func (s *SSHServer) ListenAndServe(addr string) error {
 			go handleChannels(chans)
 		}()
 	}
+}
+
+func (s *SSHServer) Shutdown() error {
+	log.Printf("Shutdown SSH Server...")
+	// @TODO
+	s.Stop <- true
+	return nil
 }

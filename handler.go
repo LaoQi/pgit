@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -25,7 +24,7 @@ type DashboardResult struct {
 
 type RepoHandler struct {
 	Credentials  map[string]string
-	Repositories map[string]*Repository
+	ReposManager *RepositoriesManager
 }
 
 func NewRepoHandler() *RepoHandler {
@@ -33,35 +32,10 @@ func NewRepoHandler() *RepoHandler {
 		Credentials: map[string]string{
 			"test": "123456",
 		},
-		Repositories: map[string]*Repository{},
+		ReposManager: ReposManager,
 	}
-
-	r.CheckRepositories()
 
 	return r
-}
-
-func (handler RepoHandler) CheckRepositories() {
-	root := Settings.GitRoot
-	files, err := ioutil.ReadDir(root)
-	if err != nil {
-		panic(err)
-	}
-	for _, file := range files {
-		if file.IsDir() {
-			repo, err := CheckRepository(file.Name())
-			if err == nil {
-				handler.AddRepository(repo)
-			} else {
-				log.Print(err.Error())
-			}
-		}
-	}
-}
-
-func (handler RepoHandler) AddRepository(repo *Repository) {
-	handler.Repositories[repo.Name] = repo
-	log.Printf("Add Repository %s", repo.Name)
 }
 
 func (handler RepoHandler) InfoRefs(w http.ResponseWriter, r *http.Request) {
@@ -129,17 +103,17 @@ func (handler RepoHandler) Command(w http.ResponseWriter, r *http.Request) {
 func (handler RepoHandler) Create(w http.ResponseWriter, r *http.Request) {
 	repoName := chi.URLParam(r, "repoName")
 	description := r.FormValue("description")
-	if _, exist := handler.Repositories[repoName]; exist {
+	if handler.ReposManager.RepositoryExist(repoName) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = fmt.Fprintf(w, "%s existed!", repoName)
 	}
+
 	repo := &Repository{
 		Name:        repoName,
 		Description: description,
 	}
-	err := repo.InitBare()
+	err := handler.ReposManager.CreateRepository(repo)
 	if err == nil {
-		handler.AddRepository(repo)
 		w.WriteHeader(http.StatusOK)
 	} else {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -150,8 +124,7 @@ func (handler RepoHandler) Create(w http.ResponseWriter, r *http.Request) {
 func (handler RepoHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	confirm := r.FormValue("confirm")
 	repoName := chi.URLParam(r, "repoName")
-	repo, exist := handler.Repositories[repoName]
-	if !exist {
+	if !handler.ReposManager.RepositoryExist(repoName) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = fmt.Fprintf(w, "%s not existed!", repoName)
 		return
@@ -163,20 +136,20 @@ func (handler RepoHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := repo.Delete()
+	err := handler.ReposManager.DeleteRepository(repoName)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = fmt.Fprintf(w, err.Error())
+		_, _ = w.Write([]byte(err.Error()))
 		return
 	}
-	delete(handler.Repositories, repoName)
+
 	w.WriteHeader(http.StatusOK)
 }
 
 func (handler RepoHandler) Explorer(w http.ResponseWriter, r *http.Request) {
 
 	repositories := make([]*Repository, 0)
-	for _, repo := range handler.Repositories {
+	for _, repo := range handler.ReposManager.Repositories {
 		repositories = append(repositories, repo)
 	}
 
@@ -198,8 +171,8 @@ func (handler RepoHandler) Explorer(w http.ResponseWriter, r *http.Request) {
 func (handler RepoHandler) Detail(w http.ResponseWriter, r *http.Request) {
 
 	repoName := chi.URLParam(r, "repoName")
-	repo, exist := handler.Repositories[repoName]
-	if !exist {
+	repo, err := handler.ReposManager.GetRepository(repoName)
+	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = fmt.Fprintf(w, "%s not existed!", repoName)
 		return
@@ -240,8 +213,8 @@ func (handler RepoHandler) Tree(w http.ResponseWriter, r *http.Request) {
 		ref = "master"
 	}
 
-	repo, exist := handler.Repositories[repoName]
-	if !exist {
+	repo, err := handler.ReposManager.GetRepository(repoName)
+	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = fmt.Fprintf(w, "%s not existed!", repoName)
 		return
@@ -270,8 +243,8 @@ func (handler RepoHandler) Archive(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		ref = "master"
 	}
-	repo, exist := handler.Repositories[repoName]
-	if !exist {
+	repo, err := handler.ReposManager.GetRepository(repoName)
+	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = fmt.Fprintf(w, "%s not existed!", repoName)
 		return
@@ -295,8 +268,8 @@ func (handler RepoHandler) Blob(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		ref = "master"
 	}
-	repo, exist := handler.Repositories[repoName]
-	if !exist {
+	repo, err := handler.ReposManager.GetRepository(repoName)
+	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = fmt.Fprintf(w, "%s not existed!", repoName)
 		return
