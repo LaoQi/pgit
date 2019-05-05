@@ -31,7 +31,7 @@ func (r *RepositoriesManager) CheckRepositories() {
 			if err == nil {
 				r.AddRepository(repo)
 			} else {
-				log.Print(err.Error())
+				// log.Print(err.Error())
 			}
 		}
 	}

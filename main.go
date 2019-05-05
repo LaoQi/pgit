@@ -11,6 +11,7 @@ import (
 )
 
 const (
+	// Version version
 	Version = "1.0.0"
 )
 
@@ -76,7 +77,12 @@ func main() {
 		os.Exit(4)
 	}
 
-	// for {
+	Settings.SetConfigPath(*config)
+	err = Settings.Reload()
+	if err != nil {
+		fmt.Printf("Config parse error %s", err)
+		os.Exit(8)
+	}
 
 	InitReposManager()
 

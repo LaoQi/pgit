@@ -10,6 +10,8 @@ import (
 )
 
 type Setting struct {
+	path string
+
 	HTTPPort     int
 	HTTPAddress  string
 	EnableSSH    bool
@@ -22,6 +24,10 @@ type Setting struct {
 	HttpAuth     bool
 	SSHAuthType  string
 	Credentials  map[string]string
+}
+
+func (s *Setting) SetConfigPath(path string) {
+	s.path = path
 }
 
 func (s *Setting) GetHttpListenAddr() string {
@@ -40,15 +46,16 @@ func (s *Setting) Output() string {
 	return string(out)
 }
 
-func (s *Setting) Reload() {
-	data, err := ioutil.ReadFile("")
+func (s *Setting) Reload() error {
+	data, err := ioutil.ReadFile(s.path)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	err = json.Unmarshal(data, &s)
 	if err != nil {
-		panic(err)
+		return err
 	}
+	return nil
 }
 
 var Settings *Setting

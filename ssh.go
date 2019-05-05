@@ -53,7 +53,14 @@ func (s *SSHServer) LoadPrivateKey(path string) error {
 		s.HostKey, err = x509.ParsePKCS1PrivateKey(skey.Bytes)
 		return err
 	} else {
+		log.Printf("HostKey not found, generate host key")
 		s.HostKey, err = GenerateKey()
+		if err != nil {
+			return err
+		}
+		// save host key
+		pkey := KeyEncode(s.HostKey, true)
+		err = ioutil.WriteFile(path, pkey, 0666)
 		if err != nil {
 			return err
 		}
