@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 )
 
 type Settings struct {
@@ -28,7 +27,6 @@ func (s Settings) getSSHListenAddr() string {
 }
 
 var instance *Settings
-var mut sync.Mutex
 
 func InitSettings() {
 	workDir, _ := os.Getwd()
@@ -59,9 +57,6 @@ gx1pqzxPCb/AgJgN5GQt0yqIE7BkNfQVuQIDAQAB
 }
 
 func GetSettings() *Settings {
-	mut.Lock()
-	defer mut.Unlock()
-
 	if instance == nil {
 		panic(fmt.Errorf("Settings not init!"))
 	}

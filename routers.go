@@ -31,6 +31,9 @@ func NewRouters() chi.Router {
 
 	handler := NewRepoHandler()
 
+	// r.Get("/_pgit")
+	// r.Post("/_pgit")
+
 	r.Get("/repo", handler.Explorer)
 	r.Get("/repo/{repoName}", handler.Detail)
 	r.Post("/repo/{repoName}", handler.Create)

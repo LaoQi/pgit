@@ -70,14 +70,15 @@ html {
 
 .hljs ol {
     list-style: decimal;
-    margin: 0px 0px 0 40px !important;
+    margin: 0 0 0 2rem !important;
     padding: 0px;
 }
 
 .hljs ol li {
     list-style: decimal-leading-zero;
     border-left: 1px solid #ddd !important;
-    padding: 5px!important;
+    /* padding: 0.2rem!important; */
     margin: 0 !important;
     white-space: pre;
+    text-indent: 0.5rem;
 }
