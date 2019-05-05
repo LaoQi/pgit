@@ -103,7 +103,7 @@ func handleChannels(chans <-chan ssh.NewChannel) {
 					payload := strings.SplitN(string(req.Payload[4:]), " ", 2)
 					// cmdName := payload
 					log.Printf("SSH: Payload: %v", payload)
-					path := filepath.Join(GetSettings().GitRoot, strings.Trim(payload[1], "':"))
+					path := filepath.Join(Settings.GitRoot, strings.Trim(payload[1], "':"))
 
 					log.Printf("SSH: Payload path: %v", path)
 					cmd := exec.Command(payload[0], path)
@@ -149,7 +149,7 @@ func handleChannels(chans <-chan ssh.NewChannel) {
 	}
 }
 
-func (s *SSHServer) ListenAndServe() error {
+func (s *SSHServer) ListenAndServe(addr string) error {
 	config := &ssh.ServerConfig{
 		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 			// @todo auth force-command
@@ -173,7 +173,7 @@ func (s *SSHServer) ListenAndServe() error {
 	}
 	config.AddHostKey(hostKey)
 
-	listener, err := net.Listen("tcp", GetSettings().getSSHListenAddr())
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}

@@ -42,7 +42,7 @@ func NewRepoHandler() *RepoHandler {
 }
 
 func (handler RepoHandler) CheckRepositories() {
-	root := GetSettings().GitRoot
+	root := Settings.GitRoot
 	files, err := ioutil.ReadDir(root)
 	if err != nil {
 		panic(err)

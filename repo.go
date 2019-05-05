@@ -167,7 +167,7 @@ func CheckRepository(repoDir string) (*Repository, error) {
 	if !IsRepositoryDir(repoDir) {
 		return nil, fmt.Errorf("%s Not Repository directory", repoDir)
 	}
-	raw, err := ioutil.ReadFile(filepath.Join(GetSettings().GitRoot, repoDir, "description"))
+	raw, err := ioutil.ReadFile(filepath.Join(Settings.GitRoot, repoDir, "description"))
 	if err != nil {
 		return nil, err
 	}
@@ -183,14 +183,14 @@ func CheckRepository(repoDir string) (*Repository, error) {
 }
 
 func RepositoryDir(name string) string {
-	return filepath.Join(GetSettings().GitRoot, fmt.Sprintf("%s.git", name))
+	return filepath.Join(Settings.GitRoot, fmt.Sprintf("%s.git", name))
 }
 
 func IsRepositoryDir(name string) bool {
 	if !strings.HasSuffix(name, ".git") {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(GetSettings().GitRoot, name, "description"))
+	_, err := os.Stat(filepath.Join(Settings.GitRoot, name, "description"))
 	if os.IsNotExist(err) {
 		return false
 	}
