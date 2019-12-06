@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"sync"
 
 	"github.com/akamensky/argparse"
@@ -13,6 +14,13 @@ import (
 const (
 	// Version version
 	Version = "1.0.0"
+)
+
+const (
+	NoError = iota
+	Failed
+	ConfigError
+	EnvError
 )
 
 var ReloadSignal chan bool
@@ -50,6 +58,16 @@ func serverSSH() *SSHServer {
 	return ssh
 }
 
+func checkEnv() error {
+	// git
+	gitInitCmd := exec.Command("git", "--version")
+	_, err := gitInitCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git command not found, install git")
+	}
+	return nil
+}
+
 func main() {
 	parser := argparse.NewParser("Pgit", "Personal git server")
 	config := parser.String("c", "config", &argparse.Options{Default: "", Help: "config file"})
@@ -59,29 +77,35 @@ func main() {
 	err := parser.Parse(os.Args)
 	if err != nil {
 		fmt.Print(parser.Usage(err))
-		os.Exit(1)
+		os.Exit(Failed)
 	}
 
 	if *version {
-		fmt.Printf("Pgit version %s", Version)
-		os.Exit(0)
+		fmt.Printf("Pgit version %s\n", Version)
+		os.Exit(NoError)
 	}
 
 	if *output {
-		fmt.Print(Settings.Output())
-		os.Exit(0)
+		fmt.Println(Settings.Output())
+		os.Exit(NoError)
 	}
 
 	if *config == "" {
-		fmt.Print("Need config file, Run `pgit -h` for help")
-		os.Exit(4)
+		fmt.Println("Need config file, Run `pgit -h` for help")
+		os.Exit(ConfigError)
+	}
+
+	err = checkEnv()
+	if err != nil {
+		fmt.Println(err.Error())
+		os.Exit(EnvError)
 	}
 
 	Settings.SetConfigPath(*config)
 	err = Settings.Reload()
 	if err != nil {
-		fmt.Printf("Config parse error %s", err)
-		os.Exit(8)
+		fmt.Printf("Config parse error %s\n", err)
+		os.Exit(ConfigError)
 	}
 
 	InitReposManager()

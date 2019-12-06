@@ -27,6 +27,7 @@ require(["vue", "router", "lang", "component"], function(Vue, VueRouter, lang, c
     Vue.component("HighlightBlock", component.highlightBlock)
 
     const router = new VueRouter({
+        mode: "history",
         routes: [
             { path: '/dashboard', component: component.dashboard },
             { path: '/settings', component: component.settings },

@@ -67,7 +67,7 @@ func init() {
 	hostKey := filepath.Join(workDir, "repo", "hostkey")
 	Settings = &Setting{
 		GitRoot:      gitRoot,
-		HTTPPort:     3000,
+		HTTPPort:     3011,
 		HTTPAddress:  "0.0.0.0",
 		EnableSSH:    true,
 		SSHPort:      3022,
@@ -78,7 +78,7 @@ func init() {
 		HttpAuth:     false,
 		SSHAuthType:  "password",
 		Credentials: map[string]string{
-			"test": "123456",
+			"user": "password",
 		},
 	}
 

@@ -14,7 +14,7 @@ import (
 type Repository struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	UpdateAt    uint64 `json:updateAt`
+	UpdateAt    uint64 `json:"updateAt"`
 }
 
 type Ref struct {

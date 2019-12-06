@@ -15,9 +15,9 @@
             <div class="dropdown is-hoverable">
                 <!-- <div class="dropdown is-active"> -->
                 <div class="dropdown-trigger">
-                    <button class="button is-small" aria-haspopup="true" aria-controls="dropdown-branch-search">
+                    <button class="button" aria-haspopup="true" aria-controls="dropdown-branch-search">
                         <span>{{ refsTabsTag }}: <strong>{{ ref }}</strong></span>
-                        <span class="icon is-small">
+                        <span class="icon">
                             <i class="fas fa-angle-down" aria-hidden="true"></i>
                         </span>
                     </button>
@@ -37,27 +37,30 @@
                             <div class="is-boxed">
                                 <div class="branch-tabs tabs is-small">
                                     <ul>
-                                        <li v-bind:class="{'is-active' : refsTabs == 'branch'}"><a v-on:click="refsTabs = 'branch'">Branch</a></li>
-                                        <li v-bind:class="{'is-active' : refsTabs == 'tags'}"><a v-on:click="refsTabs = 'tags'">Tags</a></li>
+                                        <li v-bind:class="{'is-active' : refsTabs == 'branch'}"><a
+                                                v-on:click="refsTabs = 'branch'">Branch</a></li>
+                                        <li v-bind:class="{'is-active' : refsTabs == 'tags'}"><a
+                                                v-on:click="refsTabs = 'tags'">Tags</a></li>
                                     </ul>
                                 </div>
                                 <ul class="menu-list branch-list" v-if="refsTabs == 'branch'">
-                                    <li v-for="item in branches"><a v-on:click="checkout(item.name)">{{ item.name }}</a></li>
+                                    <li v-for="item in branches"><a v-on:click="checkout(item.name)">{{ item.name }}</a>
+                                    </li>
                                 </ul>
                                 <ul class="menu-list branch-list" v-else>
-                                    <li v-for="item in tags"><a v-on:click="checkout(item.name)">{{ item.name }}</a></li>
+                                    <li v-for="item in tags"><a v-on:click="checkout(item.name)">{{ item.name }}</a>
+                                    </li>
                                 </ul>
                             </div>
                         </div>
                     </div>
                 </div>
-                <div class="control"></div>
             </div>
         </div>
         <div class="column is-two-thirds">
             <div class="field has-addons">
                 <p class="control">
-                    <span class="select is-small">
+                    <span class="select">
                         <select v-model="cloneType">
                             <option value="http">HTTP</option>
                             <option value="ssh">SSH</option>
@@ -65,11 +68,11 @@
                     </span>
                 </p>
                 <p class="control is-expanded">
-                    <input id="clipboardInput" onclick="this.select()" class="input is-small" type="text"
-                        v-model="address" readonly>
+                    <input id="clipboardInput" onclick="this.select()" class="input" type="text" v-model="address"
+                        readonly>
                 </p>
                 <p class="control">
-                    <button class="button is-small clipboard-button" data-clipboard-target="#clipboardInput">
+                    <button class="button clipboard-button" data-clipboard-target="#clipboardInput">
                         <i class="fas fa-paste" alt="Copy to clipboard"></i>
                     </button>
                 </p>
@@ -83,8 +86,8 @@
                 <p class="control">
                     <span class="button is-small">upload</span>
                 </p> -->
-                <p class="control">
-                    <a v-bind:href="download" class="button is-success is-small">Download ZIP</a>
+                <p class="control is-expanded">
+                    <a v-bind:href="download" class="button is-success is-fullwidth">Download ZIP</a>
                 </p>
             </div>
         </div>
@@ -102,7 +105,8 @@
                     </nav>
                 </div>
                 <div class="pgit-code-contianer" v-if="currentNodeType === 'blob'">
-                    <HighlightBlock v-bind:code="blobContent" v-bind:message="message" v-bind:name="currentNodeName" v-if="blobContent !== ''"></HighlightBlock>
+                    <HighlightBlock v-bind:code="blobContent" v-bind:message="message" v-bind:name="currentNodeName"
+                        v-if="blobContent !== ''"></HighlightBlock>
                 </div>
                 <div class="panel-block repository-tree-block" v-else>
                     <table class="table is-striped is-narrow is-hoverable is-fullwidth">
@@ -166,8 +170,7 @@
                                     v-model="address" readonly>
                             </p>
                             <p class="control">
-                                <button class="button clipboard-button"
-                                    data-clipboard-target="#guideClipboardInput">
+                                <button class="button clipboard-button" data-clipboard-target="#guideClipboardInput">
                                     <i class="fas fa-paste" alt="Copy to clipboard"></i>
                                 </button>
                             </p>
