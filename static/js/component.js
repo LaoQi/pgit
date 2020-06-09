@@ -1,26 +1,6 @@
 define(["vue", "router", "api"], function (Vue, VueRouter, Api) {
     return {
-        navbar: function (resolve, reject) {
-            require(["text!/component/navbar.html"], function (template) {
-                resolve({
-                    template: template,
-                    props: ["message"],
-                    data(){
-                        return {
-                            menuActive: false,
-                        }
-                    },
-                    methods: {
-                        toggleMenu() {
-                            this.menuActive = !this.menuActive
-                        },
-                        closeMenu() {
-                            this.menuActive = false
-                        }
-                    }
-                })
-            })
-        },
+
         highlightBlock: function(resolve, reject) {
             require(["hljs"], function (hljs) {
                 resolve({

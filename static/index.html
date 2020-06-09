@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh">
 
 <head>
     <meta charset="utf-8">
@@ -9,28 +9,12 @@
     <link rel="stylesheet" href="/css/pgit.css" />
     <link rel="stylesheet" href="/css/github-markdown.3.0.2.min.css" />
     <link rel="stylesheet" href="/highlight/styles/monokai.css" />
-    <script defer async="true" data-main="/js/pgit.js" src="/js/require.v2.3.6.min.js"></script>
-    <script defer async="true" src="/js/fontawesome.v5.3.1.min.js"></script>
+    <script defer src="/js/fontawesome.v5.3.1.min.js"></script>
 </head>
 
 <body>
-    <section class="section" id="app">
-        <Navbar v-bind:message="message"></Navbar>
-        <br>
-        <keep-alive>
-            <router-view v-bind:message="message"></router-view>
-        </keep-alive>
-        <!-- <footer class="footer">
-            <div class="content has-text-centered">
-                <p>
-                    <strong>Bulma</strong> by <a href="https://jgthms.com">Jeremy Thomas</a>. The source code is
-                    licensed
-                    <a href="http://opensource.org/licenses/mit-license.php">MIT</a>. The website content
-                    is licensed <a href="http://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY NC SA 4.0</a>.
-                </p>
-            </div> 
-        </footer>-->
-    </section>
+    <section class="section" id="app"></section>
 </body>
 
+<script type="module" src="js/pgit.js"></script>
 </html>

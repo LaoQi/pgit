@@ -4,6 +4,7 @@ personal git server
 
 ## roadmap
 
+* plugin system
 * http api √
 * embed ssh √
 * webUI √
@@ -11,6 +12,7 @@ personal git server
 * highlight style switch
 * search
 * mirror hook webhook
+
 
 ## Building
 

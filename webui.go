@@ -1,6 +1,7 @@
 package main
 
 import (
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,7 +12,13 @@ import (
 type WebUI struct {
 }
 
+func StaticFileMime() {
+	_ = mime.AddExtensionType(".js", "application/javascript")
+	_ = mime.AddExtensionType(".css", "text/css")
+}
+
 func (v WebUI) GetRouters() chi.Router {
+	StaticFileMime()
 	r := chi.NewRouter()
 	// r.Use() // some middleware..
 

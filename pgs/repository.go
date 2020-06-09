@@ -1,4 +1,4 @@
-package main
+package pgs
 
 import (
 	"fmt"
@@ -11,10 +11,16 @@ import (
 	"strings"
 )
 
+var GitRoot string
+
 type Repository struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	UpdateAt    uint64 `json:updateAt`
+	UpdateAt    uint64 `json:"updateAt"`
+}
+
+func (repo *Repository) Path() string  {
+	return filepath.Join(GitRoot, fmt.Sprintf("%s.git", repo.Name))
 }
 
 type Ref struct {
@@ -32,24 +38,86 @@ type TreeNode struct {
 	Name string `json:"name"`
 }
 
-func (repo Repository) InitBare() error {
-	repopath := RepositoryDir(repo.Name)
-	gitInitCmd := exec.Command("git", "init", "--bare", repopath)
-	_, err := gitInitCmd.CombinedOutput()
+type RepoConfigSection struct {
+	Items map[string]string
+}
+
+type RepoConfig struct {
+	Sections map[string]RepoConfigSection
+}
+
+func (rc *RepoConfig) toString() string {
+	var lines []string
+	for title, section := range rc.Sections {
+		lines = append(lines, fmt.Sprintf("[%s]", title))
+		for k, v := range section.Items {
+			lines = append(lines, fmt.Sprintf("\t%s = %s", k, v))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func NewBareRepoConfig() *RepoConfig {
+	return &RepoConfig{
+		Sections: map[string]RepoConfigSection{
+			"core": {Items: map[string]string{
+				"repositoryformatversion": "0",
+				"filemode": "true",
+				"bare": "true",
+			}},
+		},
+	}
+}
+
+// Build empty repository struct like
+// project
+//	├── branches
+//	├── config
+//	├── description
+//	├── HEAD
+//	├── hooks
+//	├── info
+//	│   └── exclude
+//	├── objects
+//	│   ├── info
+//	│   └── pack
+//	└── refs
+//	   ├── heads
+//	   └── tags
+//InitBare
+func InitBare(name string, description string) (*Repository, error) {
+	repo := &Repository{
+		Name:        name,
+		Description: description,
+		UpdateAt:    0,
+	}
+	desc := fmt.Sprintf("%s;%s", name, description)
+	root := repo.Path()
+	config := NewBareRepoConfig().toString()
+
+	err := os.Mkdir(root, os.ModePerm)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	desc := fmt.Sprintf("%s;%s", repo.Name, repo.Description)
-	err = ioutil.WriteFile(
-		filepath.Join(repopath, "description"), []byte(desc), os.ModePerm)
+	for _, name := range []string{
+		"branches", "hooks", "info", "objects/info", "objects/pack", "refs/heads", "refs/tags",} {
+		paths := append([]string{root}, strings.Split(name, "/")...)
+		err := os.MkdirAll(filepath.Join(paths...), os.ModePerm)
+		if err != nil {
+			return nil, err
+		}
+	}
 
-	return err
+	_ = ioutil.WriteFile(filepath.Join(root, "description"), []byte(desc), os.ModePerm)
+	_ = ioutil.WriteFile(filepath.Join(root, "config"), []byte(config), os.ModePerm)
+	_ = ioutil.WriteFile(filepath.Join(root, "HEAD"), []byte("ref: refs/heads/master\n"), os.ModePerm)
+	_ = ioutil.WriteFile(filepath.Join(root, "info", "exclude"), []byte("# Auto generated\n# Lines that start with '#' are comments.\n"), os.ModePerm)
+	return repo, nil
 }
 
 func (repo Repository) Delete() error {
-	repopath := RepositoryDir(repo.Name)
-	err := os.RemoveAll(repopath)
+	err := os.RemoveAll(repo.Path())
 	return err
 }
 
@@ -58,7 +126,6 @@ func (repo Repository) UpdateRepository() error {
 }
 
 func (repo Repository) Tree(tree_ish string, subtree string) ([]TreeNode, error) {
-	repopath := RepositoryDir(repo.Name)
 	tree := make([]TreeNode, 0)
 	var cmd *exec.Cmd
 	if len(subtree) > 0 {
@@ -67,7 +134,7 @@ func (repo Repository) Tree(tree_ish string, subtree string) ([]TreeNode, error)
 		cmd = exec.Command("git", "ls-tree", tree_ish)
 	}
 
-	cmd.Dir = repopath
+	cmd.Dir = repo.Path()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, err
@@ -101,38 +168,35 @@ func (repo Repository) Tree(tree_ish string, subtree string) ([]TreeNode, error)
 }
 
 func (repo Repository) Blob(ref string, path string) (io.ReadCloser, error) {
-	repopath := RepositoryDir(repo.Name)
 	cmd := exec.Command(
 		"git", "cat-file", "blob", fmt.Sprintf("%s:%s", ref, path))
-	cmd.Dir = repopath
+	cmd.Dir = repo.Path()
 	output, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
 	}
-	cmd.Start()
+	_ = cmd.Start()
 	return output, nil
 }
 
 func (repo Repository) Archive(ref string) (io.ReadCloser, error) {
-	repopath := RepositoryDir(repo.Name)
 	cmd := exec.Command(
 		"git", "archive", "--format=zip",
 		fmt.Sprintf("--prefix=%s/", repo.Name),
 		ref)
-	cmd.Dir = repopath
+	cmd.Dir = repo.Path()
 	output, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
 	}
-	cmd.Start()
+	_ = cmd.Start()
 	return output, nil
 }
 
 func (repo Repository) ForEachRef() ([]*Ref, error) {
-	repopath := RepositoryDir(repo.Name)
 	// git for-each-ref --format="%(objecttype) %(refname:short) %(creator) %(contents:subject)"
 	cmd := exec.Command("git", "for-each-ref", "--format=%(objecttype)%07%(refname:short)%07%(creator)%07%(contents:subject)")
-	cmd.Dir = repopath
+	cmd.Dir = repo.Path()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, err
@@ -167,7 +231,7 @@ func CheckRepository(repoDir string) (*Repository, error) {
 	if !IsRepositoryDir(repoDir) {
 		return nil, fmt.Errorf("%s Not Repository directory", repoDir)
 	}
-	raw, err := ioutil.ReadFile(filepath.Join(Settings.GitRoot, repoDir, "description"))
+	raw, err := ioutil.ReadFile(filepath.Join(repoDir, "description"))
 	if err != nil {
 		return nil, err
 	}
@@ -182,15 +246,11 @@ func CheckRepository(repoDir string) (*Repository, error) {
 	return repo, nil
 }
 
-func RepositoryDir(name string) string {
-	return filepath.Join(Settings.GitRoot, fmt.Sprintf("%s.git", name))
-}
-
 func IsRepositoryDir(name string) bool {
 	if !strings.HasSuffix(name, ".git") {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(Settings.GitRoot, name, "description"))
+	_, err := os.Stat(filepath.Join(name, "description"))
 	if os.IsNotExist(err) {
 		return false
 	}

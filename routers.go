@@ -1,11 +1,8 @@
 package main
 
 import (
-	"fmt"
-
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
-	"github.com/go-chi/docgen"
 )
 
 func NewRouters() chi.Router {
@@ -49,10 +46,4 @@ func NewRouters() chi.Router {
 	r.Post("/repo/{repoName}.git/git-{command}", handler.Command)
 
 	return r
-}
-
-func DocGen() {
-
-	doc := docgen.MarkdownRoutesDoc(NewRouters(), docgen.MarkdownOpts{})
-	fmt.Println(doc)
 }

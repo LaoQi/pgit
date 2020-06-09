@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
+	"pgit/pgs"
 
 	"github.com/go-chi/chi"
 )
@@ -24,7 +25,7 @@ type DashboardResult struct {
 
 type RepoHandler struct {
 	Credentials  map[string]string
-	ReposManager *RepositoriesManager
+	ReposManager *pgs.RepositoriesManager
 }
 
 func NewRepoHandler() *RepoHandler {
@@ -32,7 +33,7 @@ func NewRepoHandler() *RepoHandler {
 		Credentials: map[string]string{
 			"test": "123456",
 		},
-		ReposManager: ReposManager,
+		ReposManager: pgs.ReposManager,
 	}
 
 	return r

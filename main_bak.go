@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"pgit/pgs"
 	"sync"
 
 	"github.com/akamensky/argparse"
@@ -84,7 +85,7 @@ func main() {
 		os.Exit(8)
 	}
 
-	InitReposManager()
+	pgs.InitReposManager()
 
 	serverHTTP()
 	wait.Add(1)

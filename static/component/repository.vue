@@ -1,0 +1,186 @@
+<div class="container">
+    <div class="columns is-centered">
+        <div class="column">
+            <h1 class="title is-3 is-spaced">{{ metadata.name }}</h1>
+            <h2 class="subtitle is-6">{{ metadata.description }}</h2>
+        </div>
+    </div>
+    <!-- <div class="columns is-centered">
+        <div class="column is-two-thirds">
+            <div class="box">hello</div>
+        </div>
+    </div> -->
+    <div class="columns" v-if="!empty">
+        <div class="column">
+            <div class="dropdown is-hoverable">
+                <!-- <div class="dropdown is-active"> -->
+                <div class="dropdown-trigger">
+                    <button class="button is-small" aria-haspopup="true" aria-controls="dropdown-branch-search">
+                        <span>{{ refsTabsTag }}: <strong>{{ ref }}</strong></span>
+                        <span class="icon is-small">
+                            <i class="fas fa-angle-down" aria-hidden="true"></i>
+                        </span>
+                    </button>
+                </div>
+                <div class="dropdown-menu" id="dropdown-branch-search" role="menu">
+                    <div class="dropdown-content branch-dropdown-content">
+                        <div class="dropdown-item">
+                            <div class="control has-icons-right">
+                                <input class="input is-small" type="text" placeholder="" v-model="refsTabsKW">
+                                <span class="icon is-small is-right">
+                                    <i class="fas fa-search"></i>
+                                </span>
+                            </div>
+                        </div>
+                        <hr class="dropdown-divider">
+                        <div class="dropdown-item branch-dropdown-item">
+                            <div class="is-boxed">
+                                <div class="branch-tabs tabs is-small">
+                                    <ul>
+                                        <li v-bind:class="{'is-active' : refsTabs == 'branch'}"><a v-on:click="refsTabs = 'branch'">Branch</a></li>
+                                        <li v-bind:class="{'is-active' : refsTabs == 'tags'}"><a v-on:click="refsTabs = 'tags'">Tags</a></li>
+                                    </ul>
+                                </div>
+                                <ul class="menu-list branch-list" v-if="refsTabs == 'branch'">
+                                    <li v-for="item in branches"><a v-on:click="checkout(item.name)">{{ item.name }}</a></li>
+                                </ul>
+                                <ul class="menu-list branch-list" v-else>
+                                    <li v-for="item in tags"><a v-on:click="checkout(item.name)">{{ item.name }}</a></li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="control"></div>
+            </div>
+        </div>
+        <div class="column is-two-thirds">
+            <div class="field has-addons">
+                <p class="control">
+                    <span class="select is-small">
+                        <select v-model="cloneType">
+                            <option value="http">HTTP</option>
+                            <option value="ssh">SSH</option>
+                        </select>
+                    </span>
+                </p>
+                <p class="control is-expanded">
+                    <input id="clipboardInput" onclick="this.select()" class="input is-small" type="text"
+                        v-model="address" readonly>
+                </p>
+                <p class="control">
+                    <button class="button is-small clipboard-button" data-clipboard-target="#clipboardInput">
+                        <i class="fas fa-paste" alt="Copy to clipboard"></i>
+                    </button>
+                </p>
+            </div>
+        </div>
+        <div class="column">
+            <div class="field has-addons has-addons-right">
+                <!-- <p class="control">
+                    <span class="button is-small">new file</span>
+                </p>
+                <p class="control">
+                    <span class="button is-small">upload</span>
+                </p> -->
+                <p class="control">
+                    <a v-bind:href="download" class="button is-success is-small">Download ZIP</a>
+                </p>
+            </div>
+        </div>
+    </div>
+    <div class="columns" v-if="!empty">
+        <div class="column">
+            <div class="panel">
+                <div class="panel-heading">
+                    <nav class="breadcrumb repository-breadcrumb" aria-label="breadcrumbs">
+                        <ul>
+                            <!-- <li v-if="paths.length == 0">-</li> -->
+                            <li><a v-on:click="prev('')">{{ metadata.name }}</a></li>
+                            <li v-for="item in paths"><a v-on:click="prev(item)">{{ item }}</a></li>
+                        </ul>
+                    </nav>
+                </div>
+                <div class="pgit-code-contianer" v-if="currentNodeType === 'blob'">
+                    <HighlightBlock v-bind:code="blobContent" v-bind:message="message" v-bind:name="currentNodeName" v-if="blobContent !== ''"></HighlightBlock>
+                </div>
+                <div class="panel-block repository-tree-block" v-else>
+                    <table class="table is-striped is-narrow is-hoverable is-fullwidth">
+                        <tbody>
+                            <tr v-if="paths.length > 0">
+                                <th>
+                                    <i class="fas fa-folder"></i>
+                                    <a v-on:click="prev()">&nbsp;...</a>
+                                </th>
+                                <td></td>
+                                <td></td>
+                            </tr>
+                            <tr v-for="item in tree" :key="item.hash">
+                                <th>
+                                    <i v-if="item.type == 'tree'" class="fas fa-folder"></i>
+                                    <i v-else class="far fa-file-alt"></i>
+                                    <a v-on:click="next(item)">&nbsp;{{ item.name }}</a>
+                                </th>
+                                <td></td>
+                                <td></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+    </div>
+    <div class="columns" v-if="!empty && readme">
+        <div class="column">
+            <div class="panel">
+                <div class="panel-heading">
+                    Readme
+                </div>
+                <div class="pgit-markdown-contianer">
+                    <div class="markdown-body" v-html="readme"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="columns" v-if="empty">
+        <div class="column">
+            <div class="panel">
+                <div class="panel-heading">
+                    {{ message.quick_guide }}
+                </div>
+                <div class="pgit-markdown-contianer">
+                    <div class="markdown-body">
+                        <h3>{{ message.clone_this_repository }}</h3>
+                        <div class="field has-addons">
+                            <p class="control">
+                                <span class="select ">
+                                    <select v-model="cloneType">
+                                        <option value="http">HTTP</option>
+                                        <option value="ssh">SSH</option>
+                                    </select>
+                                </span>
+                            </p>
+                            <p class="control is-expanded">
+                                <input id="guideClipboardInput" onclick="this.select()" class="input" type="text"
+                                    v-model="address" readonly>
+                            </p>
+                            <p class="control">
+                                <button class="button clipboard-button"
+                                    data-clipboard-target="#guideClipboardInput">
+                                    <i class="fas fa-paste" alt="Copy to clipboard"></i>
+                                </button>
+                            </p>
+                        </div>
+                        <h2></h2>
+                        <h3>{{ message.creating_new_repository_from_cli }}</h3>
+                        <pre><code>{{ helpCreateCommand }}</code></pre>
+                        <h2></h2>
+                        <h3>{{ message.pushing_repository_from_cli }}</h3>
+                        <pre><code>{{ helpPushCommand }}</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
