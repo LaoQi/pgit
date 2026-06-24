@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Setting struct {
@@ -19,6 +20,8 @@ type Setting struct {
 	HttpAuth     bool              `json:"httpAuth"`
 	SSHAuthType  string            `json:"sshAuthType"`
 	Credentials  map[string]string `json:"credentials"`
+	WebUIPrefix string            `json:"webuiPrefix"`
+	WebUIAssets string            `json:"webuiAssets"`
 }
 
 func (s *Setting) SetConfigPath(path string) {
@@ -44,6 +47,17 @@ func (s *Setting) Reload() error {
 	if s.GitRoot == "" {
 		return fmt.Errorf("gitRoot is required")
 	}
+	if s.WebUIPrefix == "" {
+		s.WebUIPrefix = "__webui"
+	}
+	if s.WebUIPrefix == "api" || strings.Contains(s.WebUIPrefix, "..") {
+		return fmt.Errorf("invalid webuiPrefix: %s", s.WebUIPrefix)
+	}
+	if s.WebUIAssets != "" {
+		if info, err := os.Stat(s.WebUIAssets); err != nil || !info.IsDir() {
+			return fmt.Errorf("webuiAssets dir not accessible: %s", s.WebUIAssets)
+		}
+	}
 	return nil
 }
 
@@ -65,5 +79,7 @@ func init() {
 		Credentials: map[string]string{
 			"test": "123456",
 		},
+		WebUIPrefix: "__webui",
+		WebUIAssets: "",
 	}
 }

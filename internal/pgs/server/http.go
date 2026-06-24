@@ -37,7 +37,10 @@ func (h *HTTPHandler) buildRouter() http.Handler {
 		r.Use(basicAuth("pgit", h.Settings.Credentials))
 	}
 
+	prefix := "/" + h.Settings.WebUIPrefix
+
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Get("/", h.serveAPIDocs)
 		r.Get("/repos", h.listRepos)
 		r.Post("/repos/{name}", h.createRepo)
 		r.Get("/repos/{name}", h.getRepo)
@@ -48,6 +51,12 @@ func (h *HTTPHandler) buildRouter() http.Handler {
 		r.Get("/repos/{name}/blob/{ref}/*", h.blob)
 		r.Get("/repos/{name}/archive/{ref}", h.archive)
 	})
+
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, prefix+"/", http.StatusFound)
+	})
+	r.Get(prefix, h.serveWebUI)
+	r.Get(prefix+"/*", h.serveWebUI)
 
 	r.NotFound(h.gitTransport)
 	return r

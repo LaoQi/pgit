@@ -15,4 +15,5 @@
 .idea
 vendor/
 repo/
-pgit
+/pgit
+config.json
