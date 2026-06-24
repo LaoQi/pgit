@@ -68,6 +68,7 @@ type Repository struct {
 
 - 协议 v0 only（不广告 v2，客户端自动降级）；启用 sideband-64k（pack 走 ch1，进度走 ch2）
 - push 安全仅 old-oid CAS，不限制 force-push，无大小上限
+- receive-pack 空命令列表请求（body 仅 flush-pkt，无 ref 更新、无 packfile）容忍并返回空 report-status（unpack ok + flush-pkt），与 cgit 一致
 - 对象完整性逐对象 SHA1 重算校验，不做可达性检查
 - ref 原子性 per-ref（lock file + rename）；packed-refs 只读合并视图，写入只 loose
 - 存储初始版全 loose（不落盘 pack、不 repack）

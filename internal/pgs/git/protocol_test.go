@@ -563,3 +563,268 @@ func TestHandleSSHSessionUnknownService(t *testing.T) {
 		t.Fatal("unknown service should return error")
 	}
 }
+
+// makeEmptyRepoWithHead 构造 InitBare 风格的空仓库：含 HEAD(symref→refs/heads/master)
+// + refs/heads/ 目录但无任何 loose ref。这是 pgit InitBare 创建出的真实空仓库形态。
+func makeEmptyRepoWithHead(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "pgit-empty-head-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	// HEAD symref 指向尚不存在的 master
+	writeRefFile(t, dir, "HEAD", "ref: refs/heads/master\n")
+	// 创建 refs/heads 目录（InitBare 会创建）
+	for _, sub := range []string{"refs/heads", "refs/tags", "objects"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o777); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// TestAdvertiseRefsEmptyRepoWithHead: 真实 InitBare 空仓库（有 HEAD symref 无分支）
+// 不应误发 "<ZeroOid> HEAD"；应发标准 "<ZeroOid> capabilities^{}\x00<caps>"。
+// 覆盖 upload-pack 与 receive-pack 两种 service。
+func TestAdvertiseRefsEmptyRepoWithHead(t *testing.T) {
+	dir := makeEmptyRepoWithHead(t)
+
+	for _, svc := range []string{"git-upload-pack", "git-receive-pack"} {
+		t.Run(svc, func(t *testing.T) {
+			adv, err := AdvertiseRefs(dir, svc)
+			if err != nil {
+				t.Fatalf("AdvertiseRefs: %v", err)
+			}
+			pr := NewPktReader(bytes.NewReader(adv))
+			payload, isFlush, err := pr.ReadPkt()
+			if err != nil {
+				t.Fatalf("read first: %v", err)
+			}
+			if isFlush {
+				t.Fatal("expected data frame, got flush")
+			}
+			line := string(payload)
+			// 不应含 HEAD（capabilities^{} 行除外）
+			if strings.Contains(line, "HEAD") {
+				t.Errorf("empty adv should not contain HEAD: %q", line)
+			}
+			// 必须含 ZeroOid + capabilities^{}
+			if !strings.HasPrefix(line, string(ZeroOid)+" capabilities^{}") {
+				t.Errorf("empty adv first line = %q, want %s capabilities^{}",
+					line, ZeroOid)
+			}
+			// 必须含 NUL + caps（之前 bug 漏了）
+			if !strings.Contains(line, "\x00") {
+				t.Errorf("empty adv missing NUL+caps separator: %q", line)
+			}
+			// caps 应含 service 对应能力
+			caps := line[strings.IndexByte(line, 0)+1:]
+			switch svc {
+			case "git-upload-pack":
+				if !strings.Contains(caps, "side-band-64k") {
+					t.Errorf("upload-pack caps missing side-band-64k: %q", caps)
+				}
+			case "git-receive-pack":
+				if !strings.Contains(caps, "report-status") {
+					t.Errorf("receive-pack caps missing report-status: %q", caps)
+				}
+			}
+			// 接下来应是 flush（仅一行 capability advertisement）
+			_, isFlush, err = pr.ReadPkt()
+			if err != nil || !isFlush {
+				t.Fatalf("expected flush after empty adv: err=%v isFlush=%v", err, isFlush)
+			}
+		})
+	}
+}
+
+// TestAdvertiseRefsReceivePackExcludesHead: 非空仓库 receive-pack advertisement
+// 不应含 HEAD（与 cgit 一致），仅含 refs/heads/* 分支。
+func TestAdvertiseRefsReceivePackExcludesHead(t *testing.T) {
+	dir, _ := makeRepoWithCommit(t)
+
+	adv, err := AdvertiseRefs(dir, "git-receive-pack")
+	if err != nil {
+		t.Fatalf("AdvertiseRefs: %v", err)
+	}
+
+	pr := NewPktReader(bytes.NewReader(adv))
+	var lines []string
+	for {
+		payload, isFlush, err := pr.ReadPkt()
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if isFlush {
+			break
+		}
+		line := string(payload)
+		if nul := strings.IndexByte(line, 0); nul >= 0 {
+			line = line[:nul] // 首行去掉 caps
+		}
+		lines = append(lines, strings.TrimRight(line, "\n"))
+	}
+
+	foundMaster, foundHead := false, false
+	for _, l := range lines {
+		sp := strings.IndexByte(l, ' ')
+		if sp < 0 {
+			continue
+		}
+		name := l[sp+1:]
+		if name == "HEAD" {
+			foundHead = true
+		}
+		if name == "refs/heads/master" {
+			foundMaster = true
+		}
+	}
+	if foundHead {
+		t.Errorf("receive-pack adv should NOT contain HEAD: %v", lines)
+	}
+	if !foundMaster {
+		t.Errorf("receive-pack adv should contain refs/heads/master: %v", lines)
+	}
+}
+
+// TestServeReceivePackReportStatusFlush: 验证 report-status 重组后末尾含 flush-pkt。
+// 缺此 flush 客户端会报「远端意外挂断了」。覆盖 sideband 与非 sideband 两种模式。
+func TestServeReceivePackReportStatusFlush(t *testing.T) {
+	for _, useSB := range []bool{true, false} {
+		name := "noSideband"
+		if useSB {
+			name = "sideband"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir, err := os.MkdirTemp("", "pgit-recv-flush-*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(dir)
+
+			blob := makeBlob("flush test\n")
+			tree := makeTree([]TreeEntry{
+				{Mode: 0o100644, Name: "f.txt", Oid: blob.Oid()},
+			})
+			commit := makeCommit(tree.Oid(), nil, "flush commit\n")
+
+			var packBuf bytes.Buffer
+			enc := NewPackEncoder(&packBuf)
+			enc.WriteHeader(3)
+			enc.WriteObject(blob)
+			enc.WriteObject(tree)
+			enc.WriteObject(commit)
+			enc.WriteTrailer()
+
+			var inBuf bytes.Buffer
+			inw := NewPktWriter(&inBuf)
+			capsLine := ""
+			if useSB {
+				capsLine = "side-band-64k"
+			}
+			if capsLine != "" {
+				inw.WritePktString(fmt.Sprintf("%s %s refs/heads/dev\x00%s\n", ZeroOid, commit.Oid(), capsLine))
+			} else {
+				inw.WritePktString(fmt.Sprintf("%s %s refs/heads/dev\n", ZeroOid, commit.Oid()))
+			}
+			inw.WriteFlush()
+			inBuf.Write(packBuf.Bytes())
+
+			var outBuf bytes.Buffer
+			if err := ServeReceivePack(dir, &inBuf, &outBuf); err != nil {
+				t.Fatalf("ServeReceivePack: %v", err)
+			}
+
+			// 重组 report-status 数据流
+			var statusData bytes.Buffer
+			pr := NewPktReader(&outBuf)
+			sawTrailingFlush := false
+			if useSB {
+				// sideband：外层 pkt-line，payload[0]==ch1 取 payload[1:]。
+				// report-status 的 flush-pkt "0000" 作为 ch1 数据被重组进 statusData。
+				for {
+					payload, isFlush, err := pr.ReadPkt()
+					if err != nil {
+						t.Fatalf("read sideband: %v", err)
+					}
+					if isFlush {
+						break // sideband 流结束
+					}
+					if len(payload) >= 1 && payload[0] == SidebandPack {
+						statusData.Write(payload[1:])
+					}
+				}
+				// 重组数据末尾必须含 report-status flush-pkt "0000"
+				statusBytes := statusData.Bytes()
+				if len(statusBytes) < 4 {
+					t.Fatalf("sideband report-status too short: %d bytes", len(statusBytes))
+				}
+				tail := string(statusBytes[len(statusBytes)-4:])
+				if tail != PktFlush {
+					t.Errorf("sideband report-status missing trailing flush: last 4 = %q (want %q)\nfull: %q",
+						tail, PktFlush, string(statusBytes))
+				}
+			} else {
+				// 非 sideband：外层 pkt-line 即 report-status。
+				// flush-pkt 作为独立帧出现，PktReader 读到 isFlush=true 标志结束。
+				for {
+					payload, isFlush, err := pr.ReadPkt()
+					if err != nil {
+						t.Fatalf("read status: %v", err)
+					}
+					if isFlush {
+						sawTrailingFlush = true
+						break
+					}
+					statusData.Write(payload)
+				}
+				if !sawTrailingFlush {
+					t.Errorf("non-sideband report-status missing trailing flush-pkt")
+				}
+			}
+
+			// 验证内容含 unpack ok + ok ref
+			statusStr := statusData.String()
+			if !strings.Contains(statusStr, "unpack ok") {
+				t.Errorf("report-status missing 'unpack ok': %q", statusStr)
+			}
+			if !strings.Contains(statusStr, "ok refs/heads/dev") {
+				t.Errorf("report-status missing 'ok refs/heads/dev': %q", statusStr)
+			}
+		})
+	}
+}
+
+// TestServeReceivePackEmptyCommandList: body 仅含 flush-pkt（空命令列表，无 ref 更新、无 packfile）。
+// 服务端应返回空 report-status（unpack ok + flush-pkt）而非错误，与 cgit 一致。
+func TestServeReceivePackEmptyCommandList(t *testing.T) {
+	dir := makeEmptyRepoWithHead(t)
+
+	var inBuf bytes.Buffer
+	inw := NewPktWriter(&inBuf)
+	if err := inw.WriteFlush(); err != nil {
+		t.Fatal(err)
+	}
+
+	var outBuf bytes.Buffer
+	if err := ServeReceivePack(dir, &inBuf, &outBuf); err != nil {
+		t.Fatalf("ServeReceivePack empty command list: %v", err)
+	}
+
+	pr := NewPktReader(&outBuf)
+	payload, isFlush, err := pr.ReadPkt()
+	if err != nil {
+		t.Fatalf("read unpack status: %v", err)
+	}
+	if isFlush {
+		t.Fatal("expected unpack status frame, got flush")
+	}
+	if string(payload) != "unpack ok\n" {
+		t.Errorf("unpack status = %q, want %q", payload, "unpack ok\n")
+	}
+	_, isFlush, err = pr.ReadPkt()
+	if err != nil || !isFlush {
+		t.Fatalf("expected trailing flush: err=%v isFlush=%v", err, isFlush)
+	}
+}

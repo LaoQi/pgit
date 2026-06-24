@@ -41,12 +41,26 @@ func AdvertiseRefs(repoRoot string, service string) ([]byte, error) {
 		return nil, fmt.Errorf("advertise: list refs: %w", err)
 	}
 
+	// 分离 HEAD 与实际分支 refs。空仓库判定基于实际 refs（不含 HEAD）：
+	// InitBare 创建的仓库有 HEAD symref 但无分支，List() 返回 [HEAD]，
+	// 若不分离会误发 "<ZeroOid> HEAD" 而非标准 capabilities^{}。
+	var head *Ref
+	actualRefs := make([]Ref, 0, len(refs))
+	for i := range refs {
+		if refs[i].Name == "HEAD" {
+			head = &refs[i]
+		} else {
+			actualRefs = append(actualRefs, refs[i])
+		}
+	}
+
 	var buf bytes.Buffer
 	pw := NewPktWriter(&buf)
 
-	if len(refs) == 0 {
-		// 空仓库：<ZeroOid> capabilities^{}\n + flush
-		line := fmt.Sprintf("%s capabilities^{}\n", ZeroOid)
+	// 空仓库（无实际分支 ref）：<ZeroOid> capabilities^{}\x00<caps>\n + flush
+	// 与 cgit 一致，upload-pack/receive-pack 空仓库均发 capabilities^{}，不发 HEAD。
+	if len(actualRefs) == 0 {
+		line := fmt.Sprintf("%s capabilities^{}\x00%s\n", ZeroOid, caps)
 		if err := pw.WritePktString(line); err != nil {
 			return nil, err
 		}
@@ -56,10 +70,19 @@ func AdvertiseRefs(repoRoot string, service string) ([]byte, error) {
 		return buf.Bytes(), nil
 	}
 
-	for i, r := range refs {
+	// 非空仓库：upload-pack 首行发 HEAD（带 caps），再发实际 refs；
+	// receive-pack 不发 HEAD（与 cgit 一致），首行实际 ref 带 caps。
+	i := 0
+	if service == "git-upload-pack" && head != nil {
+		line := fmt.Sprintf("%s %s\x00%s\n", head.Oid, head.Name, caps)
+		if err := pw.WritePktString(line); err != nil {
+			return nil, err
+		}
+		i++
+	}
+	for _, r := range actualRefs {
 		var line string
 		if i == 0 {
-			// 第一行带 capabilities（NUL 分隔）
 			line = fmt.Sprintf("%s %s\x00%s\n", r.Oid, r.Name, caps)
 		} else {
 			line = fmt.Sprintf("%s %s\n", r.Oid, r.Name)
@@ -67,6 +90,7 @@ func AdvertiseRefs(repoRoot string, service string) ([]byte, error) {
 		if err := pw.WritePktString(line); err != nil {
 			return nil, err
 		}
+		i++
 	}
 	if err := pw.WriteFlush(); err != nil {
 		return nil, err
@@ -182,8 +206,13 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("receive-pack: read first update: %w", err)
 	}
+	// 首帧为 flush：空命令列表请求（body 仅含 flush-pkt，无 ref 更新、无 packfile）。
+	// 与 cgit 一致，返回空 report-status（unpack ok + flush-pkt）而非错误。
 	if isFlush {
-		return fmt.Errorf("receive-pack: unexpected flush as first frame")
+		if err := pw.WritePktString("unpack ok\n"); err != nil {
+			return fmt.Errorf("receive-pack: write unpack status: %w", err)
+		}
+		return pw.WriteFlush()
 	}
 	firstUpdate, clientCaps, ok := parseUpdateLine(string(first))
 	if !ok {
@@ -264,9 +293,16 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 			return fmt.Errorf("receive-pack: write ref status: %w", err)
 		}
 	}
-	// flush（始终直接写 pw，结束 sideband 流）
-	if err := pw.WriteFlush(); err != nil {
-		return fmt.Errorf("receive-pack: flush: %w", err)
+	// report-status 序列结束 flush-pkt：客户端按 "unpack-status + command-status-list + flush-pkt"
+	// 解析，缺此 flush 会报「远端意外挂断」。sideband 下此 flush 经 ch1 封装重组。
+	if err := statusPw.WriteFlush(); err != nil {
+		return fmt.Errorf("receive-pack: report-status flush: %w", err)
+	}
+	// sideband 模式需额外结束 sideband 流（report-status flush 仅结束 ch1 数据，不结束外层 pkt-line）
+	if useSideband {
+		if err := pw.WriteFlush(); err != nil {
+			return fmt.Errorf("receive-pack: sideband flush: %w", err)
+		}
 	}
 	return nil
 }
