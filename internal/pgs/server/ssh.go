@@ -8,11 +8,11 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"pgit/internal/pgs"
+	"pgit/internal/pgs/git"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -127,32 +127,9 @@ func (s *SSHHandler) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 			repoPath := filepath.Join(s.GitRoot, repo.Name+".git")
 			log.Printf("SSH: exec %s %s", cmdName, repoPath)
 
-			cmd := exec.Command(cmdName, repoPath)
-			stdout, err := cmd.StdoutPipe()
-			if err != nil {
-				log.Printf("SSH: stdout pipe: %v", err)
-				return
-			}
-			stderr, err := cmd.StderrPipe()
-			if err != nil {
-				log.Printf("SSH: stderr pipe: %v", err)
-				return
-			}
-			input, err := cmd.StdinPipe()
-			if err != nil {
-				log.Printf("SSH: stdin pipe: %v", err)
-				return
-			}
-			if err = cmd.Start(); err != nil {
-				log.Printf("SSH: start: %v", err)
-				return
-			}
 			req.Reply(true, nil)
-			go io.Copy(input, ch)
-			io.Copy(ch, stdout)
-			io.Copy(ch.Stderr(), stderr)
-			if err = cmd.Wait(); err != nil {
-				log.Printf("SSH: wait: %v", err)
+			if err := git.HandleSSHSession(cmdName, repoPath, ch); err != nil {
+				log.Printf("SSH: session %s: %v", cmdName, err)
 			}
 			ch.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
 			return

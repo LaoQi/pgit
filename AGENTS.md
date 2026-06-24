@@ -5,7 +5,9 @@ Go 编写的个人 git 服务器。模块名 `pgit`，`go 1.26.4`。单端口多
 ## 构建状态
 
 - `go build ./...`、`go vet ./...`、`go test ./...` 全部通过。
-- 依赖 `git` 二进制在 `PATH` 中；仓库操作 shell 调用 `git`（ls-tree、cat-file、for-each-ref、archive、upload-pack/receive-pack）。`pgs.InitBare` **不调用 `git init --bare`**，手工创建裸仓库目录结构 + config + HEAD + pgit.json。
+- **git 传输（clone/push）已不依赖 `git` 二进制**：HTTP smart-http 与 SSH exec 的 upload-pack/receive-pack 均由 `internal/pgs/git` 包纯 Go 实现（v0 状态机 + sideband-64k + report-status，松散对象存储）。
+- 浏览 API（`repository.go` 的 Tree/Blob/Archive/ForEachRef）仍 shell 调用 `git`（ls-tree、cat-file、for-each-ref、archive），依赖 `git` 二进制在 `PATH` 中——待后续按 ObjectStore/RefStore 改写去依赖。
+- `pgs.InitBare` **不调用 `git init --bare`**，手工创建裸仓库目录结构 + config + HEAD + pgit.json。
 
 ## 包结构
 
@@ -19,10 +21,23 @@ internal/pgs/                 业务核心包
   task.go / task_manager.go   任务系统：状态机 + cron 调度 + 回调（有测试）
   util.go                     FileExist/GenerateKey/KeyEncode
 
+internal/pgs/git/             纯 Go git wire protocol v0 服务端（无第三方依赖）
+  oid.go object.go            ObjectID（SHA1 hex/bytes 互转）+ Object 类型常量
+  loose.go                    松散对象读写：zlib 压缩落盘 + 逐对象 SHA1 重算校验
+  parse.go                    松散对象内容解析（header + body）
+  refs.go                     RefStore：loose + packed-refs 合并视图；per-ref lock+rename 原子写；CAS/symref
+  pktline.go                  pkt-line 读写器（含 flush/delim）
+  delta.go                    ofs-delta/ref-delta 解析 + base 解析
+  pack_encode.go              对象图 → packfile 编码（含 delta 生成）
+  pack_decode.go              packfile 解码 + 逐对象校验
+  reach.go                    可达性遍历（BFS 去重，跳过 gitlink）
+  protocol.go                 v0 状态机：negotiation + pack 交换 + sideband-64k + report-status
+  service.go                  对外入口：ServeInfoRefs/HandleUploadPack/HandleReceivePack/HandleSSHSession
+
 internal/pgs/server/          网络服务层
   mux.go                      协议探测分发：peek 前缀 SSH- → SSH 否则 HTTP；peekConn 回放缓冲
-  http.go                     chi 路由(/api/v1/* + alias.git 兜底) + 管理 API handler + git smart-http 传输 + Basic Auth
-  ssh.go                      SSHHandler：连接级 handleConn + exec payload 解析 alias → repo
+  http.go                     chi 路由(/api/v1/* + alias.git 兜底) + 管理 API handler + git smart-http 传输（接入 git 包）+ Basic Auth
+  ssh.go                      SSHHandler：连接级 handleConn + exec payload 解析 alias → repo（接入 git 包）
 ```
 
 ## 核心数据模型
@@ -41,6 +56,17 @@ type Repository struct {
 - **启动扫描**：遍历 `<GitRoot>/*.git/pgit.json` 重建双索引(`byName`/`byAlias`)；缺 pgit.json 的旧目录自动迁移补齐（name=目录名、aliases=[目录名]）
 - **alias 规则**：Name 是默认 alias 不可删；全局唯一；禁止 `/` 开头、`..`、空段、`api` 前缀
 - **name 规则**：禁止 `/`、`..`、以 `.` 开头、`api`
+
+## 自研 git 协议层（internal/pgs/git）
+
+纯 Go 实现 git wire protocol v0 服务端，消除 clone/push 对 `git` 二进制的依赖。设计决策（详见 `todos.md`）：
+
+- 协议 v0 only（不广告 v2，客户端自动降级）；启用 sideband-64k（pack 走 ch1，进度走 ch2）
+- push 安全仅 old-oid CAS，不限制 force-push，无大小上限
+- 对象完整性逐对象 SHA1 重算校验，不做可达性检查
+- ref 原子性 per-ref（lock file + rename）；packed-refs 只读合并视图，写入只 loose
+- 存储初始版全 loose（不落盘 pack、不 repack）
+- 明确不做：protocol v2 / 多轮 negotiation / delta 生成 / shallow / partial clone / thin pack / packfile 落盘 / repack-gc / dumb HTTP / reflog / alternates
 
 ## 端口多路复用
 
@@ -74,7 +100,8 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 
 ## 测试与质量
 
-- `internal/pgs` 有真实测试：`repository_test.go`（InitBare 生成 pgit.json 验证、Manager 双索引、alias 增删、扫描恢复、name/alias 校验）、`task_test.go`（约 6 秒，任务调度）。`go test ./...` 通过。
+- `internal/pgs` 有真实测试：`repository_test.go`（InitBare 生成 pgit.json 验证、Manager 双索引、alias 增删、扫描恢复、name/alias 校验）、`task_test.go`（约 6 秒，任务调度）。
+- `internal/pgs/git` 覆盖完整：`loose_test`/`pack_test`/`refs_test`/`reach_test`/`protocol_test`（基础读写、pack 编解码与真实 git pack 互验、ofs-delta、ref CAS/symref/packed-refs、可达性 BFS、v0 状态机+sideband+空仓库回环）。`go test ./...` 通过。
 - 无 linter/formatter/CI 配置。用 `go vet ./...` 和 `go build` 验证。
 
 ## 工作流

@@ -4,16 +4,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"regexp"
 	"strings"
 
 	"github.com/go-chi/chi"
 
 	"pgit/internal/pgs"
+	"pgit/internal/pgs/git"
 )
 
 type HTTPHandler struct {
@@ -281,38 +282,28 @@ func (h *HTTPHandler) infoRefs(w http.ResponseWriter, r *http.Request, repoPath 
 		return
 	}
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-advertisement", service))
-	cmd := exec.Command(string(service[4:]), "--stateless-rpc", "--advertise-refs", repoPath)
-	cmd.Dir = repoPath
-	out, err := cmd.CombinedOutput()
+	out, err := git.ServeInfoRefs(repoPath, service)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, "internal server error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	advert := fmt.Sprintf("# service=%s", service)
-	fmt.Fprintf(w, "%04x%s0000", len(advert)+4, advert)
 	_, _ = w.Write(out)
 }
 
 func (h *HTTPHandler) gitCommand(w http.ResponseWriter, r *http.Request, repoPath string, command string) {
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-git-%s-result", command))
 	w.WriteHeader(http.StatusOK)
-
-	cmd := exec.Command(command, "--stateless-rpc", repoPath)
-	cmd.Dir = repoPath
-
-	cmdIn, _ := cmd.StdinPipe()
-	cmdOut, _ := cmd.StdoutPipe()
-	_ = cmd.Start()
-	go func() {
-		_, _ = io.Copy(cmdIn, r.Body)
-		_ = cmdIn.Close()
-	}()
-	_, _ = io.Copy(w, cmdOut)
-	_ = cmd.Wait()
-
-	if command == "receive-pack" {
-		updateCmd := exec.Command("git", "--git-dir", repoPath, "update-server-info")
-		_ = updateCmd.Start()
+	switch command {
+	case "upload-pack":
+		if err := git.HandleUploadPack(repoPath, r.Body, w); err != nil {
+			log.Printf("upload-pack: %v", err)
+		}
+	case "receive-pack":
+		if err := git.HandleReceivePack(repoPath, r.Body, w); err != nil {
+			log.Printf("receive-pack: %v", err)
+		}
+	default:
+		http.Error(w, "unknown command", http.StatusBadRequest)
 	}
 }
 
