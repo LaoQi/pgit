@@ -4,22 +4,16 @@ personal git server
 
 ## roadmap
 
-* plugin system
 * http api √
 * embed ssh √
-* webUI √
-* dashboard
-* highlight style switch
-* search
 * mirror hook webhook
-
 
 ## Building
 
->  golang > 1.11 
+> golang >= 1.21
 
 ```
-go build
+go build ./cmd/pgit
 ```
 
 ## Runing
@@ -33,3 +27,9 @@ vim config.json
 pgit -c config.json
 
 ```
+
+## Features
+
+* Single-port HTTP+SSH multiplexing with protocol auto-detection
+* Path mapping: decouple git access URLs from storage directories via aliases
+* Pure API (no web frontend), HTTP Basic Auth optional

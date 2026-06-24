@@ -1,6 +1,6 @@
 module pgit
 
-go 1.13
+go 1.26.4
 
 require (
 	github.com/akamensky/argparse v1.1.0
