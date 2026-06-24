@@ -1,15 +1,17 @@
 package pgs
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
+
+	"pgit/internal/pgs/git"
 )
 
 var GitRoot string
@@ -132,98 +134,136 @@ func (repo Repository) Delete() error {
 }
 
 func (repo Repository) Tree(treeIsh string, subtree string) ([]TreeNode, error) {
-	tree := make([]TreeNode, 0)
-	var cmd *exec.Cmd
-	if len(subtree) > 0 {
-		cmd = exec.Command("git", "ls-tree", treeIsh, subtree)
-	} else {
-		cmd = exec.Command("git", "ls-tree", treeIsh)
-	}
-
-	cmd.Dir = repo.Path()
-	output, err := cmd.CombinedOutput()
+	_, treeOid, err := git.ResolveTreeIsh(repo.Path(), treeIsh)
 	if err != nil {
 		return nil, err
 	}
-	raw := strings.Trim(string(output), "\n ")
-	files := strings.Split(raw, "\n")
-
-	for _, row := range files {
-		if len(row) == 0 {
-			continue
-		}
-		if len(row) < 53 {
-			return nil, fmt.Errorf("read tree failed '%s'", row)
-		}
-
-		index := 53 + len(subtree)
-		if index > len(row) {
-			return nil, fmt.Errorf("read tree failed '%s'", row)
-		}
-
-		tree = append(tree, TreeNode{
-			Type: row[7:11],
-			Hash: row[12:52],
-			Name: row[index:],
+	store := &git.LooseStore{Root: filepath.Join(repo.Path(), "objects")}
+	entries, err := git.TreeAt(store, treeOid, subtree)
+	if err != nil {
+		return nil, err
+	}
+	nodes := make([]TreeNode, 0, len(entries))
+	for _, e := range entries {
+		nodes = append(nodes, TreeNode{
+			Type: modeType(e.Mode),
+			Hash: string(e.Oid),
+			Name: e.Name,
 		})
 	}
-
-	return tree, nil
+	return nodes, nil
 }
 
 func (repo Repository) Blob(ref string, path string) (io.ReadCloser, error) {
-	cmd := exec.Command("git", "cat-file", "blob", fmt.Sprintf("%s:%s", ref, path))
-	cmd.Dir = repo.Path()
-	output, err := cmd.StdoutPipe()
+	_, treeOid, err := git.ResolveTreeIsh(repo.Path(), ref)
 	if err != nil {
 		return nil, err
 	}
-	_ = cmd.Start()
-	return output, nil
+	store := &git.LooseStore{Root: filepath.Join(repo.Path(), "objects")}
+	blob, err := git.BlobAt(store, treeOid, path)
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(blob.Content)), nil
 }
 
 func (repo Repository) Archive(ref string) (io.ReadCloser, error) {
-	cmd := exec.Command("git", "archive", "--format=zip",
-		fmt.Sprintf("--prefix=%s/", repo.Name), ref)
-	cmd.Dir = repo.Path()
-	output, err := cmd.StdoutPipe()
+	root := repo.Path()
+	commitOid, treeOid, err := git.ResolveTreeIsh(root, ref)
 	if err != nil {
 		return nil, err
 	}
-	_ = cmd.Start()
-	return output, nil
+	store := &git.LooseStore{Root: filepath.Join(root, "objects")}
+	var modTime time.Time
+	if commitOid != "" {
+		if obj, err := store.Read(commitOid); err == nil {
+			if c, err := git.ParseCommit(obj.Content); err == nil {
+				modTime = c.Committer.Time()
+			}
+		}
+	}
+	pr, pw := io.Pipe()
+	go func() {
+		err := archiveZip(pw, store, treeOid, repo.Name, modTime)
+		pw.CloseWithError(err)
+	}()
+	return pr, nil
 }
 
 func (repo Repository) ForEachRef() ([]*Ref, error) {
-	cmd := exec.Command("git", "for-each-ref",
-		"--format=%(objecttype)%07%(refname:short)%07%(creator)%07%(contents:subject)")
-	cmd.Dir = repo.Path()
-	output, err := cmd.CombinedOutput()
+	infos, err := git.ForEachRefs(repo.Path())
 	if err != nil {
 		return nil, err
 	}
-	raw := strings.Trim(string(output), "\n ")
-
-	refs := make([]*Ref, 0)
-	for _, row := range strings.Split(raw, "\n") {
-		r := strings.Split(row, fmt.Sprintf("%c", 0x07))
-		if len(r) != 4 {
-			continue
-		}
-		ref := &Ref{
-			Type:    r[0],
-			Name:    r[1],
-			Subject: r[3],
-		}
-
-		creator := strings.Split(r[2], " ")
-		timestamp, _ := strconv.ParseUint(creator[2], 10, 0)
-		if len(creator) > 2 {
-			ref.Author = creator[0]
-			ref.Email = creator[1]
-			ref.Timestamp = timestamp
-		}
-		refs = append(refs, ref)
+	refs := make([]*Ref, 0, len(infos))
+	for _, info := range infos {
+		refs = append(refs, &Ref{
+			Type:      info.Type,
+			Name:      info.Name,
+			Author:    info.Author,
+			Email:     info.Email,
+			Timestamp: uint64(info.Timestamp),
+			Subject:   info.Subject,
+		})
 	}
 	return refs, nil
+}
+
+// modeType 将 tree entry 的 mode 映射为节点类型字符串，与 git ls-tree 输出一致。
+func modeType(mode uint32) string {
+	switch {
+	case mode == 0o040000:
+		return "tree"
+	case mode == 0o160000:
+		return "commit"
+	default:
+		return "blob"
+	}
+}
+
+// archiveZip 递归遍历 treeOid，将所有 blob 写入 zip，路径前缀为 prefix。
+// gitlink（0o160000）跳过，与 git archive 行为一致。
+func archiveZip(w io.Writer, store *git.LooseStore, treeOid git.Oid, prefix string, modTime time.Time) error {
+	zw := zip.NewWriter(w)
+	if err := walkTreeToZip(store, treeOid, prefix, zw, modTime); err != nil {
+		_ = zw.Close()
+		return err
+	}
+	return zw.Close()
+}
+
+func walkTreeToZip(store *git.LooseStore, treeOid git.Oid, prefix string, zw *zip.Writer, modTime time.Time) error {
+	entries, err := git.TreeAt(store, treeOid, "")
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.Mode == 0o160000 {
+			continue
+		}
+		path := prefix + "/" + e.Name
+		if e.Mode == 0o040000 {
+			if err := walkTreeToZip(store, e.Oid, path, zw, modTime); err != nil {
+				return err
+			}
+			continue
+		}
+		blob, err := store.Read(e.Oid)
+		if err != nil {
+			return err
+		}
+		fh := &zip.FileHeader{
+			Name:     path,
+			Method:   zip.Deflate,
+			Modified: modTime,
+		}
+		fw, err := zw.CreateHeader(fh)
+		if err != nil {
+			return err
+		}
+		if _, err := fw.Write(blob.Content); err != nil {
+			return err
+		}
+	}
+	return nil
 }
