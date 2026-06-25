@@ -9,17 +9,28 @@ import (
 	"io"
 )
 
-// PackDecoder 解析 packfile（入向，含 OFS_DELTA/REF_DELTA 应用，push 用）。
-// 对象按 pack 内出现顺序解析；delta 基对象必须在 delta 之前出现（非 thin pack 语义）。
-type PackDecoder struct {
-	R        io.Reader
-	objects  []*RawObject      // 按解析顺序
-	byOid    map[Oid]int       // oid -> objects 索引（供 REF_DELTA）
-	byOffset map[int]int       // 对象 type 字节起始偏移 -> 索引（供 OFS_DELTA）
+// ObjectReader 按 oid 读取对象（LooseStore 实现），供 PackDecoder 解 REF_DELTA 时回查已有对象。
+type ObjectReader interface {
+	Read(oid Oid) (*RawObject, error)
 }
 
-func NewPackDecoder(r io.Reader) *PackDecoder {
-	return &PackDecoder{R: r, byOid: map[Oid]int{}, byOffset: map[int]int{}}
+// PackDecoder 解析 packfile（入向，含 OFS_DELTA/REF_DELTA 应用，push 用）。
+// 对象按 pack 内出现顺序解析；OFS_DELTA 的 base 必须在 pack 内（按偏移引用），
+// REF_DELTA 的 base 优先在 pack 内查找，fallback 到 Store（仓库已有对象）。
+type PackDecoder struct {
+	R        io.Reader
+	Store    ObjectReader // 可选：REF_DELTA base 不在 pack 内时回查仓库已有对象
+	objects  []*RawObject // 按解析顺序
+	byOid    map[Oid]int  // oid -> objects 索引（供 REF_DELTA）
+	byOffset map[int]int  // 对象 type 字节起始偏移 -> 索引（供 OFS_DELTA）
+}
+
+func NewPackDecoder(r io.Reader, store ...ObjectReader) *PackDecoder {
+	d := &PackDecoder{R: r, byOid: map[Oid]int{}, byOffset: map[int]int{}}
+	if len(store) > 0 {
+		d.Store = store[0]
+	}
+	return d
 }
 
 // Decode 读整个 pack，验证 trailer SHA1，返回所有还原后的对象
@@ -125,11 +136,18 @@ func (d *PackDecoder) readObject(body []byte, start int) (*RawObject, int, error
 		if int(size) != len(delta) {
 			return nil, 0, fmt.Errorf("ref-delta size mismatch: header %d actual %d", size, len(delta))
 		}
-		baseIdx, ok := d.byOid[baseOid]
-		if !ok {
+		var base *RawObject
+		if baseIdx, ok := d.byOid[baseOid]; ok {
+			base = d.objects[baseIdx]
+		} else if d.Store != nil {
+			var err2 error
+			base, err2 = d.Store.Read(baseOid)
+			if err2 != nil {
+				return nil, 0, fmt.Errorf("ref-delta: base %s not found (pack nor store)", baseOid)
+			}
+		} else {
 			return nil, 0, fmt.Errorf("ref-delta: base %s not found", baseOid)
 		}
-		base := d.objects[baseIdx]
 		content, err := ApplyDelta(base.Content, delta)
 		if err != nil {
 			return nil, 0, fmt.Errorf("ref-delta apply: %w", err)

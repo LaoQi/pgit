@@ -5,6 +5,7 @@ import (
 	"compress/zlib"
 	"crypto/sha1"
 	"encoding/binary"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -251,6 +252,76 @@ func TestPackDecodeTrailerMismatch(t *testing.T) {
 	b[len(b)-1] ^= 0xff
 	if _, err := NewPackDecoder(bytes.NewReader(b)).Decode(); err == nil {
 		t.Fatal("expected trailer mismatch error")
+	}
+}
+
+// --- pack 解码（手工构造 REF_DELTA，base 在外部 Store）---
+
+func TestPackDecodeRefDeltaFromStore(t *testing.T) {
+	baseContent := []byte("base content stored in loose store, not in pack")
+	extra := []byte(" EXTRA FROM DELTA")
+	target := append(append([]byte{}, baseContent...), extra...)
+
+	baseObj := NewRawObject(ObjBlob, baseContent)
+	baseOid := baseObj.Oid()
+
+	// 构造 delta: copy whole base, then insert extra
+	var delta []byte
+	delta = append(delta, encodeVarintLE(uint64(len(baseContent)))...)
+	delta = append(delta, encodeVarintLE(uint64(len(target)))...)
+	delta = append(delta, 0x91, 0x00, byte(len(baseContent)))
+	delta = append(delta, byte(len(extra)))
+	delta = append(delta, extra...)
+
+	// 构造 pack: 仅含一个 REF_DELTA 对象（base 不在 pack 内）
+	var pack bytes.Buffer
+	pack.WriteString(packMagic)
+	var tmp [4]byte
+	binary.BigEndian.PutUint32(tmp[:], packVersion)
+	pack.Write(tmp[:])
+	binary.BigEndian.PutUint32(tmp[:], 1) // 1 object
+	pack.Write(tmp[:])
+	writePackObjHeader(&pack, packObjRefDelta, uint64(len(delta)))
+	oidBytes, _ := hex.DecodeString(string(baseOid))
+	pack.Write(oidBytes)
+	pack.Write(zlibBytes(delta))
+	h := sha1.Sum(pack.Bytes())
+	pack.Write(h[:])
+
+	// 无 Store → 应报 base not found
+	dec := NewPackDecoder(bytes.NewReader(pack.Bytes()))
+	if _, err := dec.Decode(); err == nil {
+		t.Fatal("expected ref-delta base not found error without store")
+	}
+
+	// 有 Store → 应成功解码
+	dir, err := os.MkdirTemp("", "pgit-refdelta-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	store := &LooseStore{Root: filepath.Join(dir, "objects")}
+	if _, err := store.Write(baseObj); err != nil {
+		t.Fatalf("write base to store: %v", err)
+	}
+
+	dec = NewPackDecoder(bytes.NewReader(pack.Bytes()), store)
+	got, err := dec.Decode()
+	if err != nil {
+		t.Fatalf("decode with store: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("count %d want 1", len(got))
+	}
+	if got[0].Type != ObjBlob {
+		t.Fatalf("type %s want blob", got[0].Type)
+	}
+	if !bytes.Equal(got[0].Content, target) {
+		t.Fatalf("content:\n got %q\nwant %q", got[0].Content, target)
+	}
+	wantOid := NewRawObject(ObjBlob, target).Oid()
+	if got[0].Oid() != wantOid {
+		t.Fatalf("oid %s want %s", got[0].Oid(), wantOid)
 	}
 }
 

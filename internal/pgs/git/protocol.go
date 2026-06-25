@@ -241,8 +241,9 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("receive-pack: read pack: %w", err)
 	}
 	var objs []*RawObject
+	store := &LooseStore{Root: filepath.Join(repoRoot, "objects")}
 	if len(remaining) > 0 {
-		dec := NewPackDecoder(bytes.NewReader(remaining))
+		dec := NewPackDecoder(bytes.NewReader(remaining), store)
 		objs, err = dec.Decode()
 		if err != nil {
 			return fmt.Errorf("receive-pack: decode pack: %w", err)
@@ -250,7 +251,6 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 	}
 
 	// 4. 逐对象 SHA1 重算校验 + LooseStore.Write
-	store := &LooseStore{Root: filepath.Join(repoRoot, "objects")}
 	for _, obj := range objs {
 		oid := obj.Oid()
 		if !oid.Valid() {
