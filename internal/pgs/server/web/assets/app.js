@@ -366,8 +366,8 @@ function viewBlob(blobUrl, fileName) {
 }
 
 function viewTree(app, name, ref, subPath) {
-    var treeUrl = API + '/repos/' + enc(name) + '/tree/' + enc(ref);
-    if (subPath) treeUrl += '/' + subPath.split('/').map(enc).join('/');
+    var treeUrl = API + '/repos/' + enc(name) + '/tree/' + enc(ref) + '/';
+    if (subPath) treeUrl += subPath.split('/').map(enc).join('/');
 
     apiJSON(treeUrl).then(function(files) {
         var html = '<div class="breadcrumb">'
