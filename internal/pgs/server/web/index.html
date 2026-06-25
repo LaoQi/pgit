@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <base href="/__WEBUI_PREFIX__/">
+    <title>pgit - Personal Git Server</title>
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+    <nav class="navbar">
+        <a href="." class="nav-brand" data-link="/">pgit</a>
+        <div class="nav-links">
+            <a href="." data-link="/">Repositories</a>
+            <a href="api" data-link="/api">API</a>
+        </div>
+    </nav>
+    <main id="app">
+        <div class="loading">Loading...</div>
+    </main>
+    <div id="toast" class="toast"></div>
+    <script src="assets/app.js"></script>
+</body>
+</html>
