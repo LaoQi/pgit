@@ -18,7 +18,7 @@
 
 ## 初始版明确不做
 
-protocol v2 / 多轮 negotiation / delta 生成 / shallow / partial clone / thin pack / packfile 落盘 / repack-gc / dumb HTTP / reflog / alternates / 大小限制 / force-push 限制 / 可达性检查。
+protocol v2 / 多轮 negotiation / shallow / partial clone / thin pack / packfile 落盘 / repack-gc / dumb HTTP / reflog / alternates / 大小限制 / force-push 限制 / 可达性检查。
 
 ## 阶段与状态
 
@@ -26,7 +26,7 @@ protocol v2 / 多轮 negotiation / delta 生成 / shallow / partial clone / thin
 |---|------|------|------|------|
 | 1 | 基础层 | oid.go object.go loose.go parse.go | done | 5文件5测试通过，vet无警告 |
 | 2 | refs 层 | refs.go | done | refs.go+13测试，CAS/symref/packed-refs 全覆盖 |
-| 3 | pack 编解码 | pktline.go delta.go pack_encode.go pack_decode.go | done | 4文件+10测试，真实git pack互验，ofs-delta字节偏移正确 |
+| 3 | pack 编解码 | pktline.go delta.go pack_encode.go pack_decode.go | done | 4文件+10测试，真实git pack互验，ofs-delta字节偏移正确；出向 delta 生成（EncodeDelta 固定窗口滚动hash + OFS_DELTA 编码 + ServeUploadPack 配对）已实现 |
 | 4 | 遍历层 | reach.go | done | 88行+13测试，gitlink跳过正确，BFS去重 |
 | 5 | 协议层 | protocol.go service.go | done | 387行+11测试，v0状态机+sideband+空仓库，回环测试通过 |
 | 6 | 对接替换 | server/http.go server/ssh.go | done | http.go+ssh.go exec 全部移除，接入 git 包，build/vet/test 通过 |

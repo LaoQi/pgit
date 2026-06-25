@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -484,36 +485,205 @@ func TestPackDecodeRealGitPack(t *testing.T) {
 }
 
 // --- helpers ---
+// encodeVarintLE / encodeOfsDelta 已移至生产代码（delta.go / pack_encode.go）。
 
-func encodeVarintLE(v uint64) []byte {
-	var out []byte
-	for {
-		c := byte(v & 0x7f)
-		v >>= 7
-		if v != 0 {
-			c |= 0x80
-		}
-		out = append(out, c)
-		if v == 0 {
-			break
-		}
+// --- pack 编码 OFS_DELTA 回环 ---
+
+func TestPackEncodeWithOfsDelta(t *testing.T) {
+	base := NewRawObject(ObjBlob, bytes.Repeat([]byte("pattern123"), 50)) // 500 字节
+	tgtContent := append([]byte(nil), base.Content...)
+	tgtContent = append(tgtContent, []byte(" extra tail data appended here")...)
+	tgt := NewRawObject(ObjBlob, tgtContent)
+
+	delta, err := EncodeDelta(base.Content, tgt.Content)
+	if err != nil {
+		t.Fatalf("EncodeDelta: %v", err)
 	}
-	return out
+
+	var buf bytes.Buffer
+	enc := NewPackEncoder(&buf)
+	if err := enc.WriteHeader(2); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.WriteObject(base); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.WriteOfsDelta(base.Oid(), delta); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.WriteTrailer(); err != nil {
+		t.Fatal(err)
+	}
+
+	dec := NewPackDecoder(bytes.NewReader(buf.Bytes()))
+	got, err := dec.Decode()
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("count %d want 2", len(got))
+	}
+	if got[0].Oid() != base.Oid() {
+		t.Errorf("obj0 oid %s want %s", got[0].Oid(), base.Oid())
+	}
+	if got[1].Oid() != tgt.Oid() {
+		t.Errorf("obj1 oid %s want %s", got[1].Oid(), tgt.Oid())
+	}
+	if got[1].Type != ObjBlob {
+		t.Errorf("obj1 type %s want blob (inherited from base)", got[1].Type)
+	}
+	if !bytes.Equal(got[1].Content, tgt.Content) {
+		t.Errorf("obj1 content mismatch:\n got %q\nwant %q", got[1].Content, tgt.Content)
+	}
 }
 
-// encodeOfsDelta 编码 git ofs-delta 偏移（与 readOfsDelta 互逆，与 git get_delta_base 一致）
-func encodeOfsDelta(off uint64) []byte {
-	var buf [16]byte
-	pos := len(buf) - 1
-	buf[pos] = byte(off) & 0x7f
-	tmp := off >> 7
-	for tmp != 0 {
-		pos--
-		tmp--
-		buf[pos] = 0x80 | byte(tmp&0x7f)
-		tmp >>= 7
+func TestPackEncodeOfsDeltaBaseNotWritten(t *testing.T) {
+	enc := NewPackEncoder(&bytes.Buffer{})
+	if err := enc.WriteHeader(1); err != nil {
+		t.Fatal(err)
 	}
-	return append([]byte(nil), buf[pos:]...)
+	bogus := Oid("0000000000000000000000000000000000000001")
+	if err := enc.WriteOfsDelta(bogus, []byte{0x00, 0x00}); err == nil {
+		t.Fatal("expected error for unwritten base")
+	}
+}
+
+// makeRepoWithTwoSimilarBlobs 构造含两个高度相似 blob 的仓库，触发 delta 配对。
+// tree 含 a.txt(blob1) 与 b.txt(blob2)，blob2 = blob1 内容 + 尾巴，size 相近且相似。
+func makeRepoWithTwoSimilarBlobs(t *testing.T) (string, Oid) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "pgit-delta-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	store := &LooseStore{Root: filepath.Join(dir, "objects")}
+	shared := bytes.Repeat([]byte("shared content line here, quite long\n"), 50) // ~1900 字节
+	blob1 := NewRawObject(ObjBlob, append([]byte(nil), shared...))
+	blob2Content := append([]byte(nil), shared...)
+	blob2Content = append(blob2Content, []byte("unique tail for blob two, added at end\n")...)
+	blob2 := NewRawObject(ObjBlob, blob2Content)
+
+	tree := makeTree([]TreeEntry{
+		{Mode: 0o100644, Name: "a.txt", Oid: blob1.Oid()},
+		{Mode: 0o100644, Name: "b.txt", Oid: blob2.Oid()},
+	})
+	commit := makeCommit(tree.Oid(), nil, "two similar blobs\n")
+	writeAll(t, store, blob1, blob2, tree, commit)
+
+	rs := NewRefStore(dir)
+	if _, err := rs.Update([]RefUpdate{
+		{Name: "refs/heads/master", OldOid: ZeroOid, NewOid: commit.Oid()},
+	}); err != nil {
+		t.Fatalf("update refs: %v", err)
+	}
+	writeRefFile(t, dir, "HEAD", "ref: refs/heads/master\n")
+	return dir, commit.Oid()
+}
+
+func TestServeUploadPackWithDelta(t *testing.T) {
+	dir, commitOid := makeRepoWithTwoSimilarBlobs(t)
+
+	var inBuf bytes.Buffer
+	inw := NewPktWriter(&inBuf)
+	inw.WritePktString(fmt.Sprintf("want %s side-band-64k\n", commitOid))
+	inw.WriteFlush()
+	inw.WritePktString("done\n")
+
+	var outBuf bytes.Buffer
+	if err := ServeUploadPack(dir, &inBuf, &outBuf); err != nil {
+		t.Fatalf("ServeUploadPack: %v", err)
+	}
+
+	// 解 sideband ch1 重组 pack
+	pr := NewPktReader(&outBuf)
+	var packData bytes.Buffer
+	for {
+		payload, isFlush, err := pr.ReadPkt()
+		if err != nil {
+			t.Fatalf("read sideband: %v", err)
+		}
+		if isFlush {
+			break
+		}
+		if len(payload) >= 1 && payload[0] == SidebandPack {
+			packData.Write(payload[1:])
+		}
+	}
+	if packData.Len() == 0 {
+		t.Fatal("no pack data received")
+	}
+
+	dec := NewPackDecoder(bytes.NewReader(packData.Bytes()))
+	objs, err := dec.Decode()
+	if err != nil {
+		t.Fatalf("decode pack: %v", err)
+	}
+
+	// 4 对象：commit + tree + blob1(full) + blob2(delta)
+	if len(objs) != 4 {
+		t.Fatalf("object count = %d, want 4", len(objs))
+	}
+
+	// 全部还原后 oid 须存在于仓库 loose store
+	store := &LooseStore{Root: filepath.Join(dir, "objects")}
+	for _, o := range objs {
+		if !store.Exists(o.Oid()) {
+			t.Errorf("decoded object %s not in store", o.Oid())
+		}
+	}
+}
+
+// TestServeUploadPackDeltaGitVerify: 生成的含 OFS_DELTA pack 须能被真实 git index-pack 解析，
+// 验证我们编码的 delta pack 符合 git 二进制格式规范。
+func TestServeUploadPackDeltaGitVerify(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found, skipping git verify test")
+	}
+	dir, commitOid := makeRepoWithTwoSimilarBlobs(t)
+
+	var inBuf bytes.Buffer
+	inw := NewPktWriter(&inBuf)
+	inw.WritePktString(fmt.Sprintf("want %s side-band-64k\n", commitOid))
+	inw.WriteFlush()
+	inw.WritePktString("done\n")
+
+	var outBuf bytes.Buffer
+	if err := ServeUploadPack(dir, &inBuf, &outBuf); err != nil {
+		t.Fatalf("ServeUploadPack: %v", err)
+	}
+
+	pr := NewPktReader(&outBuf)
+	var packData bytes.Buffer
+	for {
+		payload, isFlush, err := pr.ReadPkt()
+		if err != nil {
+			t.Fatalf("read sideband: %v", err)
+		}
+		if isFlush {
+			break
+		}
+		if len(payload) >= 1 && payload[0] == SidebandPack {
+			packData.Write(payload[1:])
+		}
+	}
+
+	tmpDir, err := os.MkdirTemp("", "pgit-verify-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	packFile := filepath.Join(tmpDir, "delta.pack")
+	if err := os.WriteFile(packFile, packData.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "index-pack", "-v", packFile)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git index-pack failed (delta pack invalid): %v\nstderr: %s", err, stderr.String())
+	}
 }
 
 func zlibBytes(data []byte) []byte {

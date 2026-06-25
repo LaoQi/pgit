@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -165,7 +166,13 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("upload-pack: collect reachable: %w", err)
 	}
 
-	// 6. 编码 pack（可能走 sideband）
+	// 6. 规划 delta 配对（仅 blob，单层，OFS_DELTA）
+	entries, err := planPackEntries(objs)
+	if err != nil {
+		return fmt.Errorf("upload-pack: plan deltas: %w", err)
+	}
+
+	// 7. 编码 pack（可能走 sideband）
 	useSideband := strings.Contains(clientCaps, "side-band-64k")
 	var packSink io.Writer
 	if useSideband {
@@ -174,12 +181,22 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		packSink = out
 	}
 	enc := NewPackEncoder(packSink)
-	if err := enc.WriteHeader(len(objs)); err != nil {
+	if err := enc.WriteHeader(len(entries)); err != nil {
 		return fmt.Errorf("upload-pack: pack header: %w", err)
 	}
-	for _, o := range objs {
-		if err := enc.WriteObject(o); err != nil {
-			return fmt.Errorf("upload-pack: pack obj %s: %w", o.Oid(), err)
+	// 两段写入：先 full（base 必先于 delta），再 delta；保持 BFS 原序
+	for _, e := range entries {
+		if !e.isDelta {
+			if err := enc.WriteObject(e.obj); err != nil {
+				return fmt.Errorf("upload-pack: pack obj %s: %w", e.obj.Oid(), err)
+			}
+		}
+	}
+	for _, e := range entries {
+		if e.isDelta {
+			if err := enc.WriteOfsDelta(e.baseOid, e.delta); err != nil {
+				return fmt.Errorf("upload-pack: pack delta %s: %w", e.obj.Oid(), err)
+			}
 		}
 	}
 	if err := enc.WriteTrailer(); err != nil {
@@ -358,4 +375,61 @@ func parseUpdateLine(line string) (u RefUpdate, caps string, ok bool) {
 	}
 	caps = capPart
 	return
+}
+
+// packEntry 描述一个对象在 pack 中的写入方式
+type packEntry struct {
+	obj     *RawObject
+	isDelta bool
+	baseOid Oid    // isDelta=true：base 的 oid（须已作为 full 写入）
+	delta   []byte // isDelta=true：EncodeDelta 输出
+}
+
+// planPackEntries 规划 pack 写入计划：仅 blob 做 delta，单层（base 必 full），OFS_DELTA。
+// 策略：blob 按 size 降序相邻两两配对（base=大者 full，target=小者 delta）；
+//   - size 比值过滤：max/min > 2 不配对（差异过大 delta 收益低）；
+//   - 负收益回退：deltaLen*2 >= tgt.Size 时 target 退化为 full；
+//   - 非 blob 全 full；落单 blob 全 full。
+// entries 保持 objs 原 BFS 顺序，仅标记 isDelta；ServeUploadPack 两段写入（full 先于 delta）。
+func planPackEntries(objs []*RawObject) ([]packEntry, error) {
+	entries := make([]packEntry, len(objs))
+	blobIdx := map[*RawObject]int{}
+	var blobs []*RawObject
+	for i, o := range objs {
+		entries[i].obj = o
+		if o.Type == ObjBlob {
+			blobs = append(blobs, o)
+			blobIdx[o] = i
+		}
+	}
+	// blob 按 size 降序拷贝（不影响 entries 原序）
+	sorted := make([]*RawObject, len(blobs))
+	copy(sorted, blobs)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Size > sorted[j].Size })
+	// 相邻两两配对：i 为 base（更大），i+1 为 target
+	for i := 0; i+1 < len(sorted); i += 2 {
+		base, tgt := sorted[i], sorted[i+1]
+		// size 比值过滤：max/min > 2 跳过
+		hi, lo := base.Size, tgt.Size
+		if hi < lo {
+			hi, lo = lo, hi
+		}
+		if hi > 2*lo {
+			continue
+		}
+		delta, err := EncodeDelta(base.Content, tgt.Content)
+		if err != nil {
+			return nil, fmt.Errorf("encode delta base=%s tgt=%s: %w", base.Oid(), tgt.Oid(), err)
+		}
+		// 负收益回退：delta 字节数 >= target 原始字节数一半 → 退化为 full
+		if len(delta)*2 >= tgt.Size {
+			continue
+		}
+		// 标记 target 为 delta（base 保持 full）
+		j := blobIdx[tgt]
+		entries[j].isDelta = true
+		entries[j].baseOid = base.Oid()
+		entries[j].delta = delta
+	}
+	return entries, nil
 }
