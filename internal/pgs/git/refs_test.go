@@ -405,3 +405,41 @@ func TestRefGetNotFound(t *testing.T) {
 		t.Fatalf("Get should fail for missing ref")
 	}
 }
+
+// TestSetHead: 写入 HEAD symref，Head() 能正确读回
+func TestSetHead(t *testing.T) {
+	dir, err := os.MkdirTemp("", "pgit-refs-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	rs := NewRefStore(dir)
+	if err := rs.SetHead("refs/heads/develop"); err != nil {
+		t.Fatalf("SetHead: %v", err)
+	}
+	head, err := rs.Head()
+	if err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+	if head != "refs/heads/develop" {
+		t.Fatalf("Head = %q, want refs/heads/develop", head)
+	}
+
+	// 覆盖写：从 develop 切到 main
+	if err := rs.SetHead("refs/heads/main"); err != nil {
+		t.Fatalf("SetHead overwrite: %v", err)
+	}
+	head, err = rs.Head()
+	if err != nil {
+		t.Fatalf("Head after overwrite: %v", err)
+	}
+	if head != "refs/heads/main" {
+		t.Fatalf("Head = %q, want refs/heads/main", head)
+	}
+
+	// HEAD.lock 不应残留
+	if _, err := os.Stat(filepath.Join(dir, "HEAD.lock")); !os.IsNotExist(err) {
+		t.Fatalf("HEAD.lock should not exist after SetHead, stat err = %v", err)
+	}
+}

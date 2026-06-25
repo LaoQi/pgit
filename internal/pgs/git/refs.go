@@ -284,3 +284,29 @@ func (s *RefStore) updateOne(u RefUpdate) RefUpdateResult {
 	}
 	return RefUpdateResult{Name: u.Name, Ok: true}
 }
+
+// SetHead atomically sets HEAD to a symbolic reference target.
+// target must be a full ref name like "refs/heads/master".
+func (s *RefStore) SetHead(target string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := filepath.Join(s.Root, "HEAD")
+	lockPath := path + ".lock"
+
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o666)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(lockPath)
+
+	content := fmt.Sprintf("ref: %s\n", target)
+	if _, err := lf.WriteString(content); err != nil {
+		return err
+	}
+	if err := lf.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(lockPath, path)
+}

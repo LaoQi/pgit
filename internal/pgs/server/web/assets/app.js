@@ -160,6 +160,7 @@ function viewRepos(app) {
             + '<div class="toggle-form">'
             + '<div class="form-group"><label>Name</label><input id="repoName" placeholder="my-repo" autocomplete="off"></div>'
             + '<div class="form-group"><label>Description</label><input id="repoDesc" placeholder="optional" autocomplete="off"></div>'
+            + '<div class="form-group"><label>Default Branch</label><input id="repoDefaultBranch" value="master" placeholder="master" autocomplete="off"></div>'
             + '<button class="btn btn-primary btn-sm" id="createRepoBtn">Create</button>'
             + '</div></div>';
 
@@ -195,8 +196,9 @@ function viewRepos(app) {
         document.getElementById('createRepoBtn').addEventListener('click', function() {
             var name = document.getElementById('repoName').value.trim();
             var desc = document.getElementById('repoDesc').value.trim();
+            var defaultBranch = document.getElementById('repoDefaultBranch').value.trim() || 'master';
             if (!name) { showToast('Name is required', 'error'); return; }
-            apiForm('POST', API + '/repos/' + enc(name), { description: desc }).then(function() {
+            apiForm('POST', API + '/repos/' + enc(name), { description: desc, defaultBranch: defaultBranch }).then(function() {
                 showToast('Repository created');
                 navigate('/repo/' + enc(name));
             }).catch(function(err) { showToast(err.message, 'error'); });
@@ -217,72 +219,88 @@ function viewRepoDetail(app, name) {
         var html = '<div class="breadcrumb"><a href="." data-link="/">Repositories</a>'
             + '<span class="sep">/</span><strong>' + esc(repo.name) + '</strong></div>';
 
-        html += '<div class="card"><h2>' + esc(repo.name) + '</h2>'
-            + '<p class="text-muted">' + esc(repo.description || 'No description') + '</p>'
-            + '<p class="text-sm text-muted mt-8">Created: ' + esc(fmtDate(repo.createdAt)) + '</p></div>';
+         html += '<div class="card"><h2>' + esc(repo.name) + '</h2>'
+             + '<p class="text-muted">' + esc(repo.description || 'No description') + '</p>'
+             + '<p class="text-sm text-muted mt-8">Created: ' + esc(fmtDate(repo.createdAt)) + '</p>'
+             + '<p class="text-sm text-muted mt-4">Default Branch: <strong>' + esc(data.defaultBranch || 'master') + '</strong></p></div>';
 
-        html += '<div class="card"><h3>Clone URLs</h3>';
-        aliases.forEach(function(a) {
-            var httpUrl = window.location.protocol + '//' + host + '/' + a + '.git';
-            var sshUrl = 'ssh://' + host + '/' + a + '.git';
-            html += '<div class="clone-box"><span class="label">HTTP</span><span class="url">' + esc(httpUrl) + '</span>'
-                + '<button class="copy-btn" data-copy="' + escAttr(httpUrl) + '">copy</button></div>';
-            html += '<div class="clone-box"><span class="label">SSH</span><span class="url">' + esc(sshUrl) + '</span>'
-                + '<button class="copy-btn" data-copy="' + escAttr(sshUrl) + '">copy</button></div>';
-        });
-        html += '</div>';
+         html += '<div class="card"><h3>Clone URLs</h3>';
+         aliases.forEach(function(a) {
+             var httpUrl = window.location.protocol + '//' + host + '/' + a + '.git';
+             var sshUrl = 'ssh://' + host + '/' + a + '.git';
+             html += '<div class="clone-box"><span class="label">HTTP</span><span class="url">' + esc(httpUrl) + '</span>'
+                 + '<button class="copy-btn" data-copy="' + escAttr(httpUrl) + '">copy</button></div>';
+             html += '<div class="clone-box"><span class="label">SSH</span><span class="url">' + esc(sshUrl) + '</span>'
+                 + '<button class="copy-btn" data-copy="' + escAttr(sshUrl) + '">copy</button></div>';
+         });
+         html += '</div>';
 
-        html += '<div class="card"><h3>Branches &amp; Tags</h3>';
-        if (refs.length === 0) {
-            html += '<div class="empty">This repository is empty. Push some commits to get started.</div>';
-        } else {
-            html += '<table><thead><tr><th>Type</th><th>Name</th><th>Subject</th><th>Author</th><th>Date</th><th></th></tr></thead><tbody>';
-            refs.forEach(function(ref) {
-                var badge = ref.type === 'tag' ? '<span class="badge badge-tag">tag</span>' : '<span class="badge badge-commit">branch</span>';
-                var treeLink = '/repo/' + enc(repo.name) + '/tree/' + enc(ref.name);
-                html += '<tr><td>' + badge + '</td><td>' + esc(ref.name) + '</td>'
-                    + '<td>' + esc(ref.subject || '') + '</td>'
-                    + '<td>' + esc(ref.author || '') + '</td>'
-                    + '<td class="text-muted">' + esc(fmtTs(ref.timestamp)) + '</td>'
-                    + '<td><a href="repo/' + enc(repo.name) + '/tree/' + enc(ref.name) + '" data-link="' + escAttr(treeLink) + '" class="btn btn-sm">Browse</a></td>'
-                    + '</tr>';
-            });
-            html += '</tbody></table>';
-        }
-        html += '</div>';
+         html += '<div class="card"><h3>Branches &amp; Tags</h3>';
+         if (refs.length === 0) {
+             html += '<div class="empty">This Repository is empty. Push some commits to get started.</div>';
+         } else {
+             html += '<table><thead><tr><th>Type</th><th>Name</th><th>Subject</th><th>Author</th><th>Date</th><th></th></tr></thead><tbody>';
+             refs.forEach(function(ref) {
+                 var badge = ref.type === 'tag' ? '<span class="badge badge-tag">tag</span>' : '<span class="badge badge-commit">branch</span>';
+                 var treeLink = '/repo/' + enc(repo.name) + '/tree/' + enc(ref.name);
+                 html += '<tr><td>' + badge + '</td><td>' + esc(ref.name) + '</td>'
+                     + '<td>' + esc(ref.subject || '') + '</td>'
+                     + '<td>' + esc(ref.author || '') + '</td>'
+                     + '<td class="text-muted">' + esc(fmtTs(ref.timestamp)) + '</td>'
+                     + '<td><a href="repo/' + enc(repo.name) + '/tree/' + enc(ref.name) + '" data-link="' + escAttr(treeLink) + '" class="btn btn-sm">Browse</a></td>'
+                     + '</tr>';
+             });
+             html += '</tbody></table>';
+         }
+         html += '</div>';
 
-        if (refs.length > 0) {
-            html += '<div class="card"><h3>Download Archive</h3>'
-                + '<div class="flex"><select id="archiveRef">';
-            refs.forEach(function(ref) {
-                html += '<option value="' + escAttr(ref.name) + '">' + esc(ref.name) + ' (' + ref.type + ')</option>';
-            });
-            html += '</select><button class="btn btn-sm" id="downloadArchiveBtn">Download ZIP</button></div></div>';
-        }
+         if (refs.length > 0) {
+             html += '<div class="card"><h3>Download Archive</h3>'
+                 + '<div class="flex"><select id="archiveRef">';
+             refs.forEach(function(ref) {
+                 html += '<option value="' + escAttr(ref.name) + '">' + esc(ref.name) + ' (' + ref.type + ')</option>';
+             });
+             html += '</select><button class="btn btn-sm" id="downloadArchiveBtn">Download ZIP</button></div></div>';
+         }
 
-        html += '<div class="card"><h3>Aliases</h3>';
-        aliases.forEach(function(a) {
-            var hasSlash = a.indexOf('/') >= 0;
-            html += '<div class="alias-item"><span class="alias-name">' + esc(a) + '</span>';
-            if (a === repo.name) {
-                html += '<span class="text-muted text-sm">(default)</span>';
-            } else if (hasSlash) {
-                html += '<span class="alias-note">Cannot delete via API (contains slash)</span>';
-            } else {
-                html += '<button class="btn btn-danger btn-sm" data-remove-repo="' + escAttr(repo.name) + '" data-remove-alias="' + escAttr(a) + '">Remove</button>';
-            }
-            html += '</div>';
-        });
-        html += '<div class="form-group mt-16"><label>Add Alias</label>'
-            + '<div class="flex"><input id="newAlias" placeholder="group/repo" autocomplete="off">'
-            + '<button class="btn btn-sm" id="addAliasBtn">Add</button></div></div>';
-        html += '</div>';
+         html += '<div class="card"><h3>Aliases</h3>';
+         aliases.forEach(function(a) {
+             var hasSlash = a.indexOf('/') >= 0;
+             html += '<div class="alias-item"><span class="alias-name">' + esc(a) + '</span>';
+             if (a === repo.name) {
+                 html += '<span class="text-muted text-sm">(default)</span>';
+             } else if (hasSlash) {
+                 html += '<span class="alias-note">Cannot delete via API (contains slash)</span>';
+             } else {
+                 html += '<button class="btn btn-danger btn-sm" data-remove-repo="' + escAttr(repo.name) + '" data-remove-alias="' + escAttr(a) + '">Remove</button>';
+             }
+             html += '</div>';
+         });
+         html += '<div class="form-group mt-16"><label>Add Alias</label>'
+             + '<div class="flex"><input id="newAlias" placeholder="group/repo" autocomplete="off">'
+             + '<button class="btn btn-sm" id="addAliasBtn">Add</button></div></div>';
+         html += '</div>';
 
-        html += '<div class="card"><h3>Danger Zone</h3>'
-            + '<p class="text-muted text-sm">Delete this repository. This action cannot be undone.</p>'
-            + '<button class="btn btn-danger btn-sm" id="deleteRepoBtn">Delete Repository</button></div>';
+         // Add set default branch card if there are branches
+         var branches = refs.filter(function(r) { return r.type === 'commit'; });
+         if (branches.length > 0) {
+             html += '<div class="card"><h3>Default Branch</h3>'
+                 + '<p class="text-muted mt-8">Current: <strong>' + esc(data.defaultBranch || 'master') + '</strong></p>'
+                 + '<div class="form-group mt-8"><label>Change to:</label>'
+                 + '<div class="flex"><select id="newDefaultBranch">';
+             branches.forEach(function(b) {
+                 var selected = b.name === data.defaultBranch ? ' selected' : '';
+                 html += '<option value="' + escAttr(b.name) + '"' + selected + '>' + esc(b.name) + '</option>';
+             });
+             html += '</select><button class="btn btn-sm" id="setDefaultBranchBtn">Set</button></div></div>'
+                 + '</div>';
+         }
 
-        app.innerHTML = html;
+         html += '<div class="card"><h3>Danger Zone</h3>'
+             + '<p class="text-muted text-sm">Delete this repository. This action cannot be undone.</p>'
+             + '<button class="btn btn-danger btn-sm" id="deleteRepoBtn">Delete Repository</button></div>';
+
+         app.innerHTML = html;
 
         if (document.getElementById('downloadArchiveBtn')) {
             document.getElementById('downloadArchiveBtn').addEventListener('click', function() {
@@ -298,15 +316,25 @@ function viewRepoDetail(app, name) {
                 viewRepoDetail(app, name);
             }).catch(function(err) { showToast(err.message, 'error'); });
         });
-        document.getElementById('deleteRepoBtn').addEventListener('click', function() {
-            var input = prompt('Type the repository name to confirm deletion:', '');
-            if (input !== repo.name) { showToast('Confirmation mismatch', 'error'); return; }
-            apiDelete(API + '/repos/' + enc(repo.name) + '?confirm=' + enc(repo.name)).then(function() {
-                showToast('Repository deleted');
-                navigate('/');
-            }).catch(function(err) { showToast(err.message, 'error'); });
-        });
-    }).catch(function(err) {
+         document.getElementById('deleteRepoBtn').addEventListener('click', function() {
+             var input = prompt('Type the repository name to confirm deletion:', '');
+             if (input !== repo.name) { showToast('Confirmation mismatch', 'error'); return; }
+             apiDelete(API + '/repos/' + enc(repo.name) + '?confirm=' + enc(repo.name)).then(function() {
+                 showToast('Repository deleted');
+                 navigate('/');
+             }).catch(function(err) { showToast(err.message, 'error'); });
+         });
+         if (document.getElementById('setDefaultBranchBtn')) {
+             document.getElementById('setDefaultBranchBtn').addEventListener('click', function() {
+                 var branch = document.getElementById('newDefaultBranch').value;
+                 if (!branch) { showToast('Select a branch', 'error'); return; }
+                 apiForm('POST', API + '/repos/' + enc(repo.name) + '/default-branch', { branch: branch }).then(function() {
+                     showToast('Default branch updated to ' + branch);
+                     viewRepoDetail(app, name);
+                 }).catch(function(err) { showToast(err.message, 'error'); });
+             });
+         }
+     }).catch(function(err) {
         app.innerHTML = '<div class="error">' + esc(err.message) + '</div>';
     });
 }

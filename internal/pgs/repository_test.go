@@ -2,6 +2,8 @@ package pgs
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,7 +15,7 @@ func TestNewBareRepoConfig(t *testing.T) {
 
 func TestInitBareCreatesPgitJSON(t *testing.T) {
 	GitRoot = os.TempDir()
-	repo, err := InitBare("test1", "this is test repo")
+	repo, err := InitBare("test1", "this is test repo", "master")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,6 +38,96 @@ func TestInitBareCreatesPgitJSON(t *testing.T) {
 	_ = repo.Delete()
 }
 
+func TestInitBareCustomDefaultBranch(t *testing.T) {
+	GitRoot = os.TempDir()
+	repo, err := InitBare("test-custom", "custom default branch", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Delete()
+
+	defaultBranch, err := repo.DefaultBranch()
+	if err != nil {
+		t.Fatalf("DefaultBranch: %v", err)
+	}
+	if defaultBranch != "main" {
+		t.Fatalf("defaultBranch = %q, want 'main'", defaultBranch)
+	}
+
+	// check HEAD file content
+	headPath := filepath.Join(repo.Path(), "HEAD")
+	data, err := os.ReadFile(headPath)
+	if err != nil {
+		t.Fatalf("read HEAD: %v", err)
+	}
+	want := "ref: refs/heads/main\n"
+	if string(data) != want {
+		t.Fatalf("HEAD content = %q, want %q", string(data), want)
+	}
+}
+
+func TestSetDefaultBranch(t *testing.T) {
+	GitRoot = os.TempDir()
+	repo, err := InitBare("test-set", "test set default", "master")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Delete()
+
+	// create master and develop refs manually
+	err = os.MkdirAll(filepath.Join(repo.Path(), "refs", "heads"), 0o777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oidA := "a5ccb972673562ef5bad1a6cced799f9d71a796b"
+	writeRef := func(branch string) {
+		p := filepath.Join(repo.Path(), "refs", "heads", branch)
+		err := os.WriteFile(p, []byte(oidA+"\n"), 0o666)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRef("master")
+	writeRef("develop")
+
+	// initial default is master
+	db, err := repo.DefaultBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db != "master" {
+		t.Fatalf("initial default = %q, want master", db)
+	}
+
+	// set to develop (valid, exists)
+	err = repo.SetDefaultBranch("develop")
+	if err != nil {
+		t.Fatalf("SetDefaultBranch(develop): %v", err)
+	}
+	db, err = repo.DefaultBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db != "develop" {
+		t.Fatalf("default after set = %q, want develop", db)
+	}
+
+	// try set to non-existent branch should fail
+	err = repo.SetDefaultBranch("nonexist")
+	if err == nil {
+		t.Fatalf("SetDefaultBranch(nonexist) should fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("expected 'does not exist' error, got: %v", err)
+	}
+
+	// invalid branch name should fail
+	err = repo.SetDefaultBranch("../foo")
+	if err == nil {
+		t.Fatalf("SetDefaultBranch(../foo) should fail, got nil")
+	}
+}
+
 func TestManagerScanAndAlias(t *testing.T) {
 	dir, _ := os.MkdirTemp("", "pgit-test-*")
 	defer os.RemoveAll(dir)
@@ -44,10 +136,10 @@ func TestManagerScanAndAlias(t *testing.T) {
 	InitReposManager(&RepositoriesManagerConfig{GitRoot: dir})
 	defer func() { ReposManager = nil }()
 
-	if err := ReposManager.CreateRepository("alpha", "alpha repo"); err != nil {
+	if err := ReposManager.CreateRepository("alpha", "alpha repo", "master"); err != nil {
 		t.Fatal(err)
 	}
-	if err := ReposManager.CreateRepository("beta", "beta repo"); err != nil {
+	if err := ReposManager.CreateRepository("beta", "beta repo", "master"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -86,7 +178,7 @@ func TestManagerScanRestoresAliases(t *testing.T) {
 	InitReposManager(&RepositoriesManagerConfig{GitRoot: dir})
 	defer func() { ReposManager = nil }()
 
-	_ = ReposManager.CreateRepository("scanrepo", "")
+	_ = ReposManager.CreateRepository("scanrepo", "", "master")
 	_ = ReposManager.AddAlias("scanrepo", "alias1")
 	_ = ReposManager.AddAlias("scanrepo", "alias2")
 

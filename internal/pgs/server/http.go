@@ -47,6 +47,7 @@ func (h *HTTPHandler) buildRouter() http.Handler {
 		r.Delete("/repos/{name}", h.deleteRepo)
 		r.Post("/repos/{name}/aliases", h.addAlias)
 		r.Delete("/repos/{name}/aliases/{alias}", h.removeAlias)
+		r.Post("/repos/{name}/default-branch", h.setDefaultBranch)
 		r.Get("/repos/{name}/tree/{ref}/*", h.tree)
 		r.Get("/repos/{name}/blob/{ref}/*", h.blob)
 		r.Get("/repos/{name}/archive/{ref}", h.archive)
@@ -109,7 +110,8 @@ func (h *HTTPHandler) listRepos(w http.ResponseWriter, r *http.Request) {
 func (h *HTTPHandler) createRepo(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	description := r.FormValue("description")
-	if err := h.Manager.CreateRepository(name, description); err != nil {
+	defaultBranch := r.FormValue("defaultBranch")
+	if err := h.Manager.CreateRepository(name, description, defaultBranch); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -129,9 +131,11 @@ func (h *HTTPHandler) getRepo(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	defaultBranch, _ := repo.DefaultBranch()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"metadata": repo,
-		"refs":     refs,
+		"metadata":      repo,
+		"refs":          refs,
+		"defaultBranch": defaultBranch,
 	})
 }
 
@@ -171,19 +175,45 @@ func (h *HTTPHandler) removeAlias(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, repo)
 }
 
+func (h *HTTPHandler) setDefaultBranch(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	branch := r.FormValue("branch")
+	if branch == "" {
+		writeError(w, http.StatusBadRequest, "branch is required")
+		return
+	}
+	repo, err := h.Manager.GetRepository(name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if err := repo.SetDefaultBranch(branch); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":            true,
+		"defaultBranch": branch,
+	})
+}
+
 func (h *HTTPHandler) tree(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	ref := chi.URLParam(r, "ref")
 	if unesc, err := url.QueryUnescape(ref); err == nil {
 		ref = unesc
 	}
-	if ref == "" {
-		ref = "master"
-	}
 	repo, err := h.Manager.GetRepository(name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
+	}
+	if ref == "" {
+		if db, err := repo.DefaultBranch(); err == nil && db != "" {
+			ref = db
+		} else {
+			ref = "master"
+		}
 	}
 	subtree := chi.URLParam(r, "*")
 	files, err := repo.Tree(ref, subtree)
@@ -200,13 +230,17 @@ func (h *HTTPHandler) blob(w http.ResponseWriter, r *http.Request) {
 	if unesc, err := url.QueryUnescape(ref); err == nil {
 		ref = unesc
 	}
-	if ref == "" {
-		ref = "master"
-	}
 	repo, err := h.Manager.GetRepository(name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
+	}
+	if ref == "" {
+		if db, err := repo.DefaultBranch(); err == nil && db != "" {
+			ref = db
+		} else {
+			ref = "master"
+		}
 	}
 	path := chi.URLParam(r, "*")
 	if path == "" {
@@ -229,13 +263,17 @@ func (h *HTTPHandler) archive(w http.ResponseWriter, r *http.Request) {
 	if unesc, err := url.QueryUnescape(ref); err == nil {
 		ref = unesc
 	}
-	if ref == "" {
-		ref = "master"
-	}
 	repo, err := h.Manager.GetRepository(name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
+	}
+	if ref == "" {
+		if db, err := repo.DefaultBranch(); err == nil && db != "" {
+			ref = db
+		} else {
+			ref = "master"
+		}
 	}
 	body, err := repo.Archive(ref)
 	if err != nil {

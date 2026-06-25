@@ -92,7 +92,11 @@ func NewBareRepoConfig() *RepoConfig {
 
 // InitBare builds a bare repository directory by hand (no `git init --bare`),
 // writes config/HEAD/description plus pgit.json metadata.
-func InitBare(name string, description string) (*Repository, error) {
+// defaultBranch sets the initial HEAD symref target (e.g. "master"); empty defaults to "master".
+func InitBare(name string, description string, defaultBranch string) (*Repository, error) {
+	if defaultBranch == "" {
+		defaultBranch = "master"
+	}
 	repo := &Repository{
 		Name:        name,
 		Description: description,
@@ -120,7 +124,7 @@ func InitBare(name string, description string) (*Repository, error) {
 
 	_ = os.WriteFile(filepath.Join(root, "description"), []byte(desc), os.ModePerm)
 	_ = os.WriteFile(filepath.Join(root, "config"), []byte(config), os.ModePerm)
-	_ = os.WriteFile(filepath.Join(root, "HEAD"), []byte("ref: refs/heads/master\n"), os.ModePerm)
+	_ = os.WriteFile(filepath.Join(root, "HEAD"), []byte(fmt.Sprintf("ref: refs/heads/%s\n", defaultBranch)), os.ModePerm)
 	_ = os.WriteFile(filepath.Join(root, "info", "exclude"), []byte("# Auto generated\n# Lines that start with '#' are comments.\n"), os.ModePerm)
 
 	if err := repo.SaveMetadata(); err != nil {
@@ -131,6 +135,42 @@ func InitBare(name string, description string) (*Repository, error) {
 
 func (repo Repository) Delete() error {
 	return os.RemoveAll(repo.Path())
+}
+
+// DefaultBranch 返回仓库默认分支的 short 名（如 "master"）。
+// 解析 HEAD symref 目标，去掉 refs/heads/ 前缀。detached HEAD 或 HEAD 缺失返回空字符串。
+func (repo Repository) DefaultBranch() (string, error) {
+	rs := git.NewRefStore(repo.Path())
+	target, err := rs.Head()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	if target == "" {
+		return "", nil // detached
+	}
+	return strings.TrimPrefix(target, "refs/heads/"), nil
+}
+
+// SetDefaultBranch 将仓库默认分支切换为 branch（short 名，如 "develop"）。
+// 要求该分支必须已存在（refs/heads/<branch> 存在），否则返回错误。
+func (repo Repository) SetDefaultBranch(branch string) error {
+	if err := ValidateDefaultBranch(branch); err != nil {
+		return err
+	}
+	fullName := "refs/heads/" + branch
+	rs := git.NewRefStore(repo.Path())
+	if _, err := rs.Get(fullName); err != nil {
+		return fmt.Errorf("branch %q does not exist", branch)
+	}
+	return rs.SetHead(fullName)
+}
+
+// ValidateDefaultBranch 校验默认分支名合法性（与 alias 校验规则一致）。
+func ValidateDefaultBranch(branch string) error {
+	return ValidateAlias(branch)
 }
 
 func (repo Repository) Tree(treeIsh string, subtree string) ([]TreeNode, error) {

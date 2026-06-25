@@ -54,24 +54,27 @@ var apiDocs = apiDocData{
 			Method:  "POST",
 			Path:    "/api/v1/repos/{name}",
 			Summary:  "Create a new bare repository",
-			Params: []apiDocParam{
+ 			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name, cannot contain /, .., or start with ."},
 				{Name: "description", In: "form", Required: false, Example: "A demo repo", Desc: "Form field, NOT JSON body"},
+				{Name: "defaultBranch", In: "form", Required: false, Example: "main", Desc: "Default branch name (initial HEAD), defaults to master"},
 			},
 			RequestExample: `POST /api/v1/repos/my-repo HTTP/1.1
 Content-Type: application/x-www-form-urlencoded
 
-description=A%20demo%20repo`,
+description=A%20demo%20repo&defaultBranch=main`,
 			ResponseExample: `{
   "name": "my-repo",
   "description": "A demo repo",
   "aliases": ["my-repo"],
   "createdAt": "2026-06-24T10:00:00Z"
 }`,
-			Curl: `curl -X POST http://localhost:3000/api/v1/repos/my-repo \
-  -d "description=A demo repo"`,
+ 			Curl: `curl -X POST http://localhost:3000/api/v1/repos/my-repo \
+  -d "description=A demo repo" \
+  -d "defaultBranch=main"`,
 			Notes: []string{
 				"description is a form field (application/x-www-form-urlencoded), NOT a JSON body.",
+				"defaultBranch sets the initial HEAD symref target; defaults to 'master' if omitted.",
 				"name is auto-added as the first alias.",
 				"Returns the full Repository object on success.",
 				"Name validation: no /, no .., no leading dot, cannot be 'api'.",
@@ -172,27 +175,52 @@ alias=group%2Frepo`,
 				"The default alias (same as repo name) cannot be removed.",
 				"Route {alias} is a single path segment - aliases containing slashes cannot be deleted via this endpoint.",
 				"Returns the updated full Repository object on success.",
-			},
-		},
+ 			},
+ 		},
+ 		{
+ 			Method:  "POST",
+ 			Path:    "/api/v1/repos/{name}/default-branch",
+ 			Summary:  "Set repository default branch (HEAD symref)",
+ 			Params: []apiDocParam{
+ 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name"},
+ 				{Name: "branch", In: "form", Required: true, Example: "main", Desc: "Short branch name (e.g. 'main'), must already exist in refs/heads/"},
+ 			},
+ 			RequestExample: `POST /api/v1/repos/my-repo/default-branch HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+branch=main`,
+ 			ResponseExample: `{
+   "ok": true,
+   "defaultBranch": "main"
+}`,
+ 			Curl: `curl -X POST http://localhost:3000/api/v1/repos/my-repo/default-branch \
+  -d "branch=main"`,
+ 			Notes: []string{
+ 				"Requires the branch to already exist (refs/heads/<branch> must have an oid).",
+ 				"Changes the HEAD symref atomically (lock+rename).",
+ 				"Browsing API (tree/blob/archive) without ref uses this default.",
+ 				"Does not modify git data, only changes which branch is checked out on clone.",
+ 			},
+ 		},
 		{
 			Method:  "GET",
 			Path:    "/api/v1/repos/{name}/tree/{ref}/*",
 			Summary:  "Browse repository tree (directory listing)",
-			Params: []apiDocParam{
+ 			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name"},
-				{Name: "ref", In: "path", Required: false, Example: "master", Desc: "Branch name, tag name, or commit OID. Defaults to 'master'"},
+				{Name: "ref", In: "path", Required: false, Example: "master", Desc: "Branch name, tag name, or commit OID. Defaults to repository default branch"},
 				{Name: "*", In: "path", Required: false, Example: "src/pkg", Desc: "Subdirectory path within the tree"},
 			},
 			ResponseExample: `[
-  {"type": "tree", "hash": "4e6f77e...", "name": "src"},
-  {"type": "blob", "hash": "a1b2c3d...", "name": "README.md"},
-  {"type": "commit", "hash": "deadbef...", "name": "vendor/submodule"}
+   {"type": "tree", "hash": "4e6f77e...", "name": "src"},
+   {"type": "blob", "hash": "a1b2c3d...", "name": "README.md"},
+   {"type": "commit", "hash": "deadbef...", "name": "vendor/submodule"}
 ]`,
 			Curl: `curl http://localhost:3000/api/v1/repos/my-repo/tree/master/src`,
 			Notes: []string{
 				"Response is a bare JSON array, not wrapped in an object.",
 				"ref supports: branch name, tag name, 'HEAD', or full 40-char commit OID.",
-				"Default ref is 'master' (not HEAD).",
+				"Default ref is repository's default branch (HEAD symref target), not hard-coded 'master'.",
 				"type 'tree' = directory, 'blob' = file, 'commit' = gitlink/submodule.",
 				"Empty repository returns 400 (ref not found).",
 				"Use GET /api/v1/repos/{name} to list available refs.",
@@ -202,9 +230,9 @@ alias=group%2Frepo`,
 			Method:  "GET",
 			Path:    "/api/v1/repos/{name}/blob/{ref}/*",
 			Summary:  "Read file content (blob)",
-			Params: []apiDocParam{
+ 			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name"},
-				{Name: "ref", In: "path", Required: false, Example: "master", Desc: "Branch name, tag name, or commit OID. Defaults to 'master'"},
+				{Name: "ref", In: "path", Required: false, Example: "master", Desc: "Branch name, tag name, or commit OID. Defaults to repository default branch"},
 				{Name: "*", In: "path", Required: true, Example: "src/main.go", Desc: "File path within the repository"},
 			},
 			ResponseExample: `package main
@@ -226,9 +254,9 @@ func main() {
 			Method:  "GET",
 			Path:    "/api/v1/repos/{name}/archive/{ref}",
 			Summary:  "Download repository archive (ZIP)",
-			Params: []apiDocParam{
+ 			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name"},
-				{Name: "ref", In: "path", Required: false, Example: "master", Desc: "Branch name, tag name, or commit OID. Defaults to 'master'"},
+				{Name: "ref", In: "path", Required: false, Example: "master", Desc: "Branch name, tag name, or commit OID. Defaults to repository default branch"},
 			},
 			Curl: `curl -OJ http://localhost:3000/api/v1/repos/my-repo/archive/master`,
 			Notes: []string{

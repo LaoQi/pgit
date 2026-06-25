@@ -25,7 +25,7 @@ func buildBrowseRepo(t *testing.T, name string) *Repository {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	GitRoot = dir
 
-	repo, err := InitBare(name, "browse test")
+	repo, err := InitBare(name, "browse test", "master")
 	if err != nil {
 		t.Fatal(err)
 	}

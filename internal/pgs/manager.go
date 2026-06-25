@@ -132,19 +132,25 @@ func (r *RepositoriesManager) RepositoryExist(name string) bool {
 	return ok
 }
 
-func (r *RepositoriesManager) CreateRepository(name string, description string) error {
+func (r *RepositoriesManager) CreateRepository(name string, description string, defaultBranch string) error {
 	if err := ValidateRepoName(name); err != nil {
 		return err
+	}
+	if defaultBranch == "" {
+		defaultBranch = "master"
+	}
+	if err := ValidateDefaultBranch(defaultBranch); err != nil {
+		return fmt.Errorf("invalid default branch: %v", err)
 	}
 	if r.RepositoryExist(name) {
 		return fmt.Errorf("repository %s already exist", name)
 	}
-	repo, err := InitBare(name, description)
+	repo, err := InitBare(name, description, defaultBranch)
 	if err != nil {
 		return err
 	}
 	r.addRepository(repo)
-	log.Printf("created repository %s", name)
+	log.Printf("created repository %s (default branch: %s)", name, defaultBranch)
 	return nil
 }
 
