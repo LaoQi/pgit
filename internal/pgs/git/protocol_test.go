@@ -221,11 +221,10 @@ func TestServeInfoRefs(t *testing.T) {
 	}
 }
 
-// TestServeUploadPackRoundTrip: wants → ServeUploadPack → sideband pack → 解码 → 对象一致
+// TestServeUploadPackRoundTrip: wants → ServeUploadPack → NAK + sideband pack → 解码 → 对象一致
 func TestServeUploadPackRoundTrip(t *testing.T) {
 	dir, commitOid := makeRepoWithCommit(t)
 
-	// 构造 wants 输入：want <oid> side-band-64k + flush + done
 	var inBuf bytes.Buffer
 	inw := NewPktWriter(&inBuf)
 	if err := inw.WritePktString(fmt.Sprintf("want %s side-band-64k\n", commitOid)); err != nil {
@@ -238,14 +237,24 @@ func TestServeUploadPackRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// ServeUploadPack
 	var outBuf bytes.Buffer
 	if err := ServeUploadPack(dir, &inBuf, &outBuf); err != nil {
 		t.Fatalf("ServeUploadPack: %v", err)
 	}
 
-	// 解 sideband ch1
+	// sideband 模式：首帧是 NAK pkt-line（不走 ch1），后续帧是 ch1 sideband
 	pr := NewPktReader(&outBuf)
+	payload, isFlush, err := pr.ReadPkt()
+	if err != nil {
+		t.Fatalf("read NAK: %v", err)
+	}
+	if isFlush {
+		t.Fatal("expected NAK frame, got flush")
+	}
+	if string(payload) != "NAK\n" {
+		t.Fatalf("first frame = %q, want NAK\\n", payload)
+	}
+
 	var packData bytes.Buffer
 	frames := 0
 	for {
@@ -268,14 +277,12 @@ func TestServeUploadPackRoundTrip(t *testing.T) {
 		t.Fatal("no sideband pack frames received")
 	}
 
-	// PackDecoder 解码
 	dec := NewPackDecoder(bytes.NewReader(packData.Bytes()))
 	objs, err := dec.Decode()
 	if err != nil {
 		t.Fatalf("decode pack: %v", err)
 	}
 
-	// 验证对象集与仓库一致（commit+tree+blob = 3 个）
 	store := &LooseStore{Root: filepath.Join(dir, "objects")}
 	foundCommit := false
 	for _, o := range objs {
@@ -294,13 +301,12 @@ func TestServeUploadPackRoundTrip(t *testing.T) {
 	}
 }
 
-// TestServeUploadPackNoSideband: 客户端 caps 不含 side-band-64k → pack 直接写 out
+// TestServeUploadPackNoSideband: 客户端 caps 不含 side-band-64k → NAK pkt-line + pack 直接写 out
 func TestServeUploadPackNoSideband(t *testing.T) {
 	dir, commitOid := makeRepoWithCommit(t)
 
 	var inBuf bytes.Buffer
 	inw := NewPktWriter(&inBuf)
-	// 不带 side-band-64k
 	inw.WritePktString(fmt.Sprintf("want %s\n", commitOid))
 	inw.WriteFlush()
 	inw.WritePktString("done\n")
@@ -310,9 +316,8 @@ func TestServeUploadPackNoSideband(t *testing.T) {
 		t.Fatalf("ServeUploadPack: %v", err)
 	}
 
-	// 非 sideband：outBuf 是 NAK 帧 + pack + flush。先跳过开头的 NAK pkt-line，再验 PACK。
+	// 非 sideband：NAK pkt-line + pack + flush
 	out := outBuf.Bytes()
-	// NAK 帧格式 "0008NAK\n"，长度前缀 0008 = 8 字节(含4字节头)
 	if len(out) < 8 || string(out[:8]) != "0008NAK\n" {
 		end := 8
 		if len(out) < 8 {
@@ -328,15 +333,8 @@ func TestServeUploadPackNoSideband(t *testing.T) {
 		}
 		t.Fatalf("output not raw pack (no sideband): first bytes = % x", out[:end])
 	}
-	// 验证 pack 可解码
-	dec := NewPackDecoder(bytes.NewReader(out))
-	// 注意：out 末尾有 flush "0000"，PackDecoder.Decode 用 io.ReadAll 读全部，
-	// trailer 校验只覆盖 PACK 部分，末尾 "0000" 是多余字节但 Decode 不检查尾部
-	// 实际上 Decode 检查 pos == len(body)，多出的 flush 会导致错误。
-	// 所以需要去掉末尾 flush 再解码。
-	// 找到末尾 "0000" 并截断
 	trimmed := trimTrailingFlush(out)
-	dec = NewPackDecoder(bytes.NewReader(trimmed))
+	dec := NewPackDecoder(bytes.NewReader(trimmed))
 	objs, err := dec.Decode()
 	if err != nil {
 		t.Fatalf("decode pack: %v", err)

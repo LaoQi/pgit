@@ -101,7 +101,10 @@ func AdvertiseRefs(repoRoot string, service string) ([]byte, error) {
 
 // ServeUploadPack 处理 upload-pack 请求（clone/fetch）。
 // in 从 wants 开始（ref advertisement 由 AdvertiseRefs 单独生成）。
-// pack 走 sideband-64k ch1（若客户端 caps 含 side-band-64k），否则直接写 out。
+// 基本模式 v0（不广告 multi_ack_detailed）：客户端单轮发 wants+haves+done，
+// 服务端 done 后发 NAK + PACK + flush。无交互式 ACK。
+// NAK 作为普通 pkt-line 写到 pw（sideband 模式下 NAK 不走 ch1，与 cgit 一致）。
+// PACK 数据：sideband 模式走 ch1，否则直接写 out。
 func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	pr := NewPktReader(in)
 	pw := NewPktWriter(out)
@@ -151,11 +154,10 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		if strings.HasPrefix(line, "done") {
 			break
 		}
-		// have 行或其他，忽略
 	}
 
-	// 4. 客户端发 done 后，服务端发 NAK 终结 negotiation（基本模式 v0：无 multi_ack，
-	//    客户端单轮发完 wants+haves+done，服务端 done 后单发 NAK + PACK，无交互式 ACK）。
+	// 4. 发 NAK 终结 negotiation（基本模式 v0，无 multi_ack）。
+	// NAK 作为普通 pkt-line 写到 pw，不走 sideband ch1（与 cgit 一致）。
 	if err := pw.WritePktString("NAK\n"); err != nil {
 		return fmt.Errorf("upload-pack: write NAK: %w", err)
 	}
@@ -185,7 +187,6 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	if err := enc.WriteHeader(len(entries)); err != nil {
 		return fmt.Errorf("upload-pack: pack header: %w", err)
 	}
-	// 两段写入：先 full（base 必先于 delta），再 delta；保持 BFS 原序
 	for _, e := range entries {
 		if !e.isDelta {
 			if err := enc.WriteObject(e.obj); err != nil {
@@ -204,7 +205,7 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("upload-pack: pack trailer: %w", err)
 	}
 
-	// 6. flush 结束
+	// 8. flush 结束
 	if err := pw.WriteFlush(); err != nil {
 		return fmt.Errorf("upload-pack: flush: %w", err)
 	}
