@@ -68,6 +68,7 @@ type Repository struct {
 纯 Go 实现 git wire protocol v0 服务端，消除 clone/push 对 `git` 二进制的依赖。设计决策（详见 `todos.md`）：
 
 - 协议 v0 only（不广告 v2，客户端自动降级）；启用 sideband-64k（pack 走 ch1，进度走 ch2）
+- upload-pack 广告 caps 不含 `multi_ack_detailed`（仅实现基本模式单轮 negotiation：wants+flush → haves → done → 单发 NAK + PACK）；广告该 cap 会导致 fetch-pack 在 have+flush 后阻塞等 ACK 而不同步，报 `expected ACK/NAK, got '?PACK'`
 - push 安全仅 old-oid CAS，不限制 force-push，无大小上限
 - receive-pack 空命令列表请求（body 仅 flush-pkt，无 ref 更新、无 packfile）容忍并返回空 report-status（unpack ok + flush-pkt），与 cgit 一致
 - 对象完整性逐对象 SHA1 重算校验，不做可达性检查

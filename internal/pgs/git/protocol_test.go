@@ -70,12 +70,15 @@ func TestAdvertiseRefsWithRefs(t *testing.T) {
 		i++
 	}
 
-	// 第一行 caps 含 side-band-64k 与 multi_ack
+	// 第一行 caps 含 side-band-64k 与 ofs-delta；不应广告 multi_ack（未实现多轮 negotiation）
 	if !strings.Contains(firstCaps, "side-band-64k") {
 		t.Errorf("first caps missing side-band-64k: %q", firstCaps)
 	}
-	if !strings.Contains(firstCaps, "multi_ack") {
-		t.Errorf("first caps missing multi_ack: %q", firstCaps)
+	if !strings.Contains(firstCaps, "ofs-delta") {
+		t.Errorf("first caps missing ofs-delta: %q", firstCaps)
+	}
+	if strings.Contains(firstCaps, "multi_ack") {
+		t.Errorf("caps must not advertise multi_ack (no multi-round negotiation): %q", firstCaps)
 	}
 
 	// 验证含 HEAD 行与 refs/heads/master 行，oid 正确

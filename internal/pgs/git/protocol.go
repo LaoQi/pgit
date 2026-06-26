@@ -10,7 +10,7 @@ import (
 )
 
 // upload-pack v0 capabilities
-const uploadPackCaps = "multi_ack_detailed thin-pack side-band-64k ofs-delta no-progress include-tag"
+const uploadPackCaps = "thin-pack side-band-64k ofs-delta no-progress include-tag"
 
 // receive-pack v0 capabilities
 const receivePackCaps = "report-status side-band-64k delete-refs"
@@ -154,7 +154,8 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		// have 行或其他，忽略
 	}
 
-	// 4. 客户端发 done 后，服务端先发 NAK（multi_ack_detailed / stateless 协议要求）
+	// 4. 客户端发 done 后，服务端发 NAK 终结 negotiation（基本模式 v0：无 multi_ack，
+	//    客户端单轮发完 wants+haves+done，服务端 done 后单发 NAK + PACK，无交互式 ACK）。
 	if err := pw.WritePktString("NAK\n"); err != nil {
 		return fmt.Errorf("upload-pack: write NAK: %w", err)
 	}
