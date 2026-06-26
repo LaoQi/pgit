@@ -8,10 +8,69 @@ import (
 const gitlinkMode uint32 = 0o160000
 
 // CollectReachable 从 rootOids 出发，BFS 收集所有可达对象。
-// 返回去重后的对象列表（按 BFS 访问顺序）。访问过的 oid 用 map 去重。
-// gitlink（mode 0o160000）的 entry 不入队，避免读不存在的对象。
+// haveOids 指定客户端已有对象：从 have 出发可达的对象将被排除，仅返回增量。
+// haveOids 为 nil 时退化为全量收集（兼容旧调用）。
+// 返回去重后的对象列表（按 BFS 访问顺序）。gitlink 不入队。
 // ZeroOid 跳过；store.Read 失败返回错误（可能损坏仓库）。
-func CollectReachable(store *LooseStore, rootOids []Oid) ([]*RawObject, error) {
+func CollectReachable(store *LooseStore, rootOids []Oid, haveOids ...Oid) ([]*RawObject, error) {
+	exclude := make(map[Oid]bool)
+	if len(haveOids) > 0 {
+		exclQueue := make([]Oid, 0, len(haveOids))
+		for _, oid := range haveOids {
+			if !oid.IsZero() {
+				exclQueue = append(exclQueue, oid)
+			}
+		}
+		for len(exclQueue) > 0 {
+			oid := exclQueue[0]
+			exclQueue = exclQueue[1:]
+			if exclude[oid] {
+				continue
+			}
+			if !store.Exists(oid) {
+				continue
+			}
+			exclude[oid] = true
+			obj, err := store.Read(oid)
+			if err != nil {
+				continue
+			}
+			switch obj.Type {
+			case ObjCommit:
+				c, err := ParseCommit(obj.Content)
+				if err != nil {
+					continue
+				}
+				if !c.Tree.IsZero() {
+					exclQueue = append(exclQueue, c.Tree)
+				}
+				for _, p := range c.Parents {
+					if !p.IsZero() {
+						exclQueue = append(exclQueue, p)
+					}
+				}
+			case ObjTree:
+				tr, err := ParseTree(obj.Content)
+				if err != nil {
+					continue
+				}
+				for _, e := range tr.Entries {
+					if e.Mode != gitlinkMode && !e.Oid.IsZero() {
+						exclQueue = append(exclQueue, e.Oid)
+					}
+				}
+			case ObjTag:
+				tg, err := ParseTag(obj.Content)
+				if err != nil {
+					continue
+				}
+				if !tg.Object.IsZero() {
+					exclQueue = append(exclQueue, tg.Object)
+				}
+			}
+		}
+	}
+
 	visited := make(map[Oid]bool)
 	queue := make([]Oid, 0, len(rootOids))
 	for _, oid := range rootOids {
@@ -27,7 +86,7 @@ func CollectReachable(store *LooseStore, rootOids []Oid) ([]*RawObject, error) {
 		if oid.IsZero() {
 			continue
 		}
-		if visited[oid] {
+		if visited[oid] || exclude[oid] {
 			continue
 		}
 
@@ -75,7 +134,6 @@ func CollectReachable(store *LooseStore, rootOids []Oid) ([]*RawObject, error) {
 				queue = append(queue, tg.Object)
 			}
 		case ObjBlob:
-			// 叶子，无引用
 		}
 	}
 

@@ -829,3 +829,303 @@ func TestServeReceivePackEmptyCommandList(t *testing.T) {
 		t.Fatalf("expected trailing flush: err=%v isFlush=%v", err, isFlush)
 	}
 }
+
+// makeRepoWithTwoCommits 构造含两个 commit 的仓库：
+// commit1（initial，tree1+blob1）→ commit2（second，tree2+blob1+blob2，parent=commit1）
+// master 指向 commit2。返回仓库根目录、commit1 oid、commit2 oid。
+func makeRepoWithTwoCommits(t *testing.T) (string, Oid, Oid) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "pgit-fetch-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	store := &LooseStore{Root: filepath.Join(dir, "objects")}
+	blob1 := makeBlob("hello pgit\n")
+	blob2 := makeBlob("new file\n")
+	tree1 := makeTree([]TreeEntry{
+		{Mode: 0o100644, Name: "a.txt", Oid: blob1.Oid()},
+	})
+	tree2 := makeTree([]TreeEntry{
+		{Mode: 0o100644, Name: "a.txt", Oid: blob1.Oid()},
+		{Mode: 0o100644, Name: "b.txt", Oid: blob2.Oid()},
+	})
+	commit1 := makeCommit(tree1.Oid(), nil, "initial commit\n")
+	commit2 := makeCommit(tree2.Oid(), []Oid{commit1.Oid()}, "second commit\n")
+	writeAll(t, store, blob1, blob2, tree1, tree2, commit1, commit2)
+
+	rs := NewRefStore(dir)
+	if _, err := rs.Update([]RefUpdate{
+		{Name: "refs/heads/master", OldOid: ZeroOid, NewOid: commit2.Oid()},
+	}); err != nil {
+		t.Fatalf("update refs: %v", err)
+	}
+	writeRefFile(t, dir, "HEAD", "ref: refs/heads/master\n")
+	return dir, commit1.Oid(), commit2.Oid()
+}
+
+// decodeSidebandPack 从 ServeUploadPack 的 sideband 输出中提取并解码 pack 对象。
+// 返回解码后的对象列表。首帧必须为 NAK。
+func decodeSidebandPack(t *testing.T, outBuf *bytes.Buffer) []*RawObject {
+	t.Helper()
+	pr := NewPktReader(outBuf)
+	payload, isFlush, err := pr.ReadPkt()
+	if err != nil {
+		t.Fatalf("read NAK: %v", err)
+	}
+	if isFlush {
+		t.Fatal("expected NAK frame, got flush")
+	}
+	if string(payload) != "NAK\n" {
+		t.Fatalf("first frame = %q, want NAK\\n", payload)
+	}
+
+	var packData bytes.Buffer
+	for {
+		payload, isFlush, err := pr.ReadPkt()
+		if err != nil {
+			t.Fatalf("read sideband: %v", err)
+		}
+		if isFlush {
+			break
+		}
+		if len(payload) >= 1 && payload[0] == SidebandPack {
+			packData.Write(payload[1:])
+		}
+	}
+
+	if packData.Len() == 0 {
+		return nil
+	}
+	dec := NewPackDecoder(bytes.NewReader(packData.Bytes()))
+	objs, err := dec.Decode()
+	if err != nil {
+		t.Fatalf("decode pack: %v", err)
+	}
+	return objs
+}
+
+// TestServeUploadPackIncrementalFetch: have 旧 commit + want 新 commit → pack 仅含增量对象
+func TestServeUploadPackIncrementalFetch(t *testing.T) {
+	dir, commit1Oid, commit2Oid := makeRepoWithTwoCommits(t)
+
+	var inBuf bytes.Buffer
+	inw := NewPktWriter(&inBuf)
+	inw.WritePktString(fmt.Sprintf("want %s side-band-64k\n", commit2Oid))
+	inw.WriteFlush()
+	inw.WritePktString(fmt.Sprintf("have %s\n", commit1Oid))
+	inw.WritePktString("done\n")
+
+	var outBuf bytes.Buffer
+	if err := ServeUploadPack(dir, &inBuf, &outBuf); err != nil {
+		t.Fatalf("ServeUploadPack: %v", err)
+	}
+
+	objs := decodeSidebandPack(t, &outBuf)
+
+	// commit1 可达：commit1+tree1+blob1（have 排除）
+	// commit2 可达：commit2+tree2+blob1+blob2+commit1+tree1（want 全量）
+	// 差量 = commit2+tree2+blob2（commit1+tree1+blob1 被 have 排除）
+	oidSet := make(map[Oid]bool)
+	for _, o := range objs {
+		oidSet[o.Oid()] = true
+	}
+	if len(objs) != 3 {
+		t.Errorf("object count = %d, want 3 (commit2+tree2+blob2); got oids: %v", len(objs), oidSet)
+	}
+
+	store := &LooseStore{Root: filepath.Join(dir, "objects")}
+	blob2 := makeBlob("new file\n")
+	tree2 := makeTree([]TreeEntry{
+		{Mode: 0o100644, Name: "a.txt", Oid: makeBlob("hello pgit\n").Oid()},
+		{Mode: 0o100644, Name: "b.txt", Oid: blob2.Oid()},
+	})
+	commit2 := makeCommit(tree2.Oid(), []Oid{commit1Oid}, "second commit\n")
+
+	for _, expected := range []Oid{commit2.Oid(), tree2.Oid(), blob2.Oid()} {
+		if !oidSet[expected] {
+			t.Errorf("missing expected oid %s in pack", expected)
+		}
+		if !store.Exists(expected) {
+			t.Errorf("expected oid %s not in store", expected)
+		}
+	}
+}
+
+// TestServeUploadPackHaveEqualsWant: have 与 want 相同 → 仅 NAK + flush，无 PACK
+func TestServeUploadPackHaveEqualsWant(t *testing.T) {
+	dir, commitOid := makeRepoWithCommit(t)
+
+	var inBuf bytes.Buffer
+	inw := NewPktWriter(&inBuf)
+	inw.WritePktString(fmt.Sprintf("want %s side-band-64k\n", commitOid))
+	inw.WriteFlush()
+	inw.WritePktString(fmt.Sprintf("have %s\n", commitOid))
+	inw.WritePktString("done\n")
+
+	var outBuf bytes.Buffer
+	if err := ServeUploadPack(dir, &inBuf, &outBuf); err != nil {
+		t.Fatalf("ServeUploadPack: %v", err)
+	}
+
+	pr := NewPktReader(&outBuf)
+	payload, isFlush, err := pr.ReadPkt()
+	if err != nil {
+		t.Fatalf("read NAK: %v", err)
+	}
+	if string(payload) != "NAK\n" {
+		t.Fatalf("first frame = %q, want NAK\\n", payload)
+	}
+	_, isFlush, err = pr.ReadPkt()
+	if err != nil {
+		t.Fatalf("read flush: %v", err)
+	}
+	if !isFlush {
+		t.Fatal("expected flush after NAK (no pack for have==want)")
+	}
+}
+
+// TestServeUploadPackMultipleHaves: 多个 have 行 → 所有 have 可达对象被排除
+func TestServeUploadPackMultipleHaves(t *testing.T) {
+	dir, commit1Oid, commit2Oid := makeRepoWithTwoCommits(t)
+
+	var inBuf bytes.Buffer
+	inw := NewPktWriter(&inBuf)
+	inw.WritePktString(fmt.Sprintf("want %s side-band-64k\n", commit2Oid))
+	inw.WriteFlush()
+	inw.WritePktString(fmt.Sprintf("have %s\n", commit1Oid))
+	inw.WritePktString(fmt.Sprintf("have %s\n", commit2Oid))
+	inw.WritePktString("done\n")
+
+	var outBuf bytes.Buffer
+	if err := ServeUploadPack(dir, &inBuf, &outBuf); err != nil {
+		t.Fatalf("ServeUploadPack: %v", err)
+	}
+
+	pr := NewPktReader(&outBuf)
+	payload, _, err := pr.ReadPkt()
+	if err != nil {
+		t.Fatalf("read NAK: %v", err)
+	}
+	if string(payload) != "NAK\n" {
+		t.Fatalf("first frame = %q, want NAK\\n", payload)
+	}
+	_, isFlush, err := pr.ReadPkt()
+	if err != nil {
+		t.Fatalf("read flush: %v", err)
+	}
+	if !isFlush {
+		t.Fatal("expected flush (have covers all wants)")
+	}
+}
+
+// TestServeUploadPackHaveWithFlush: have 行之间有 flush 分隔 → flush 被跳过，have 正确收集
+func TestServeUploadPackHaveWithFlush(t *testing.T) {
+	dir, commit1Oid, commit2Oid := makeRepoWithTwoCommits(t)
+
+	var inBuf bytes.Buffer
+	inw := NewPktWriter(&inBuf)
+	inw.WritePktString(fmt.Sprintf("want %s side-band-64k\n", commit2Oid))
+	inw.WriteFlush()
+	inw.WritePktString(fmt.Sprintf("have %s\n", commit1Oid))
+	inw.WriteFlush()
+	inw.WritePktString("done\n")
+
+	var outBuf bytes.Buffer
+	if err := ServeUploadPack(dir, &inBuf, &outBuf); err != nil {
+		t.Fatalf("ServeUploadPack: %v", err)
+	}
+
+	objs := decodeSidebandPack(t, &outBuf)
+	if len(objs) != 3 {
+		t.Errorf("object count = %d, want 3 (commit2+tree2+blob2)", len(objs))
+	}
+}
+
+// TestServeUploadPackHaveUnrelatedBranch: have 指向无关分支 → pack 包含 want 全部可达对象
+func TestServeUploadPackHaveUnrelatedBranch(t *testing.T) {
+	dir, err := os.MkdirTemp("", "pgit-fetch-unrel-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	store := &LooseStore{Root: filepath.Join(dir, "objects")}
+
+	blobA := makeBlob("branch A\n")
+	treeA := makeTree([]TreeEntry{{Mode: 0o100644, Name: "a.txt", Oid: blobA.Oid()}})
+	commitA := makeCommit(treeA.Oid(), nil, "branch A commit\n")
+
+	blobB := makeBlob("branch B\n")
+	treeB := makeTree([]TreeEntry{{Mode: 0o100644, Name: "b.txt", Oid: blobB.Oid()}})
+	commitB := makeCommit(treeB.Oid(), nil, "branch B commit\n")
+
+	writeAll(t, store, blobA, treeA, commitA, blobB, treeB, commitB)
+
+	rs := NewRefStore(dir)
+	rs.Update([]RefUpdate{
+		{Name: "refs/heads/branchA", OldOid: ZeroOid, NewOid: commitA.Oid()},
+		{Name: "refs/heads/branchB", OldOid: ZeroOid, NewOid: commitB.Oid()},
+	})
+	writeRefFile(t, dir, "HEAD", "ref: refs/heads/branchB\n")
+
+	var inBuf bytes.Buffer
+	inw := NewPktWriter(&inBuf)
+	inw.WritePktString(fmt.Sprintf("want %s side-band-64k\n", commitB.Oid()))
+	inw.WriteFlush()
+	inw.WritePktString(fmt.Sprintf("have %s\n", commitA.Oid()))
+	inw.WritePktString("done\n")
+
+	var outBuf bytes.Buffer
+	if err := ServeUploadPack(dir, &inBuf, &outBuf); err != nil {
+		t.Fatalf("ServeUploadPack: %v", err)
+	}
+
+	objs := decodeSidebandPack(t, &outBuf)
+	oidSet := make(map[Oid]bool)
+	for _, o := range objs {
+		oidSet[o.Oid()] = true
+	}
+	if !oidSet[commitB.Oid()] || !oidSet[treeB.Oid()] || !oidSet[blobB.Oid()] {
+		t.Errorf("pack missing branchB objects; got oids: %v", oidSet)
+	}
+	if oidSet[commitA.Oid()] || oidSet[treeA.Oid()] || oidSet[blobA.Oid()] {
+		t.Errorf("pack should not contain branchA objects (unrelated have); got oids: %v", oidSet)
+	}
+	if len(objs) != 3 {
+		t.Errorf("object count = %d, want 3 (commitB+treeB+blobB only)", len(objs))
+	}
+}
+
+// TestServeUploadPackNoSidebandIncremental: 非 sideband 模式增量 fetch
+func TestServeUploadPackNoSidebandIncremental(t *testing.T) {
+	dir, commit1Oid, commit2Oid := makeRepoWithTwoCommits(t)
+
+	var inBuf bytes.Buffer
+	inw := NewPktWriter(&inBuf)
+	inw.WritePktString(fmt.Sprintf("want %s\n", commit2Oid))
+	inw.WriteFlush()
+	inw.WritePktString(fmt.Sprintf("have %s\n", commit1Oid))
+	inw.WritePktString("done\n")
+
+	var outBuf bytes.Buffer
+	if err := ServeUploadPack(dir, &inBuf, &outBuf); err != nil {
+		t.Fatalf("ServeUploadPack: %v", err)
+	}
+
+	out := outBuf.Bytes()
+	if len(out) < 8 || string(out[:8]) != "0008NAK\n" {
+		t.Fatalf("missing NAK frame")
+	}
+	out = out[8:]
+	trimmed := trimTrailingFlush(out)
+	dec := NewPackDecoder(bytes.NewReader(trimmed))
+	objs, err := dec.Decode()
+	if err != nil {
+		t.Fatalf("decode pack: %v", err)
+	}
+	if len(objs) != 3 {
+		t.Errorf("object count = %d, want 3 (commit2+tree2+blob2)", len(objs))
+	}
+}

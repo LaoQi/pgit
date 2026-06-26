@@ -440,3 +440,191 @@ func TestReachAllTypesSorted(t *testing.T) {
 		t.Fatalf("len = %d, want 4 (tag+commit+tree+blob)", len(sorted))
 	}
 }
+
+// TestReachWithHaveFullCoverage: have 完全覆盖 want 可达 → 空结果
+func TestReachWithHaveFullCoverage(t *testing.T) {
+	dir, err := os.MkdirTemp("", "pgit-reach-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	store := &LooseStore{Root: dir}
+
+	blob1 := makeBlob("hello")
+	tree1 := makeTree([]TreeEntry{
+		{Mode: 0o100644, Name: "a.txt", Oid: blob1.Oid()},
+	})
+	commit1 := makeCommit(tree1.Oid(), nil, "initial\n")
+
+	writeAll(t, store, blob1, tree1, commit1)
+
+	results, err := CollectReachable(store, []Oid{commit1.Oid()}, commit1.Oid())
+	if err != nil {
+		t.Fatalf("CollectReachable: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected empty result (have covers all), got %d: %v", len(results), oidSet(results))
+	}
+}
+
+// TestReachWithHavePartialCoverage: have 指向旧 commit，want 指向新 commit → 仅返回增量
+func TestReachWithHavePartialCoverage(t *testing.T) {
+	dir, err := os.MkdirTemp("", "pgit-reach-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	store := &LooseStore{Root: dir}
+
+	blob1 := makeBlob("hello")
+	blob2 := makeBlob("world")
+	tree1 := makeTree([]TreeEntry{
+		{Mode: 0o100644, Name: "a.txt", Oid: blob1.Oid()},
+	})
+	tree2 := makeTree([]TreeEntry{
+		{Mode: 0o100644, Name: "a.txt", Oid: blob1.Oid()},
+		{Mode: 0o100644, Name: "b.txt", Oid: blob2.Oid()},
+	})
+	commit1 := makeCommit(tree1.Oid(), nil, "initial\n")
+	commit2 := makeCommit(tree2.Oid(), []Oid{commit1.Oid()}, "second\n")
+
+	writeAll(t, store, blob1, blob2, tree1, tree2, commit1, commit2)
+
+	results, err := CollectReachable(store, []Oid{commit2.Oid()}, commit1.Oid())
+	if err != nil {
+		t.Fatalf("CollectReachable: %v", err)
+	}
+	assertOids(t, results, commit2.Oid(), tree2.Oid(), blob2.Oid())
+}
+
+// TestReachWithHaveSharedTree: commit1 和 commit2 共享 tree → have commit1 仅排除 commit1+tree+blob
+func TestReachWithHaveSharedTree(t *testing.T) {
+	dir, err := os.MkdirTemp("", "pgit-reach-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	store := &LooseStore{Root: dir}
+
+	blob1 := makeBlob("shared")
+	tree1 := makeTree([]TreeEntry{
+		{Mode: 0o100644, Name: "a.txt", Oid: blob1.Oid()},
+	})
+	commit1 := makeCommit(tree1.Oid(), nil, "first\n")
+	commit2 := makeCommit(tree1.Oid(), []Oid{commit1.Oid()}, "second\n")
+
+	writeAll(t, store, blob1, tree1, commit1, commit2)
+
+	results, err := CollectReachable(store, []Oid{commit2.Oid()}, commit1.Oid())
+	if err != nil {
+		t.Fatalf("CollectReachable: %v", err)
+	}
+	assertOids(t, results, commit2.Oid())
+}
+
+// TestReachWithHaveNoCoverage: have 指向无关对象 → 结果等于全量 CollectReachable
+func TestReachWithHaveNoCoverage(t *testing.T) {
+	dir, err := os.MkdirTemp("", "pgit-reach-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	store := &LooseStore{Root: dir}
+
+	blobA := makeBlob("branchA")
+	treeA := makeTree([]TreeEntry{
+		{Mode: 0o100644, Name: "a.txt", Oid: blobA.Oid()},
+	})
+	commitA := makeCommit(treeA.Oid(), nil, "branch A\n")
+
+	blobB := makeBlob("branchB")
+	treeB := makeTree([]TreeEntry{
+		{Mode: 0o100644, Name: "b.txt", Oid: blobB.Oid()},
+	})
+	commitB := makeCommit(treeB.Oid(), nil, "branch B\n")
+
+	writeAll(t, store, blobA, treeA, commitA, blobB, treeB, commitB)
+
+	results, err := CollectReachable(store, []Oid{commitB.Oid()}, commitA.Oid())
+	if err != nil {
+		t.Fatalf("CollectReachable: %v", err)
+	}
+	assertOids(t, results, commitB.Oid(), treeB.Oid(), blobB.Oid())
+}
+
+// TestReachWithHaveLinearChain: 线性 3 commit 链，have=commit1, want=commit3 → 仅增量
+func TestReachWithHaveLinearChain(t *testing.T) {
+	dir, err := os.MkdirTemp("", "pgit-reach-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	store := &LooseStore{Root: dir}
+
+	blob1 := makeBlob("v1")
+	blob2 := makeBlob("v2")
+	blob3 := makeBlob("v3")
+	tree1 := makeTree([]TreeEntry{{Mode: 0o100644, Name: "f.txt", Oid: blob1.Oid()}})
+	tree2 := makeTree([]TreeEntry{{Mode: 0o100644, Name: "f.txt", Oid: blob2.Oid()}})
+	tree3 := makeTree([]TreeEntry{{Mode: 0o100644, Name: "f.txt", Oid: blob3.Oid()}})
+	commit1 := makeCommit(tree1.Oid(), nil, "v1\n")
+	commit2 := makeCommit(tree2.Oid(), []Oid{commit1.Oid()}, "v2\n")
+	commit3 := makeCommit(tree3.Oid(), []Oid{commit2.Oid()}, "v3\n")
+
+	writeAll(t, store, blob1, blob2, blob3, tree1, tree2, tree3, commit1, commit2, commit3)
+
+	results, err := CollectReachable(store, []Oid{commit3.Oid()}, commit1.Oid())
+	if err != nil {
+		t.Fatalf("CollectReachable: %v", err)
+	}
+	assertOids(t, results, commit3.Oid(), commit2.Oid(), tree3.Oid(), tree2.Oid(), blob3.Oid(), blob2.Oid())
+}
+
+// TestReachWithHaveMissingOid: have 指向不存在的 oid → 忽略，等价于无 have
+func TestReachWithHaveMissingOid(t *testing.T) {
+	dir, err := os.MkdirTemp("", "pgit-reach-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	store := &LooseStore{Root: dir}
+
+	blob1 := makeBlob("hello")
+	tree1 := makeTree([]TreeEntry{
+		{Mode: 0o100644, Name: "a.txt", Oid: blob1.Oid()},
+	})
+	commit1 := makeCommit(tree1.Oid(), nil, "initial\n")
+
+	writeAll(t, store, blob1, tree1, commit1)
+
+	missing := Oid("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	results, err := CollectReachable(store, []Oid{commit1.Oid()}, missing)
+	if err != nil {
+		t.Fatalf("CollectReachable: %v", err)
+	}
+	assertOids(t, results, commit1.Oid(), tree1.Oid(), blob1.Oid())
+}
+
+// TestReachWithHaveZeroOid: have 含 ZeroOid → 跳过，等价于无 have
+func TestReachWithHaveZeroOid(t *testing.T) {
+	dir, err := os.MkdirTemp("", "pgit-reach-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	store := &LooseStore{Root: dir}
+
+	blob1 := makeBlob("hello")
+	tree1 := makeTree([]TreeEntry{
+		{Mode: 0o100644, Name: "a.txt", Oid: blob1.Oid()},
+	})
+	commit1 := makeCommit(tree1.Oid(), nil, "initial\n")
+
+	writeAll(t, store, blob1, tree1, commit1)
+
+	results, err := CollectReachable(store, []Oid{commit1.Oid()}, ZeroOid)
+	if err != nil {
+		t.Fatalf("CollectReachable: %v", err)
+	}
+	assertOids(t, results, commit1.Oid(), tree1.Oid(), blob1.Oid())
+}

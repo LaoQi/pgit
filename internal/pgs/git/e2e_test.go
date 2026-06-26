@@ -199,3 +199,92 @@ func TestGitPushE2E(t *testing.T) {
 		t.Errorf("hello.txt = %q, want %q", content, "hello e2e\n")
 	}
 }
+
+// TestGitFetchIncrementalE2E 用本地 git 做增量 fetch 端到端测试。
+// 先 push 初始 commit，clone 后再 push 新 commit，然后 fetch 验证增量拉取。
+func TestGitFetchIncrementalE2E(t *testing.T) {
+	if os.Getenv("PGIT_E2E") == "" {
+		t.Skip("设置 PGIT_E2E=1 启用端到端集成测试")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git 不在 PATH 中")
+	}
+
+	workdir := t.TempDir()
+	gitRoot := filepath.Join(workdir, "repo")
+	for _, sub := range []string{"objects", "refs/heads", "refs/tags"} {
+		if err := os.MkdirAll(filepath.Join(gitRoot, sub), 0o777); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRefFile(t, gitRoot, "HEAD", "ref: refs/heads/master\n")
+
+	srcDir := filepath.Join(workdir, "src")
+	if out, err := exec.Command("git", "init", srcDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+
+	runGit := func(dir string, args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_AUTHOR_NAME=Test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	runGit(srcDir, "config", "user.email", "test@test.com")
+	runGit(srcDir, "config", "user.name", "Test")
+
+	os.WriteFile(filepath.Join(srcDir, "hello.txt"), []byte("v1\n"), 0o644)
+	runGit(srcDir, "add", "hello.txt")
+	runGit(srcDir, "commit", "-m", "v1")
+	runGit(srcDir, "remote", "add", "origin", gitRoot)
+
+	cmd := exec.Command("git", "push", "-u", "origin", "master")
+	cmd.Dir = srcDir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git push v1: %v\n%s", err, out)
+	}
+
+	cloneDir := filepath.Join(workdir, "clone")
+	cmd = exec.Command("git", "clone", gitRoot, cloneDir)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, out)
+	}
+
+	os.WriteFile(filepath.Join(srcDir, "hello.txt"), []byte("v2\n"), 0o644)
+	runGit(srcDir, "add", "hello.txt")
+	runGit(srcDir, "commit", "-m", "v2")
+
+	cmd = exec.Command("git", "push", "origin", "master")
+	cmd.Dir = srcDir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git push v2: %v\n%s", err, out)
+	}
+
+	cmd = exec.Command("git", "fetch", "origin")
+	cmd.Dir = cloneDir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git fetch: %v\n%s", err, out)
+	}
+
+	runGit(cloneDir, "merge", "origin/master")
+
+	content, err := os.ReadFile(filepath.Join(cloneDir, "hello.txt"))
+	if err != nil {
+		t.Fatalf("read hello.txt: %v", err)
+	}
+	if string(content) != "v2\n" {
+		t.Errorf("hello.txt = %q, want %q", content, "v2\n")
+	}
+}

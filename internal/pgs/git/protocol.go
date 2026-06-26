@@ -138,7 +138,8 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		}
 	}
 
-	// 3. 读 have 行（忽略）直到 done（或 EOF）
+	// 3. 读 have 行直到 done（或 EOF）
+	var haveOids []Oid
 	for {
 		payload, isFlush, err := pr.ReadPkt()
 		if err == io.EOF {
@@ -154,6 +155,12 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		if strings.HasPrefix(line, "done") {
 			break
 		}
+		if strings.HasPrefix(line, "have ") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				haveOids = append(haveOids, Oid(fields[1]))
+			}
+		}
 	}
 
 	// 4. 发 NAK 终结 negotiation（基本模式 v0，无 multi_ack）。
@@ -162,11 +169,19 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("upload-pack: write NAK: %w", err)
 	}
 
-	// 5. CollectReachable
+	// 5. CollectReachable（排除 have 可达对象）
 	store := &LooseStore{Root: filepath.Join(repoRoot, "objects")}
-	objs, err := CollectReachable(store, wantOids)
+	objs, err := CollectReachable(store, wantOids, haveOids...)
 	if err != nil {
 		return fmt.Errorf("upload-pack: collect reachable: %w", err)
+	}
+
+	// 6. want 全部已被 have 覆盖 → 仅发 NAK + flush，不发 PACK
+	if len(objs) == 0 {
+		if err := pw.WriteFlush(); err != nil {
+			return fmt.Errorf("upload-pack: flush (no pack): %w", err)
+		}
+		return nil
 	}
 
 	// 6. 规划 delta 配对（仅 blob，单层，OFS_DELTA）
