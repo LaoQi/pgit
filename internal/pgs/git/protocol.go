@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -204,6 +205,7 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 
 	// 6. want 全部已被 have 覆盖 → 仅发 NAK + flush，不发 PACK
 	if len(objs) == 0 {
+		log.Printf("upload-pack: wants=%d haves=%d objects=0 (up-to-date)", len(wantOids), len(haveOids))
 		if err := pw.WriteFlush(); err != nil {
 			return fmt.Errorf("upload-pack: flush (no pack): %w", err)
 		}
@@ -250,6 +252,7 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	if err := pw.WriteFlush(); err != nil {
 		return fmt.Errorf("upload-pack: flush: %w", err)
 	}
+	log.Printf("upload-pack: wants=%d haves=%d objects=%d", len(wantOids), len(haveOids), len(objs))
 	return nil
 }
 
@@ -269,6 +272,7 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 	// 首帧为 flush：空命令列表请求（body 仅含 flush-pkt，无 ref 更新、无 packfile）。
 	// 与 cgit 一致，返回空 report-status（unpack ok + flush-pkt）而非错误。
 	if isFlush {
+		log.Printf("receive-pack: empty command list")
 		if err := pw.WritePktString("unpack ok\n"); err != nil {
 			return fmt.Errorf("receive-pack: write unpack status: %w", err)
 		}
@@ -320,12 +324,30 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 			return fmt.Errorf("receive-pack: write %s: %w", oid, err)
 		}
 	}
+	if len(objs) > 0 {
+		log.Printf("receive-pack: received %d objects", len(objs))
+	}
 
 	// 5. RefStore.Update（per-ref 原子 CAS）
 	rs := NewRefStore(repoRoot)
 	results, err := rs.Update(updates)
 	if err != nil {
 		return fmt.Errorf("receive-pack: update refs: %w", err)
+	}
+
+	// 5.5 日志：记录每个 ref 更新结果，标记 force-push（非快进推送）
+	for i, u := range updates {
+		if i < len(results) && results[i].Ok {
+			tag := ""
+			if u.OldOid != ZeroOid && u.NewOid != ZeroOid {
+				if !isFastForward(store, u.OldOid, u.NewOid) {
+					tag = " [force-push]"
+				}
+			}
+			log.Printf("receive-pack: %s %s → %s%s", u.Name, oidShort(u.OldOid), oidShort(u.NewOid), tag)
+		} else if i < len(results) {
+			log.Printf("receive-pack: %s rejected: %s", u.Name, results[i].Reason)
+		}
 	}
 
 	// 6. 回 report-status
@@ -475,4 +497,47 @@ func planPackEntries(objs []*RawObject) ([]packEntry, error) {
 		entries[j].delta = delta
 	}
 	return entries, nil
+}
+
+func oidShort(o Oid) string {
+	if len(o) >= 7 {
+		return string(o[:7])
+	}
+	return string(o)
+}
+
+// isFastForward 检查 ancestor 是否是 descendant 的祖先（快进推送）。
+// 从 descendant 沿 parent 链 BFS，若能到达 ancestor 则为快进。
+// 任一对象读取失败视为非快进（保守策略，不影响推送本身）。
+func isFastForward(store *LooseStore, ancestor, descendant Oid) bool {
+	visited := make(map[Oid]bool)
+	queue := []Oid{descendant}
+	for len(queue) > 0 {
+		oid := queue[0]
+		queue = queue[1:]
+		if oid == ancestor {
+			return true
+		}
+		if visited[oid] {
+			continue
+		}
+		visited[oid] = true
+		obj, err := store.Read(oid)
+		if err != nil {
+			continue
+		}
+		if obj.Type != ObjCommit {
+			continue
+		}
+		c, err := ParseCommit(obj.Content)
+		if err != nil {
+			continue
+		}
+		for _, p := range c.Parents {
+			if !p.IsZero() {
+				queue = append(queue, p)
+			}
+		}
+	}
+	return false
 }

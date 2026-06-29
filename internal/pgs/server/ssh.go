@@ -129,7 +129,9 @@ func (s *SSHHandler) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 
 			req.Reply(true, nil)
 			if err := git.HandleSSHSession(cmdName, repoPath, ch); err != nil {
-				log.Printf("SSH: session %s: %v", cmdName, err)
+				log.Printf("SSH: %s %s failed: %v", cmdName, alias, err)
+			} else {
+				log.Printf("SSH: %s %s ok", cmdName, alias)
 			}
 			ch.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
 			return

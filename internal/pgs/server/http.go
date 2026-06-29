@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi"
 
@@ -33,6 +34,7 @@ func NewHTTPHandler(manager *pgs.RepositoriesManager, settings *pgs.Setting) *HT
 
 func (h *HTTPHandler) buildRouter() http.Handler {
 	r := chi.NewRouter()
+	r.Use(requestLogger)
 
 	if h.Settings.HttpAuth {
 		r.Use(basicAuth("pgit", h.Settings.Credentials))
@@ -365,10 +367,12 @@ func (h *HTTPHandler) infoRefs(w http.ResponseWriter, r *http.Request, repoPath 
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-advertisement", service))
 	out, err := git.ServeInfoRefs(repoPath, service)
 	if err != nil {
+		log.Printf("info-refs %s: %v", service, err)
 		http.Error(w, "internal server error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	_, _ = w.Write(out)
+	log.Printf("info-refs %s ok", service)
 }
 
 func (h *HTTPHandler) gitCommand(w http.ResponseWriter, r *http.Request, repoPath string, command string) {
@@ -378,10 +382,14 @@ func (h *HTTPHandler) gitCommand(w http.ResponseWriter, r *http.Request, repoPat
 	case "upload-pack":
 		if err := git.HandleUploadPack(repoPath, r.Body, w); err != nil {
 			log.Printf("upload-pack: %v", err)
+		} else {
+			log.Printf("upload-pack ok")
 		}
 	case "receive-pack":
 		if err := git.HandleReceivePack(repoPath, r.Body, w); err != nil {
 			log.Printf("receive-pack: %v", err)
+		} else {
+			log.Printf("receive-pack ok")
 		}
 	default:
 		http.Error(w, "unknown command", http.StatusBadRequest)
@@ -412,4 +420,33 @@ func unauthorized(w http.ResponseWriter, realm string) {
 	w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s"`, realm))
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write([]byte("Unauthorized"))
+}
+
+type responseStatusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *responseStatusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func requestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &responseStatusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sw, r)
+		user, _, hasAuth := r.BasicAuth()
+		remote, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if remote == "" {
+			remote = r.RemoteAddr
+		}
+		authInfo := "-"
+		if hasAuth {
+			authInfo = user
+		}
+		log.Printf("HTTP %s %s %d %s %s %s",
+			r.Method, r.URL.Path, sw.status, time.Since(start).Round(time.Millisecond), authInfo, remote)
+	})
 }
