@@ -3,6 +3,8 @@ package git
 import (
 	"bytes"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -286,5 +288,125 @@ func TestGitFetchIncrementalE2E(t *testing.T) {
 	}
 	if string(content) != "v2\n" {
 		t.Errorf("hello.txt = %q, want %q", content, "v2\n")
+	}
+}
+
+// TestGitFetchHTTPIncrementalE2E 用 httptest 模拟 pgit HTTP 传输，真实 git fetch 增量。
+// 覆盖 HTTP stateless_rpc 多轮 negotiation：have flush POST → NAK，done POST → NAK+PACK。
+// 修复前：pgit 不响应 have flush，done POST 发 NAK+PACK，客户端报
+// "fatal: git fetch-pack: expected ACK/NAK, got '?PACK'"。
+func TestGitFetchHTTPIncrementalE2E(t *testing.T) {
+	if os.Getenv("PGIT_E2E") == "" {
+		t.Skip("设置 PGIT_E2E=1 启用端到端集成测试")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git 不在 PATH 中")
+	}
+
+	workdir := t.TempDir()
+	gitRoot := filepath.Join(workdir, "repo.git")
+	for _, sub := range []string{"objects", "refs/heads", "refs/tags"} {
+		if err := os.MkdirAll(filepath.Join(gitRoot, sub), 0o777); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRefFile(t, gitRoot, "HEAD", "ref: refs/heads/master\n")
+
+	// 构造 HTTP server，直接接入 git 包的 smart-http 入口（模拟 pgit HTTP 传输）
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repo.git/info/refs", func(w http.ResponseWriter, r *http.Request) {
+		service := r.URL.Query().Get("service")
+		w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-advertisement", service))
+		out, err := ServeInfoRefs(gitRoot, service)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(out)
+	})
+	mux.HandleFunc("/repo.git/git-upload-pack", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
+		w.WriteHeader(http.StatusOK)
+		if err := HandleUploadPack(gitRoot, r.Body, w); err != nil {
+			t.Logf("upload-pack: %v", err)
+		}
+	})
+	mux.HandleFunc("/repo.git/git-receive-pack", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
+		w.WriteHeader(http.StatusOK)
+		if err := HandleReceivePack(gitRoot, r.Body, w); err != nil {
+			t.Logf("receive-pack: %v", err)
+		}
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	repoURL := ts.URL + "/repo.git"
+
+	runGit := func(dir string, args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_AUTHOR_NAME=Test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test",
+			"GIT_TERMINAL_PROMPT=0",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	// 源仓库：20 个线性 commit + push HTTP
+	// 确保后续 fetch 时客户端本地有 >16 个 commit，fetch-pack 会发 >16 个 have，
+	// 触发第一批 16 have + flush（INITIAL_FLUSH），强制走 have flush 多轮 negotiation 路径。
+	srcDir := filepath.Join(workdir, "src")
+	if out, err := exec.Command("git", "init", srcDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	runGit(srcDir, "config", "user.email", "test@test.com")
+	runGit(srcDir, "config", "user.name", "Test")
+	for i := 1; i <= 20; i++ {
+		if err := os.WriteFile(filepath.Join(srcDir, "hello.txt"), []byte(fmt.Sprintf("v%d\n", i)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(srcDir, "add", "hello.txt")
+		runGit(srcDir, "commit", "-m", fmt.Sprintf("v%d", i))
+	}
+	runGit(srcDir, "remote", "add", "origin", repoURL)
+	runGit(srcDir, "push", "-u", "origin", "master")
+
+	// clone HTTP（全量，验证 clone 仍正常）
+	cloneDir := filepath.Join(workdir, "clone")
+	cmd := exec.Command("git", "clone", repoURL, cloneDir)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, out)
+	}
+
+	// push v21 HTTP（客户端 clone 时停在 v20，fetch 增量拉取 v21）
+	if err := os.WriteFile(filepath.Join(srcDir, "hello.txt"), []byte("v21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(srcDir, "add", "hello.txt")
+	runGit(srcDir, "commit", "-m", "v21")
+	runGit(srcDir, "push", "origin", "master")
+
+	// git fetch HTTP 增量（核心验证点：客户端 20 commit → >16 have → have flush 多轮）
+	cmd = exec.Command("git", "fetch", "origin")
+	cmd.Dir = cloneDir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git fetch (incremental HTTP) failed: %v\n%s", err, out)
+	}
+
+	runGit(cloneDir, "merge", "origin/master")
+	content, err := os.ReadFile(filepath.Join(cloneDir, "hello.txt"))
+	if err != nil {
+		t.Fatalf("read hello.txt: %v", err)
+	}
+	if string(content) != "v21\n" {
+		t.Errorf("hello.txt = %q, want %q", content, "v21\n")
 	}
 }

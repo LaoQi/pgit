@@ -101,8 +101,16 @@ func AdvertiseRefs(repoRoot string, service string) ([]byte, error) {
 
 // ServeUploadPack 处理 upload-pack 请求（clone/fetch）。
 // in 从 wants 开始（ref advertisement 由 AdvertiseRefs 单独生成）。
-// 基本模式 v0（不广告 multi_ack_detailed）：客户端单轮发 wants+haves+done，
-// 服务端 done 后发 NAK + PACK + flush。无交互式 ACK。
+// 基本模式 v0（不广告 multi_ack_detailed）：客户端分批发 wants/haves/done。
+//   - wants 阶段：want 行序列以 flush 结束
+//   - haves 阶段：have 行分批，每批以 flush 结束；服务端在每个 flush 处回 NAK
+//     （不带 flush pkt，避免客户端 get_ack 误读 flush 报 die）
+//   - done 结束 negotiation，服务端发 NAK + PACK + flush
+// HTTP stateless_rpc：每个 POST 是一次 ServeUploadPack 调用，have 批的 flush
+//   后请求体结束（EOF），此时仅已发 NAK 响应，不发 PACK 直接 return；
+//   最终含 done 的 POST 才发 NAK + PACK + flush。
+// SSH 流式：一次调用处理整轮 negotiation，have flush 后 continue 继续读。
+// NAK 数与 fetch-pack 客户端 get_ack 次数自洽（对齐 fetch-pack.c:619-628）。
 // NAK 作为普通 pkt-line 写到 pw（sideband 模式下 NAK 不走 ch1，与 cgit 一致）。
 // PACK 数据：sideband 模式走 ch1，否则直接写 out。
 func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
@@ -139,20 +147,32 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	}
 
 	// 3. 读 have 行直到 done（或 EOF）
+	// 基本模式 v0：have 阶段每个 flush 处回 NAK 响应客户端这批 have（对齐
+	// upload-pack.c:595-606）。HTTP stateless_rpc 下 flush 后请求体结束（EOF），
+	// 前面已发 NAK，直接 return 不发 PACK；SSH 流式下 continue 继续读下一批。
 	var haveOids []Oid
+	sawDone := false
 	for {
 		payload, isFlush, err := pr.ReadPkt()
 		if err == io.EOF {
+			// HTTP 中间请求（have flush 后请求体结束，无 done）：前面 flush 已发 NAK
 			break
 		}
 		if err != nil {
 			return fmt.Errorf("upload-pack: read have/done: %w", err)
 		}
 		if isFlush {
+			// 基本模式：flush 时回 NAK（不带 flush pkt）。
+			// 客户端 get_ack 读 NAK 返回 0 退出 do-while，flushes--；
+			// 若发 flush 会被 get_ack 误读为 "got a flush packet" 报 die。
+			if err := pw.WritePktString("NAK\n"); err != nil {
+				return fmt.Errorf("upload-pack: write NAK (have flush): %w", err)
+			}
 			continue
 		}
 		line := string(payload)
 		if strings.HasPrefix(line, "done") {
+			sawDone = true
 			break
 		}
 		if strings.HasPrefix(line, "have ") {
@@ -163,7 +183,13 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		}
 	}
 
-	// 4. 发 NAK 终结 negotiation（基本模式 v0，无 multi_ack）。
+	// HTTP stateless_rpc 中间请求（have flush 后 EOF，无 done）：
+	// 前面 flush 已发 NAK 响应，本次请求结束，不发 PACK。
+	if !sawDone {
+		return nil
+	}
+
+	// 4. done 后发 NAK 终结 negotiation（基本模式 v0，无 multi_ack）。
 	// NAK 作为普通 pkt-line 写到 pw，不走 sideband ch1（与 cgit 一致）。
 	if err := pw.WritePktString("NAK\n"); err != nil {
 		return fmt.Errorf("upload-pack: write NAK: %w", err)

@@ -3,6 +3,7 @@ package git
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,7 +71,8 @@ func TestAdvertiseRefsWithRefs(t *testing.T) {
 		i++
 	}
 
-	// 第一行 caps 含 side-band-64k 与 ofs-delta；不应广告 multi_ack（未实现多轮 negotiation）
+	// 第一行 caps 含 side-band-64k 与 ofs-delta；不应广告 multi_ack（基本模式 v0 多轮
+	// negotiation 已实现：have flush 回 NAK；不实现 multi_ack/multi_ack_detailed 交互式 ACK）
 	if !strings.Contains(firstCaps, "side-band-64k") {
 		t.Errorf("first caps missing side-band-64k: %q", firstCaps)
 	}
@@ -1127,5 +1129,139 @@ func TestServeUploadPackNoSidebandIncremental(t *testing.T) {
 	}
 	if len(objs) != 3 {
 		t.Errorf("object count = %d, want 3 (commit2+tree2+blob2)", len(objs))
+	}
+}
+
+// TestServeUploadPackHaveFlushNoDone: HTTP stateless_rpc 中间请求。
+// 请求体 want+flush+have+flush（无 done）→ 响应仅 NAK，无 PACK，无 flush。
+// 客户端 fetch-pack 在 have flush 后 get_ack 读 NAK，响应体结束（EOF）。
+// 修复前：pgit 不响应 have flush，EOF 后发 NAK+PACK+flush，客户端读到 sideband PACK 报
+// "expected ACK/NAK, got '?PACK'"。
+func TestServeUploadPackHaveFlushNoDone(t *testing.T) {
+	dir, commit1Oid, commit2Oid := makeRepoWithTwoCommits(t)
+
+	var inBuf bytes.Buffer
+	inw := NewPktWriter(&inBuf)
+	inw.WritePktString(fmt.Sprintf("want %s side-band-64k\n", commit2Oid))
+	inw.WriteFlush()
+	inw.WritePktString(fmt.Sprintf("have %s\n", commit1Oid))
+	inw.WriteFlush()
+	// 无 done：模拟 HTTP 中间请求（have flush 后请求体结束）
+
+	var outBuf bytes.Buffer
+	if err := ServeUploadPack(dir, &inBuf, &outBuf); err != nil {
+		t.Fatalf("ServeUploadPack: %v", err)
+	}
+
+	// 响应仅一个 NAK 帧，无 PACK，无 flush
+	pr := NewPktReader(&outBuf)
+	payload, isFlush, err := pr.ReadPkt()
+	if err != nil {
+		t.Fatalf("read NAK: %v", err)
+	}
+	if isFlush {
+		t.Fatal("expected NAK frame, got flush")
+	}
+	if string(payload) != "NAK\n" {
+		t.Fatalf("frame = %q, want NAK\\n", payload)
+	}
+	// 之后应是 EOF（无 PACK，无 flush）
+	if _, _, err := pr.ReadPkt(); err != io.EOF {
+		t.Errorf("expected EOF after NAK (no pack, no flush), got err=%v", err)
+	}
+}
+
+// TestServeUploadPackHTTPMultiRequestIncremental: 模拟 HTTP stateless_rpc 多 POST 增量 fetch。
+// POST1: want+flush+have+flush（无 done）→ 仅 NAK。
+// POST2: want+flush+have+done → NAK+PACK+flush。
+// 验证 POST2 的 pack 含增量对象（have 排除 commit1 可达对象，仅 commit2+tree2+blob2）。
+func TestServeUploadPackHTTPMultiRequestIncremental(t *testing.T) {
+	dir, commit1Oid, commit2Oid := makeRepoWithTwoCommits(t)
+
+	// POST 1: have flush 中间请求
+	var in1 bytes.Buffer
+	inw1 := NewPktWriter(&in1)
+	inw1.WritePktString(fmt.Sprintf("want %s side-band-64k\n", commit2Oid))
+	inw1.WriteFlush()
+	inw1.WritePktString(fmt.Sprintf("have %s\n", commit1Oid))
+	inw1.WriteFlush()
+
+	var out1 bytes.Buffer
+	if err := ServeUploadPack(dir, &in1, &out1); err != nil {
+		t.Fatalf("POST1 ServeUploadPack: %v", err)
+	}
+	pr1 := NewPktReader(&out1)
+	payload, isFlush, err := pr1.ReadPkt()
+	if err != nil || isFlush || string(payload) != "NAK\n" {
+		t.Fatalf("POST1 response = %q (isFlush=%v, err=%v), want NAK\\n", payload, isFlush, err)
+	}
+	if _, _, err := pr1.ReadPkt(); err != io.EOF {
+		t.Errorf("POST1 expected EOF after NAK, got err=%v", err)
+	}
+
+	// POST 2: done 最终请求
+	var in2 bytes.Buffer
+	inw2 := NewPktWriter(&in2)
+	inw2.WritePktString(fmt.Sprintf("want %s side-band-64k\n", commit2Oid))
+	inw2.WriteFlush()
+	inw2.WritePktString(fmt.Sprintf("have %s\n", commit1Oid))
+	inw2.WritePktString("done\n")
+
+	var out2 bytes.Buffer
+	if err := ServeUploadPack(dir, &in2, &out2); err != nil {
+		t.Fatalf("POST2 ServeUploadPack: %v", err)
+	}
+
+	objs := decodeSidebandPack(t, &out2)
+	oidSet := make(map[Oid]bool)
+	for _, o := range objs {
+		oidSet[o.Oid()] = true
+	}
+	if len(objs) != 3 {
+		t.Errorf("POST2 object count = %d, want 3 (commit2+tree2+blob2); oids: %v", len(objs), oidSet)
+	}
+	// commit1 可达对象不应出现（被 have 排除）
+	if oidSet[commit1Oid] {
+		t.Errorf("POST2 pack should not contain have-reachable commit1 %s", commit1Oid)
+	}
+}
+
+// TestServeUploadPackHaveFlushThenDone: 单请求 have flush + done（SSH 流式或单 POST 场景）。
+// want+flush+have+flush+done → NAK（have flush 响应）+ NAK（done 响应）+ sideband PACK + flush。
+// 验证 pack 含增量对象，且 NAK 数量为 2（对齐 fetch-pack get_ack 次数）。
+func TestServeUploadPackHaveFlushThenDone(t *testing.T) {
+	dir, commit1Oid, commit2Oid := makeRepoWithTwoCommits(t)
+
+	var inBuf bytes.Buffer
+	inw := NewPktWriter(&inBuf)
+	inw.WritePktString(fmt.Sprintf("want %s side-band-64k\n", commit2Oid))
+	inw.WriteFlush()
+	inw.WritePktString(fmt.Sprintf("have %s\n", commit1Oid))
+	inw.WriteFlush()
+	inw.WritePktString("done\n")
+
+	var outBuf bytes.Buffer
+	if err := ServeUploadPack(dir, &inBuf, &outBuf); err != nil {
+		t.Fatalf("ServeUploadPack: %v", err)
+	}
+
+	// 首帧 NAK（have flush 响应）
+	pr := NewPktReader(&outBuf)
+	payload, isFlush, err := pr.ReadPkt()
+	if err != nil || isFlush || string(payload) != "NAK\n" {
+		t.Fatalf("first NAK (have flush) = %q (isFlush=%v, err=%v)", payload, isFlush, err)
+	}
+
+	// 剩余流：第二个 NAK（done 响应）作为 decodeSidebandPack 的首帧，之后 sideband PACK
+	objs := decodeSidebandPack(t, &outBuf)
+	if len(objs) != 3 {
+		t.Errorf("object count = %d, want 3 (commit2+tree2+blob2)", len(objs))
+	}
+	oidSet := make(map[Oid]bool)
+	for _, o := range objs {
+		oidSet[o.Oid()] = true
+	}
+	if oidSet[commit1Oid] {
+		t.Errorf("pack should not contain have-reachable commit1 %s", commit1Oid)
 	}
 }
