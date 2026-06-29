@@ -267,6 +267,33 @@ func main() {
 				"File paths in ZIP use the repo name as top-level directory.",
 			},
 		},
+		{
+			Method:  "GET",
+			Path:    "/api/v1/repos/{name}/commits/{ref}",
+			Summary:  "List recent commits on a ref",
+			Params: []apiDocParam{
+				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name"},
+				{Name: "ref", In: "path", Required: false, Example: "master", Desc: "Branch name, tag name, or commit OID. Defaults to repository default branch"},
+				{Name: "limit", In: "query", Required: false, Example: "10", Desc: "Max number of commits to return (default 20)"},
+			},
+			ResponseExample: `[
+  {
+    "hash": "a1b2c3d4e5f6...",
+    "parents": ["f0e1d2c3b4a5..."],
+    "author": "LaoQi",
+    "email": "q@example.com",
+    "timestamp": 1719216000,
+    "subject": "initial commit"
+  }
+]`,
+			Curl: `curl http://localhost:3000/api/v1/repos/my-repo/commits/master?limit=10`,
+			Notes: []string{
+				"Response is a bare JSON array of commit objects.",
+				"Walks the first-parent chain from the ref's commit.",
+				"limit defaults to 20 if omitted or invalid.",
+				"Empty repository or missing ref returns 400.",
+			},
+		},
 	},
 }
 

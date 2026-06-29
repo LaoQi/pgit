@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi"
@@ -51,6 +52,7 @@ func (h *HTTPHandler) buildRouter() http.Handler {
 		r.Get("/repos/{name}/tree/{ref}/*", h.tree)
 		r.Get("/repos/{name}/blob/{ref}/*", h.blob)
 		r.Get("/repos/{name}/archive/{ref}", h.archive)
+		r.Get("/repos/{name}/commits/{ref}", h.commits)
 	})
 
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
@@ -284,6 +286,38 @@ func (h *HTTPHandler) archive(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s-%s.zip", name, ref))
 	_, _ = io.Copy(w, body)
+}
+
+func (h *HTTPHandler) commits(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	ref := chi.URLParam(r, "ref")
+	if unesc, err := url.QueryUnescape(ref); err == nil {
+		ref = unesc
+	}
+	repo, err := h.Manager.GetRepository(name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if ref == "" {
+		if db, err := repo.DefaultBranch(); err == nil && db != "" {
+			ref = db
+		} else {
+			ref = "master"
+		}
+	}
+	limit := 20
+	if n := r.FormValue("limit"); n != "" {
+		if v, err := strconv.Atoi(n); err == nil && v > 0 {
+			limit = v
+		}
+	}
+	commits, err := repo.Commits(ref, limit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, commits)
 }
 
 // --- Git smart-http transport ---

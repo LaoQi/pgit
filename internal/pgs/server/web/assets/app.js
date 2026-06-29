@@ -255,6 +255,12 @@ function viewRepoDetail(app, name) {
          html += '</div>';
 
          if (refs.length > 0) {
+             var defaultRef = data.defaultBranch || 'master';
+             html += '<div class="card"><h3>Recent Commits</h3>'
+                 + '<div id="commitsList" class="commits-list"><div class="loading">Loading commits...</div></div></div>';
+         }
+
+         if (refs.length > 0) {
              html += '<div class="card"><h3>Download Archive</h3>'
                  + '<div class="flex"><select id="archiveRef">';
              refs.forEach(function(ref) {
@@ -324,14 +330,37 @@ function viewRepoDetail(app, name) {
                  navigate('/');
              }).catch(function(err) { showToast(err.message, 'error'); });
          });
-         if (document.getElementById('setDefaultBranchBtn')) {
-             document.getElementById('setDefaultBranchBtn').addEventListener('click', function() {
-                 var branch = document.getElementById('newDefaultBranch').value;
-                 if (!branch) { showToast('Select a branch', 'error'); return; }
-                 apiForm('POST', API + '/repos/' + enc(repo.name) + '/default-branch', { branch: branch }).then(function() {
-                     showToast('Default branch updated to ' + branch);
-                     viewRepoDetail(app, name);
-                 }).catch(function(err) { showToast(err.message, 'error'); });
+          if (document.getElementById('setDefaultBranchBtn')) {
+              document.getElementById('setDefaultBranchBtn').addEventListener('click', function() {
+                  var branch = document.getElementById('newDefaultBranch').value;
+                  if (!branch) { showToast('Select a branch', 'error'); return; }
+                  apiForm('POST', API + '/repos/' + enc(repo.name) + '/default-branch', { branch: branch }).then(function() {
+                      showToast('Default branch updated to ' + branch);
+                      viewRepoDetail(app, name);
+                  }).catch(function(err) { showToast(err.message, 'error'); });
+              });
+          }
+
+         var commitsContainer = document.getElementById('commitsList');
+         if (commitsContainer) {
+             var commitsRef = data.defaultBranch || 'master';
+             apiJSON(API + '/repos/' + enc(repo.name) + '/commits/' + enc(commitsRef) + '?limit=20').then(function(commits) {
+                 if (!commits || commits.length === 0) {
+                     commitsContainer.innerHTML = '<div class="empty">No commits found.</div>';
+                     return;
+                 }
+                 var html = '';
+                 commits.forEach(function(c) {
+                     var shortHash = c.hash.slice(0, 8);
+                     html += '<div class="commit-entry">'
+                         + '<div class="commit-hash" data-copy="' + escAttr(c.hash) + '" title="Click to copy full hash">' + esc(shortHash) + '</div>'
+                         + '<div class="commit-subject">' + esc(c.subject) + '</div>'
+                         + '<div class="commit-meta">' + esc(c.author) + ' &middot; ' + esc(fmtTs(c.timestamp)) + '</div>'
+                         + '</div>';
+                 });
+                 commitsContainer.innerHTML = html;
+             }).catch(function() {
+                 commitsContainer.innerHTML = '<div class="empty">Failed to load commits.</div>';
              });
          }
      }).catch(function(err) {

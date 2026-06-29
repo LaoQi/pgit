@@ -294,6 +294,28 @@ pre code { background: none; padding: 0; }
 .alias-item .alias-name { flex: 1; font-family: monospace; }
 .alias-item .alias-note { font-size: 11px; color: var(--orange); }
 
+/* Commits list */
+.commits-list { max-height: 400px; overflow-y: auto; }
+.commit-entry {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+}
+.commit-entry:last-child { border-bottom: none; }
+.commit-hash {
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 13px;
+    color: var(--link);
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.commit-hash:hover { text-decoration: underline; }
+.commit-subject { flex: 1; font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.commit-meta { font-size: 12px; color: var(--text-muted); white-space: nowrap; flex-shrink: 0; }
+
 /* API docs */
 .api-search {
     width: 100%;

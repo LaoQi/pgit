@@ -59,6 +59,15 @@ type TreeNode struct {
 	Name string `json:"name"`
 }
 
+type Commit struct {
+	Hash      string `json:"hash"`
+	Parents   []string `json:"parents"`
+	Author    string `json:"author"`
+	Email     string `json:"email"`
+	Timestamp uint64 `json:"timestamp"`
+	Subject   string `json:"subject"`
+}
+
 type RepoConfigSection struct {
 	Items map[string]string
 }
@@ -247,6 +256,37 @@ func (repo Repository) ForEachRef() ([]*Ref, error) {
 		})
 	}
 	return refs, nil
+}
+
+func (repo Repository) Commits(ref string, limit int) ([]Commit, error) {
+	commitOid, _, err := git.ResolveTreeIsh(repo.Path(), ref)
+	if err != nil {
+		return nil, err
+	}
+	if commitOid == "" {
+		return nil, nil
+	}
+	store := &git.LooseStore{Root: filepath.Join(repo.Path(), "objects")}
+	log, err := git.CommitLog(store, commitOid, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Commit, 0, len(log))
+	for _, ci := range log {
+		parents := make([]string, 0, len(ci.Parents))
+		for _, p := range ci.Parents {
+			parents = append(parents, string(p))
+		}
+		out = append(out, Commit{
+			Hash:      string(ci.Oid),
+			Parents:   parents,
+			Author:    ci.Author.Name,
+			Email:     ci.Author.Email,
+			Timestamp: uint64(ci.Author.Timestamp),
+			Subject:   ci.Subject,
+		})
+	}
+	return out, nil
 }
 
 // modeType 将 tree entry 的 mode 映射为节点类型字符串，与 git ls-tree 输出一致。

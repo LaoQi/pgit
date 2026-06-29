@@ -204,6 +204,55 @@ func BlobAt(store *LooseStore, treeOid Oid, path string) (*RawObject, error) {
 	return nil, fmt.Errorf("path %q resolves to no blob", path)
 }
 
+// CommitInfo 是单条 commit 的摘要视图，供浏览 API 使用。
+type CommitInfo struct {
+	Oid       Oid
+	Parents   []Oid
+	Author    Ident
+	Committer Ident
+	Subject   string
+}
+
+// CommitLog 从 startOid 出发沿 parent 链回溯，返回最多 limit 条 commit 摘要。
+// limit <= 0 表示不限制。遇到读取失败或 parent 不存在时停止。
+func CommitLog(store *LooseStore, startOid Oid, limit int) ([]CommitInfo, error) {
+	var out []CommitInfo
+	visited := make(map[Oid]bool)
+	cur := startOid
+	for cur != "" && cur != ZeroOid {
+		if visited[cur] {
+			break
+		}
+		visited[cur] = true
+		obj, err := store.Read(cur)
+		if err != nil {
+			break
+		}
+		if obj.Type != ObjCommit {
+			break
+		}
+		c, err := ParseCommit(obj.Content)
+		if err != nil {
+			break
+		}
+		out = append(out, CommitInfo{
+			Oid:       cur,
+			Parents:   c.Parents,
+			Author:    c.Author,
+			Committer: c.Committer,
+			Subject:   firstLine(c.Message),
+		})
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+		if len(c.Parents) == 0 {
+			break
+		}
+		cur = c.Parents[0]
+	}
+	return out, nil
+}
+
 // ForEachRefs 列出仓库所有 ref（不含 HEAD）及其元数据。
 // ref 指向的对象读取失败时该 ref 被跳过（损坏仓库不阻断整体枚举）。
 func ForEachRefs(repoRoot string) ([]RefInfo, error) {
