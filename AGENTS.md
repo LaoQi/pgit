@@ -39,7 +39,7 @@ internal/pgs/git/             纯 Go git wire protocol v0 服务端（无第三�
 
 internal/pgs/server/          网络服务层
   mux.go                      协议探测分发：peek 前缀 SSH- → SSH 否则 HTTP；peekConn 回放缓冲
-  http.go                     chi 路由(/api/v1/* + /{webuiPrefix}/* + alias.git 兜底) + 管理 API handler + git smart-http 传输（接入 git 包）+ Basic Auth + 请求日志中间件（方法/路径/状态码/耗时/用户/远程地址）
+  http.go                     chi 路由(/api/v1/* + /{webuiPrefix}/* + alias.git 兜底) + 管理 API handler + git smart-http 传输（接入 git 包，Content-Encoding: gzip 自动解压）+ Basic Auth + 请求日志中间件（方法/路径/状态码/耗时/用户/远程地址）
   ssh.go                      SSHHandler：连接级 handleConn + exec payload 解析 alias → repo（接入 git 包）
   web.go                      WebUI：embed 嵌入 web/ 资源 + ExportWebUI 导出 + serveWebUI（静态资源 + SPA fallback + 前缀注入）
   apidocs.go                  API 文档端点：GET /api/v1/ 返回 11 个管理 API 的结构化描述 JSON

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -378,15 +379,27 @@ func (h *HTTPHandler) infoRefs(w http.ResponseWriter, r *http.Request, repoPath 
 func (h *HTTPHandler) gitCommand(w http.ResponseWriter, r *http.Request, repoPath string, command string) {
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-git-%s-result", command))
 	w.WriteHeader(http.StatusOK)
+
+	body := r.Body
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		gz, err := gzip.NewReader(r.Body)
+		if err != nil {
+			log.Printf("%s: gzip decode: %v", command, err)
+			return
+		}
+		defer gz.Close()
+		body = gz
+	}
+
 	switch command {
 	case "upload-pack":
-		if err := git.HandleUploadPack(repoPath, r.Body, w); err != nil {
+		if err := git.HandleUploadPack(repoPath, body, w); err != nil {
 			log.Printf("upload-pack: %v", err)
 		} else {
 			log.Printf("upload-pack ok")
 		}
 	case "receive-pack":
-		if err := git.HandleReceivePack(repoPath, r.Body, w); err != nil {
+		if err := git.HandleReceivePack(repoPath, body, w); err != nil {
 			log.Printf("receive-pack: %v", err)
 		} else {
 			log.Printf("receive-pack ok")
