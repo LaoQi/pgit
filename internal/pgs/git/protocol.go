@@ -10,6 +10,19 @@ import (
 	"strings"
 )
 
+// LogLevel 控制 upload-pack 详细日志级别（由 pgs 配置注入，避免 pgs/git → pgs 循环依赖）。
+type LogLevel int
+
+const (
+	LogOff    LogLevel = iota // 默认：仅汇总行
+	LogDetail                 // 逐条 want/have/object/delta
+)
+
+var logLevel LogLevel = LogOff
+
+// SetLogLevel 设置 git 包日志级别（pgs.Reload 调用）。
+func SetLogLevel(l LogLevel) { logLevel = l }
+
 // upload-pack v0 capabilities
 const uploadPackCaps = "thin-pack side-band-64k ofs-delta no-progress include-tag"
 
@@ -107,9 +120,12 @@ func AdvertiseRefs(repoRoot string, service string) ([]byte, error) {
 //   - haves 阶段：have 行分批，每批以 flush 结束；服务端在每个 flush 处回 NAK
 //     （不带 flush pkt，避免客户端 get_ack 误读 flush 报 die）
 //   - done 结束 negotiation，服务端发 NAK + PACK + flush
+//
 // HTTP stateless_rpc：每个 POST 是一次 ServeUploadPack 调用，have 批的 flush
-//   后请求体结束（EOF），此时仅已发 NAK 响应，不发 PACK 直接 return；
-//   最终含 done 的 POST 才发 NAK + PACK + flush。
+//
+//	后请求体结束（EOF），此时仅已发 NAK 响应，不发 PACK 直接 return；
+//	最终含 done 的 POST 才发 NAK + PACK + flush。
+//
 // SSH 流式：一次调用处理整轮 negotiation，have flush 后 continue 继续读。
 // NAK 数与 fetch-pack 客户端 get_ack 次数自洽（对齐 fetch-pack.c:619-628）。
 // NAK 作为普通 pkt-line 写到 pw（sideband 模式下 NAK 不走 ch1，与 cgit 一致）。
@@ -117,6 +133,24 @@ func AdvertiseRefs(repoRoot string, service string) ([]byte, error) {
 func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	pr := NewPktReader(in)
 	pw := NewPktWriter(out)
+
+	// 详细日志：建立 oid→refname 映射，供 want oid 反查来源 ref（标准 want 行不含 refname）。
+	refOf := map[Oid]string{}
+	if logLevel >= LogDetail {
+		if refs, err := NewRefStore(repoRoot).List(); err == nil {
+			for _, r := range refs {
+				if _, ok := refOf[r.Oid]; !ok {
+					refOf[r.Oid] = r.Name
+				}
+			}
+		}
+	}
+	refName := func(oid Oid) string {
+		if n, ok := refOf[oid]; ok {
+			return n
+		}
+		return "-"
+	}
 
 	// 1. 读首行 want（格式 "<oid> <refname>\0<caps>" 或 "want <oid> <caps>"）
 	first, isFlush, err := pr.ReadPkt()
@@ -131,6 +165,9 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("upload-pack: no want oid in first line %q", first)
 	}
 	wantOids := []Oid{firstOid}
+	if logLevel >= LogDetail {
+		log.Printf("upload-pack: want %s ref=%s", firstOid, refName(firstOid))
+	}
 
 	// 2. 继续读 want 行直到 flush
 	for {
@@ -144,6 +181,9 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		oid, _, ok := parseWantLine(string(payload))
 		if ok {
 			wantOids = append(wantOids, oid)
+			if logLevel >= LogDetail {
+				log.Printf("upload-pack: want %s ref=%s", oid, refName(oid))
+			}
 		}
 	}
 
@@ -179,7 +219,11 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		if strings.HasPrefix(line, "have ") {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 {
-				haveOids = append(haveOids, Oid(fields[1]))
+				ho := Oid(fields[1])
+				haveOids = append(haveOids, ho)
+				if logLevel >= LogDetail {
+					log.Printf("upload-pack: have %s", ho)
+				}
 			}
 		}
 	}
@@ -201,6 +245,11 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	objs, err := CollectReachable(store, wantOids, haveOids...)
 	if err != nil {
 		return fmt.Errorf("upload-pack: collect reachable: %w", err)
+	}
+	if logLevel >= LogDetail {
+		for _, o := range objs {
+			log.Printf("upload-pack: object %s type=%s size=%d", o.Oid(), o.Type, o.Size)
+		}
 	}
 
 	// 6. want 全部已被 have 覆盖 → 仅发 NAK + flush，不发 PACK
@@ -391,8 +440,10 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 
 // parseWantLine 解析 want 行，返回 oid + caps。
 // 支持两种首行格式：
-//   "<oid> <refname>\0<caps>"   （带 NUL + caps）
-//   "want <oid> <caps>"          （标准 v0，caps 空格分隔）
+//
+//	"<oid> <refname>\0<caps>"   （带 NUL + caps）
+//	"want <oid> <caps>"          （标准 v0，caps 空格分隔）
+//
 // 以及后续行 "want <oid>"。
 func parseWantLine(line string) (oid Oid, caps string, ok bool) {
 	line = strings.TrimRight(line, "\n")
@@ -455,6 +506,7 @@ type packEntry struct {
 //   - size 比值过滤：max/min > 2 不配对（差异过大 delta 收益低）；
 //   - 负收益回退：deltaLen*2 >= tgt.Size 时 target 退化为 full；
 //   - 非 blob 全 full；落单 blob 全 full。
+//
 // entries 保持 objs 原 BFS 顺序，仅标记 isDelta；ServeUploadPack 两段写入（full 先于 delta）。
 func planPackEntries(objs []*RawObject) ([]packEntry, error) {
 	entries := make([]packEntry, len(objs))
@@ -480,6 +532,9 @@ func planPackEntries(objs []*RawObject) ([]packEntry, error) {
 			hi, lo = lo, hi
 		}
 		if hi > 2*lo {
+			if logLevel >= LogDetail {
+				log.Printf("upload-pack: delta skip (size ratio) base=%s target=%s hi=%d lo=%d", base.Oid(), tgt.Oid(), hi, lo)
+			}
 			continue
 		}
 		delta, err := EncodeDelta(base.Content, tgt.Content)
@@ -488,6 +543,9 @@ func planPackEntries(objs []*RawObject) ([]packEntry, error) {
 		}
 		// 负收益回退：delta 字节数 >= target 原始字节数一半 → 退化为 full
 		if len(delta)*2 >= tgt.Size {
+			if logLevel >= LogDetail {
+				log.Printf("upload-pack: delta fallback (negative) base=%s target=%s deltaLen=%d tgtSize=%d", base.Oid(), tgt.Oid(), len(delta), tgt.Size)
+			}
 			continue
 		}
 		// 标记 target 为 delta（base 保持 full）
@@ -495,6 +553,9 @@ func planPackEntries(objs []*RawObject) ([]packEntry, error) {
 		entries[j].isDelta = true
 		entries[j].baseOid = base.Oid()
 		entries[j].delta = delta
+		if logLevel >= LogDetail {
+			log.Printf("upload-pack: delta base=%s target=%s baseSize=%d tgtSize=%d deltaLen=%d", base.Oid(), tgt.Oid(), base.Size, tgt.Size, len(delta))
+		}
 	}
 	return entries, nil
 }

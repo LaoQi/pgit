@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"pgit/internal/pgs/git"
 )
 
 type Setting struct {
@@ -20,8 +22,9 @@ type Setting struct {
 	HttpAuth     bool              `json:"httpAuth"`
 	SSHAuthType  string            `json:"sshAuthType"`
 	Credentials  map[string]string `json:"credentials"`
-	WebUIPrefix string            `json:"webuiPrefix"`
-	WebUIAssets string            `json:"webuiAssets"`
+	WebUIPrefix  string            `json:"webuiPrefix"`
+	WebUIAssets  string            `json:"webuiAssets"`
+	LogLevel     string            `json:"logLevel"`
 }
 
 func (s *Setting) SetConfigPath(path string) {
@@ -57,6 +60,15 @@ func (s *Setting) Reload() error {
 		if info, err := os.Stat(s.WebUIAssets); err != nil || !info.IsDir() {
 			return fmt.Errorf("webuiAssets dir not accessible: %s", s.WebUIAssets)
 		}
+	}
+	// 日志级别注入 git 包（pgs → git 单向，避免循环依赖）
+	switch s.LogLevel {
+	case "", "off":
+		git.SetLogLevel(git.LogOff)
+	case "detail":
+		git.SetLogLevel(git.LogDetail)
+	default:
+		return fmt.Errorf("invalid logLevel: %q (want off|detail)", s.LogLevel)
 	}
 	return nil
 }

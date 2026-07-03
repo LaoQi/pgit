@@ -34,7 +34,7 @@ internal/pgs/git/             纯 Go git wire protocol v0 服务端（无第三�
   pack_decode.go              packfile 解码 + 逐对象校验；REF_DELTA base 不在 pack 内时回查 LooseStore
   reach.go                    可达性遍历（BFS 去重，跳过 gitlink）
   browse.go                   浏览 API 高层：ResolveTreeIsh/TreeAt/BlobAt/ForEachRefs/CommitLog（基于 LooseStore+RefStore）
-  protocol.go                 v0 状态机：negotiation + pack 交换（upload-pack 出向 delta 配对）+ sideband-64k + report-status + 操作日志（want/have/对象数）+ force-push 检测标记（isFastForward BFS，仅日志不拒绝）
+  protocol.go                 v0 状态机：negotiation + pack 交换（upload-pack 出向 delta 配对）+ sideband-64k + report-status + 操作日志（want/have/对象数；logLevel=detail 时逐条输出 want/have/object/delta 配对）+ force-push 检测标记（isFastForward BFS，仅日志不拒绝）；LogLevel 类型 + SetLogLevel 由 pgs 配置注入（避免 pgs/git → pgs 循环依赖）
   service.go                  对外入口：ServeInfoRefs/HandleUploadPack/HandleReceivePack/HandleSSHSession
 
 internal/pgs/server/          网络服务层
@@ -111,7 +111,7 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 
 - 生成默认配置：`pgit -d > config.json`；运行：`pgit -c config.json`。无配置以 `ConfigError` 退出。
 - 导出 WebUI 资源：`pgit -w ./webui`（将 embed 的 web/ 写到磁盘，可自定义修改后通过 `webuiAssets` 加载）。
-- 配置字段：`listen`（单一监听地址，默认 `0.0.0.0:3000`）、`enableSSH`、`gitRoot`、`httpAuth`、`credentials`、`sshHostKey`/`sshPublicKey`、`sshAuthType`、`webuiPrefix`（默认 `__webui`）、`webuiAssets`（默认空=用 embed，非空=从磁盘目录读）。无分离端口字段。
+- 配置字段：`listen`（单一监听地址，默认 `0.0.0.0:3000`）、`enableSSH`、`gitRoot`、`httpAuth`、`credentials`、`sshHostKey`/`sshPublicKey`、`sshAuthType`、`webuiPrefix`（默认 `__webui`）、`webuiAssets`（默认空=用 embed，非空=从磁盘目录读）、`logLevel`（默认空=`off` 仅汇总行；`detail` 逐条 want/have/object/delta；由 `Reload` 注入 `git.SetLogLevel`）。无分离端口字段。
 - `webuiPrefix` 校验：非空、不为 `api`、不含 `..`；可含多段斜杠（如 `custom/ui`）。
 - `webuiAssets` 校验：非空时目录必须存在且可访问。
 - SSH host key 缺失时自动生成到配置路径。
