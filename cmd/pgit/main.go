@@ -5,7 +5,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"syscall"
 
@@ -23,13 +22,6 @@ const (
 	ConfigError
 	EnvError
 )
-
-func checkEnv() error {
-	if _, err := exec.LookPath("git"); err != nil {
-		return fmt.Errorf("git command not found, install git")
-	}
-	return nil
-}
 
 func ensureGitRoot() error {
 	if err := os.MkdirAll(pgs.Settings.GitRoot, os.ModePerm); err != nil {
@@ -71,11 +63,6 @@ func main() {
 		os.Exit(ConfigError)
 	}
 
-	if err := checkEnv(); err != nil {
-		fmt.Println(err.Error())
-		os.Exit(EnvError)
-	}
-
 	pgs.Settings.SetConfigPath(*config)
 	if err := pgs.Settings.Reload(); err != nil {
 		fmt.Printf("Config parse error: %s\n", err)
@@ -87,6 +74,13 @@ func main() {
 	}
 
 	pgs.InitReposManager(&pgs.RepositoriesManagerConfig{GitRoot: pgs.Settings.GitRoot})
+
+	pgs.InitSyncManager()
+	for _, repo := range pgs.ReposManager.List() {
+		if repo.IsMirror() {
+			pgs.SyncMgr.Register(repo)
+		}
+	}
 
 	ln, err := net.Listen("tcp", pgs.Settings.Listen)
 	if err != nil {
@@ -110,6 +104,9 @@ func main() {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		log.Printf("shutting down...")
+		if pgs.SyncMgr != nil {
+			pgs.SyncMgr.Stop()
+		}
 		_ = ln.Close()
 		os.Exit(NoError)
 	}()

@@ -56,6 +56,8 @@ func (h *HTTPHandler) buildRouter() http.Handler {
 		r.Get("/repos/{name}/blob/{ref}/*", h.blob)
 		r.Get("/repos/{name}/archive/{ref}", h.archive)
 		r.Get("/repos/{name}/commits/{ref}", h.commits)
+		r.Post("/repos/{name}/sync", h.syncRepo)
+		r.Get("/repos/{name}/sync-log", h.syncLog)
 	})
 
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
@@ -116,6 +118,38 @@ func (h *HTTPHandler) createRepo(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	description := r.FormValue("description")
 	defaultBranch := r.FormValue("defaultBranch")
+
+	mirrorURL := r.FormValue("mirrorUrl")
+	if mirrorURL != "" {
+		syncInterval := 0
+		if s := r.FormValue("mirrorInterval"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v >= 0 {
+				syncInterval = v
+			}
+		}
+		authType := r.FormValue("mirrorAuthType")
+		if authType == "" {
+			authType = "none"
+		}
+		mirror := &pgs.MirrorConfig{
+			RemoteURL:    mirrorURL,
+			SyncInterval: syncInterval,
+			AuthType:     authType,
+			Username:     r.FormValue("mirrorUsername"),
+			Password:     r.FormValue("mirrorPassword"),
+		}
+		if err := h.Manager.CreateMirrorRepository(name, description, mirror); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		repo, _ := h.Manager.GetRepository(name)
+		if pgs.SyncMgr != nil {
+			pgs.SyncMgr.Register(repo)
+		}
+		writeJSON(w, http.StatusOK, repo)
+		return
+	}
+
 	if err := h.Manager.CreateRepository(name, description, defaultBranch); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -150,6 +184,9 @@ func (h *HTTPHandler) deleteRepo(w http.ResponseWriter, r *http.Request) {
 	if confirm != name {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("confirm mismatch, expected %s", name))
 		return
+	}
+	if pgs.SyncMgr != nil {
+		pgs.SyncMgr.Unregister(name)
 	}
 	if err := h.Manager.DeleteRepository(name); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -321,6 +358,58 @@ func (h *HTTPHandler) commits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, commits)
+}
+
+func (h *HTTPHandler) syncRepo(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if pgs.SyncMgr == nil {
+		writeError(w, http.StatusInternalServerError, "sync manager not initialized")
+		return
+	}
+	entry, err := pgs.SyncMgr.SyncNow(name)
+	if err != nil {
+		if strings.Contains(err.Error(), "not exist") {
+			writeError(w, http.StatusNotFound, err.Error())
+		} else if strings.Contains(err.Error(), "not a mirror") {
+			writeError(w, http.StatusBadRequest, err.Error())
+		} else if strings.Contains(err.Error(), "already in progress") {
+			writeError(w, http.StatusConflict, err.Error())
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":   true,
+		"sync": entry,
+	})
+}
+
+func (h *HTTPHandler) syncLog(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	repo, err := h.Manager.GetRepository(name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if !repo.IsMirror() {
+		writeError(w, http.StatusBadRequest, "not a mirror repository")
+		return
+	}
+	limit := 50
+	if s := r.FormValue("limit"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v > 0 {
+			limit = v
+		}
+	}
+	entries, err := pgs.ReadSyncLog(repo.Path(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"entries": entries,
+	})
 }
 
 // --- Git smart-http transport ---

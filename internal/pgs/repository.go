@@ -16,11 +16,26 @@ import (
 
 var GitRoot string
 
+type MirrorConfig struct {
+	RemoteURL    string    `json:"remoteUrl"`
+	SyncInterval int       `json:"syncInterval"`
+	AuthType     string    `json:"authType"`
+	Username     string    `json:"username,omitempty"`
+	Password     string    `json:"password,omitempty"`
+	LastSync     time.Time `json:"lastSync,omitempty"`
+	LastError    string    `json:"lastError,omitempty"`
+}
+
 type Repository struct {
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	Aliases     []string  `json:"aliases"`
-	CreatedAt   time.Time `json:"createdAt"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Aliases     []string      `json:"aliases"`
+	CreatedAt   time.Time     `json:"createdAt"`
+	Mirror      *MirrorConfig `json:"mirror,omitempty"`
+}
+
+func (repo *Repository) IsMirror() bool {
+	return repo.Mirror != nil
 }
 
 func (repo *Repository) Path() string {
@@ -32,7 +47,12 @@ func (repo *Repository) SaveMetadata() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(repo.Path(), "pgit.json"), data, os.ModePerm)
+	path := filepath.Join(repo.Path(), "pgit.json")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, os.ModePerm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func (repo *Repository) HasAlias(alias string) bool {

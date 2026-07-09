@@ -34,6 +34,13 @@ function fmtTs(ts) {
     catch(e) { return String(ts); }
 }
 
+function fmtBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+    return (n / 1073741824).toFixed(1) + ' GB';
+}
+
 function showToast(msg, type) {
     var el = document.getElementById('toast');
     el.textContent = msg;
@@ -160,7 +167,19 @@ function viewRepos(app) {
             + '<div class="toggle-form">'
             + '<div class="form-group"><label>Name</label><input id="repoName" placeholder="my-repo" autocomplete="off"></div>'
             + '<div class="form-group"><label>Description</label><input id="repoDesc" placeholder="optional" autocomplete="off"></div>'
+            + '<div class="form-group"><label class="checkbox-label"><input type="checkbox" id="repoIsMirror"> Mirror Repository</label></div>'
+            + '<div id="normalFields">'
             + '<div class="form-group"><label>Default Branch</label><input id="repoDefaultBranch" value="master" placeholder="master" autocomplete="off"></div>'
+            + '</div>'
+            + '<div id="mirrorFields" style="display:none">'
+            + '<div class="form-group"><label>Remote URL</label><input id="mirrorUrl" placeholder="https://github.com/user/repo.git" autocomplete="off"></div>'
+            + '<div class="form-group"><label>Sync Interval (seconds, 0=manual)</label><input id="mirrorInterval" value="0" placeholder="0" autocomplete="off"></div>'
+            + '<div class="form-group"><label>Auth Type</label><select id="mirrorAuthType"><option value="none">None</option><option value="basic">Basic Auth</option></select></div>'
+            + '<div id="mirrorAuthFields" style="display:none">'
+            + '<div class="form-group"><label>Username</label><input id="mirrorUsername" placeholder="username" autocomplete="off"></div>'
+            + '<div class="form-group"><label>Password / Token</label><input id="mirrorPassword" type="password" placeholder="password or token" autocomplete="off"></div>'
+            + '</div>'
+            + '</div>'
             + '<button class="btn btn-primary btn-sm" id="createRepoBtn">Create</button>'
             + '</div></div>';
 
@@ -175,8 +194,9 @@ function viewRepos(app) {
                 var httpClone = window.location.protocol + '//' + host + '/' + firstAlias + '.git';
                 var sshClone = 'ssh://' + host + '/' + firstAlias + '.git';
                 var link = '/repo/' + enc(r.name);
+                var mirrorBadge = r.mirror ? ' <span class="badge badge-mirror">mirror</span>' : '';
                 html += '<div class="repo-card">'
-                    + '<div class="name"><a href="repo/' + enc(r.name) + '" data-link="' + escAttr(link) + '">' + esc(r.name) + '</a></div>'
+                    + '<div class="name"><a href="repo/' + enc(r.name) + '" data-link="' + escAttr(link) + '">' + esc(r.name) + '</a>' + mirrorBadge + '</div>'
                     + '<div class="desc">' + esc(r.description || 'No description') + '</div>'
                     + '<div class="meta"><span>aliases: ' + aliases.length + '</span><span>' + esc(fmtDate(r.createdAt)) + '</span></div>'
                     + '<div class="clone-box"><span class="label">HTTP</span><span class="url">' + esc(httpClone) + '</span>'
@@ -193,15 +213,42 @@ function viewRepos(app) {
             var form = document.getElementById('newRepoForm');
             form.style.display = form.style.display === 'none' ? 'block' : 'none';
         });
+        document.getElementById('repoIsMirror').addEventListener('change', function() {
+            var isMirror = this.checked;
+            document.getElementById('normalFields').style.display = isMirror ? 'none' : 'block';
+            document.getElementById('mirrorFields').style.display = isMirror ? 'block' : 'none';
+        });
+        document.getElementById('mirrorAuthType').addEventListener('change', function() {
+            document.getElementById('mirrorAuthFields').style.display = this.value === 'basic' ? 'block' : 'none';
+        });
         document.getElementById('createRepoBtn').addEventListener('click', function() {
             var name = document.getElementById('repoName').value.trim();
             var desc = document.getElementById('repoDesc').value.trim();
-            var defaultBranch = document.getElementById('repoDefaultBranch').value.trim() || 'master';
             if (!name) { showToast('Name is required', 'error'); return; }
-            apiForm('POST', API + '/repos/' + enc(name), { description: desc, defaultBranch: defaultBranch }).then(function() {
-                showToast('Repository created');
-                navigate('/repo/' + enc(name));
-            }).catch(function(err) { showToast(err.message, 'error'); });
+            var isMirror = document.getElementById('repoIsMirror').checked;
+            if (isMirror) {
+                var mirrorUrl = document.getElementById('mirrorUrl').value.trim();
+                if (!mirrorUrl) { showToast('Remote URL is required', 'error'); return; }
+                var params = { description: desc, mirrorUrl: mirrorUrl };
+                var interval = document.getElementById('mirrorInterval').value.trim();
+                if (interval) params.mirrorInterval = interval;
+                var authType = document.getElementById('mirrorAuthType').value;
+                params.mirrorAuthType = authType;
+                if (authType === 'basic') {
+                    params.mirrorUsername = document.getElementById('mirrorUsername').value.trim();
+                    params.mirrorPassword = document.getElementById('mirrorPassword').value;
+                }
+                apiForm('POST', API + '/repos/' + enc(name), params).then(function() {
+                    showToast('Mirror repository created, sync will start shortly');
+                    navigate('/repo/' + enc(name));
+                }).catch(function(err) { showToast(err.message, 'error'); });
+            } else {
+                var defaultBranch = document.getElementById('repoDefaultBranch').value.trim() || 'master';
+                apiForm('POST', API + '/repos/' + enc(name), { description: desc, defaultBranch: defaultBranch }).then(function() {
+                    showToast('Repository created');
+                    navigate('/repo/' + enc(name));
+                }).catch(function(err) { showToast(err.message, 'error'); });
+            }
         });
     }).catch(function(err) {
         app.innerHTML = '<div class="error">' + esc(err.message) + '</div>';
@@ -223,6 +270,21 @@ function viewRepoDetail(app, name) {
              + '<p class="text-muted">' + esc(repo.description || 'No description') + '</p>'
              + '<p class="text-sm text-muted mt-8">Created: ' + esc(fmtDate(repo.createdAt)) + '</p>'
              + '<p class="text-sm text-muted mt-4">Default Branch: <strong>' + esc(data.defaultBranch || 'master') + '</strong></p></div>';
+
+         if (repo.mirror) {
+             var m = repo.mirror;
+             var intervalText = m.syncInterval > 0 ? 'Every ' + m.syncInterval + 's' : 'Manual only';
+             var lastSyncText = m.lastSync ? fmtDate(m.lastSync) : 'Never';
+             var errorHtml = m.lastError ? '<p class="text-sm mt-4" style="color:var(--red)">Last Error: ' + esc(m.lastError) + '</p>' : '';
+             var authText = m.authType === 'basic' ? 'Basic Auth (' + esc(m.username || '') + ')' : 'None';
+             html += '<div class="card"><h3>Mirror</h3>'
+                 + '<p class="text-sm text-muted">Remote: <code>' + esc(m.remoteUrl) + '</code></p>'
+                 + '<p class="text-sm text-muted mt-4">Sync: ' + esc(intervalText) + '</p>'
+                 + '<p class="text-sm text-muted mt-4">Auth: ' + esc(authText) + '</p>'
+                 + '<p class="text-sm text-muted mt-4">Last Sync: ' + esc(lastSyncText) + '</p>'
+                 + errorHtml
+                 + '<button class="btn btn-primary btn-sm mt-8" id="syncNowBtn">Sync Now</button></div>';
+         }
 
          html += '<div class="card"><h3>Clone URLs</h3>';
          aliases.forEach(function(a) {
@@ -302,6 +364,11 @@ function viewRepoDetail(app, name) {
                  + '</div>';
          }
 
+         if (repo.mirror) {
+             html += '<div class="card"><h3>Sync Log</h3>'
+                 + '<div id="syncLogList" class="sync-log-list"><div class="loading">Loading sync log...</div></div></div>';
+         }
+
          html += '<div class="card"><h3>Danger Zone</h3>'
              + '<p class="text-muted text-sm">Delete this repository. This action cannot be undone.</p>'
              + '<button class="btn btn-danger btn-sm" id="deleteRepoBtn">Delete Repository</button></div>';
@@ -361,6 +428,65 @@ function viewRepoDetail(app, name) {
                  commitsContainer.innerHTML = html;
              }).catch(function() {
                  commitsContainer.innerHTML = '<div class="empty">Failed to load commits.</div>';
+             });
+         }
+
+         var syncNowBtn = document.getElementById('syncNowBtn');
+         if (syncNowBtn) {
+             syncNowBtn.addEventListener('click', function() {
+                 syncNowBtn.disabled = true;
+                 syncNowBtn.textContent = 'Syncing...';
+                 apiForm('POST', API + '/repos/' + enc(repo.name) + '/sync').then(function(data) {
+                     var sync = data.sync || {};
+                     if (sync.success) {
+                         showToast('Sync completed: ' + sync.objectsFetched + ' objects, ' + sync.refsUpdated + ' refs updated');
+                     } else {
+                         showToast('Sync failed: ' + (sync.error || 'unknown error'), 'error');
+                     }
+                     viewRepoDetail(app, name);
+                 }).catch(function(err) {
+                     showToast(err.message, 'error');
+                     syncNowBtn.disabled = false;
+                     syncNowBtn.textContent = 'Sync Now';
+                 });
+             });
+         }
+
+         var syncLogContainer = document.getElementById('syncLogList');
+         if (syncLogContainer) {
+             apiJSON(API + '/repos/' + enc(repo.name) + '/sync-log?limit=20').then(function(data) {
+                 var entries = data.entries || [];
+                 if (entries.length === 0) {
+                     syncLogContainer.innerHTML = '<div class="empty">No sync history yet.</div>';
+                     return;
+                 }
+                 var html = '';
+                entries.forEach(function(e) {
+                    var statusBadge = e.success
+                        ? '<span class="badge badge-sync-ok">OK</span>'
+                        : '<span class="badge badge-sync-fail">FAIL</span>';
+                    var triggerBadge = '<span class="badge badge-sync-trigger">' + esc(e.trigger) + '</span>';
+                    var detailParts = [];
+                    if (e.wants > 0) detailParts.push('wants=' + e.wants);
+                    if (e.haves > 0) detailParts.push('haves=' + e.haves);
+                    if (e.upToDate) detailParts.push('up-to-date');
+                    if (e.objectsFetched > 0) detailParts.push(e.objectsFetched + ' objects');
+                    if (e.refsUpdated > 0) detailParts.push(e.refsUpdated + ' refs updated');
+                    if (e.refsDeleted > 0) detailParts.push(e.refsDeleted + ' refs deleted');
+                    if (e.packSize > 0) detailParts.push(fmtBytes(e.packSize));
+                    if (e.duration > 0) detailParts.push(e.duration + 'ms');
+                    var detail = detailParts.length > 0 ? esc(detailParts.join(', ')) : '';
+                    var errorHtml = e.error ? '<div class="sync-log-error">' + esc(e.error) + '</div>' : '';
+                    html += '<div class="sync-log-entry">'
+                        + '<div class="sync-log-header">' + statusBadge + triggerBadge
+                        + '<span class="sync-log-time">' + esc(fmtDate(e.timestamp)) + '</span></div>'
+                        + (detail ? '<div class="sync-log-detail">' + detail + '</div>' : '')
+                        + errorHtml
+                         + '</div>';
+                 });
+                 syncLogContainer.innerHTML = html;
+             }).catch(function() {
+                 syncLogContainer.innerHTML = '<div class="empty">Failed to load sync log.</div>';
              });
          }
      }).catch(function(err) {

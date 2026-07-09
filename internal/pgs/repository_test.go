@@ -240,3 +240,92 @@ func TestValidateAlias(t *testing.T) {
 
 // ensure time import used
 var _ = time.Now
+
+func TestCreateMirrorRepository(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "pgit-mirror-*")
+	defer os.RemoveAll(dir)
+	GitRoot = dir
+	InitReposManager(&RepositoriesManagerConfig{GitRoot: dir})
+	defer func() { ReposManager = nil }()
+
+	mirror := &MirrorConfig{
+		RemoteURL:    "https://github.com/example/repo.git",
+		SyncInterval: 300,
+		AuthType:     "none",
+	}
+	if err := ReposManager.CreateMirrorRepository("mirror1", "test mirror", mirror); err != nil {
+		t.Fatalf("CreateMirrorRepository: %v", err)
+	}
+
+	repo, err := ReposManager.GetRepository("mirror1")
+	if err != nil {
+		t.Fatalf("GetRepository: %v", err)
+	}
+	if !repo.IsMirror() {
+		t.Fatal("IsMirror = false, want true")
+	}
+	if repo.Mirror.RemoteURL != "https://github.com/example/repo.git" {
+		t.Errorf("RemoteURL = %q", repo.Mirror.RemoteURL)
+	}
+	if repo.Mirror.SyncInterval != 300 {
+		t.Errorf("SyncInterval = %d, want 300", repo.Mirror.SyncInterval)
+	}
+
+	data, err := os.ReadFile(filepath.Join(repo.Path(), "pgit.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "\"mirror\"") {
+		t.Error("pgit.json missing mirror field")
+	}
+}
+
+func TestLoadRepo_MirrorBackwardCompat(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "pgit-compat-*")
+	defer os.RemoveAll(dir)
+	GitRoot = dir
+
+	InitReposManager(&RepositoriesManagerConfig{GitRoot: dir})
+	ReposManager.CreateRepository("oldrepo", "old repo", "master")
+
+	oldJSON := `{"name":"oldrepo","description":"old repo","aliases":["oldrepo"],"createdAt":"2026-01-01T00:00:00Z"}`
+	os.WriteFile(filepath.Join(GitRoot, "oldrepo.git", "pgit.json"), []byte(oldJSON), 0o644)
+
+	ReposManager = nil
+	InitReposManager(&RepositoriesManagerConfig{GitRoot: dir})
+	defer func() { ReposManager = nil }()
+
+	repo, err := ReposManager.GetRepository("oldrepo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.IsMirror() {
+		t.Fatal("IsMirror = true, want false for old repo without mirror field")
+	}
+	if repo.Mirror != nil {
+		t.Fatal("Mirror should be nil for old repo")
+	}
+}
+
+func TestCreateMirrorRepository_Validation(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "pgit-mirror-val-*")
+	defer os.RemoveAll(dir)
+	GitRoot = dir
+	InitReposManager(&RepositoriesManagerConfig{GitRoot: dir})
+	defer func() { ReposManager = nil }()
+
+	err := ReposManager.CreateMirrorRepository("m1", "", &MirrorConfig{RemoteURL: ""})
+	if err == nil {
+		t.Fatal("empty RemoteURL should fail")
+	}
+
+	err = ReposManager.CreateMirrorRepository("m2", "", &MirrorConfig{RemoteURL: "ssh://example.com/repo.git"})
+	if err == nil {
+		t.Fatal("non-HTTP RemoteURL should fail")
+	}
+
+	err = ReposManager.CreateMirrorRepository("m3", "", &MirrorConfig{RemoteURL: "https://example.com/repo.git", SyncInterval: -1})
+	if err == nil {
+		t.Fatal("negative SyncInterval should fail")
+	}
+}

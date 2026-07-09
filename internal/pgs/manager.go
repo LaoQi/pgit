@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"pgit/internal/pgs/git"
 )
 
 type RepositoriesManagerConfig struct {
@@ -152,6 +155,72 @@ func (r *RepositoriesManager) CreateRepository(name string, description string, 
 	r.addRepository(repo)
 	log.Printf("created repository %s (default branch: %s)", name, defaultBranch)
 	return nil
+}
+
+func (r *RepositoriesManager) CreateMirrorRepository(name string, description string, mirror *MirrorConfig) error {
+	if err := ValidateRepoName(name); err != nil {
+		return err
+	}
+	if mirror == nil {
+		return fmt.Errorf("mirror config is nil")
+	}
+	if mirror.RemoteURL == "" {
+		return fmt.Errorf("mirror remote URL is empty")
+	}
+	u, err := url.Parse(mirror.RemoteURL)
+	if err != nil {
+		return fmt.Errorf("invalid mirror remote URL: %v", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("mirror remote URL must be http or https, got %q", u.Scheme)
+	}
+	if mirror.SyncInterval < 0 {
+		return fmt.Errorf("mirror sync interval must be >= 0")
+	}
+	if mirror.AuthType == "" {
+		mirror.AuthType = "none"
+	}
+	if r.RepositoryExist(name) {
+		return fmt.Errorf("repository %s already exist", name)
+	}
+	repo, err := InitBare(name, description, "master")
+	if err != nil {
+		return err
+	}
+	repo.Mirror = mirror
+	if err := repo.SaveMetadata(); err != nil {
+		return err
+	}
+	r.addRepository(repo)
+	log.Printf("created mirror repository %s (remote: %s)", name, mirror.RemoteURL)
+	return nil
+}
+
+func (r *RepositoriesManager) SyncRepository(name string) (*git.FetchResult, error) {
+	repo, err := r.GetRepository(name)
+	if err != nil {
+		return nil, err
+	}
+	if !repo.IsMirror() {
+		return nil, fmt.Errorf("repository %s is not a mirror", name)
+	}
+	var auth *git.FetchAuth
+	if repo.Mirror.AuthType == "basic" {
+		auth = &git.FetchAuth{
+			Type:     "basic",
+			Username: repo.Mirror.Username,
+			Password: repo.Mirror.Password,
+		}
+	}
+	result, fetchErr := git.FetchRemote(repo.Mirror.RemoteURL, repo.Path(), auth)
+	repo.Mirror.LastSync = time.Now()
+	if fetchErr != nil {
+		repo.Mirror.LastError = fetchErr.Error()
+	} else {
+		repo.Mirror.LastError = ""
+	}
+	_ = repo.SaveMetadata()
+	return result, fetchErr
 }
 
 func (r *RepositoriesManager) DeleteRepository(name string) error {

@@ -57,8 +57,13 @@ var apiDocs = apiDocData{
  			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name, cannot contain /, .., or start with ."},
 				{Name: "description", In: "form", Required: false, Example: "A demo repo", Desc: "Form field, NOT JSON body"},
-				{Name: "defaultBranch", In: "form", Required: false, Example: "main", Desc: "Default branch name (initial HEAD), defaults to master"},
-			},
+			{Name: "defaultBranch", In: "form", Required: false, Example: "main", Desc: "Default branch name (initial HEAD), defaults to master"},
+			{Name: "mirrorUrl", In: "form", Required: false, Example: "https://github.com/user/repo.git", Desc: "If present, creates a mirror repository that syncs from this remote URL (HTTP/HTTPS only)"},
+			{Name: "mirrorInterval", In: "form", Required: false, Example: "300", Desc: "Sync interval in seconds (0=manual only, default 0). Only used when mirrorUrl is set"},
+			{Name: "mirrorAuthType", In: "form", Required: false, Example: "basic", Desc: "Auth type: 'none' (default) or 'basic'. Only used when mirrorUrl is set"},
+			{Name: "mirrorUsername", In: "form", Required: false, Example: "user", Desc: "Username for basic auth. Only used when mirrorAuthType=basic"},
+			{Name: "mirrorPassword", In: "form", Required: false, Example: "token", Desc: "Password/token for basic auth. Only used when mirrorAuthType=basic"},
+		},
 			RequestExample: `POST /api/v1/repos/my-repo HTTP/1.1
 Content-Type: application/x-www-form-urlencoded
 
@@ -78,6 +83,9 @@ description=A%20demo%20repo&defaultBranch=main`,
 				"name is auto-added as the first alias.",
 				"Returns the full Repository object on success.",
 				"Name validation: no /, no .., no leading dot, cannot be 'api'.",
+				"When mirrorUrl form field is present, creates a mirror repository instead of a regular one.",
+				"Mirror repos sync all refs from the remote (HTTP/HTTPS smart-http). First sync runs asynchronously.",
+				"mirrorInterval=0 means manual sync only (POST /api/v1/repos/{name}/sync).",
 			},
 		},
 		{
@@ -292,6 +300,80 @@ func main() {
 				"Walks the first-parent chain from the ref's commit.",
 				"limit defaults to 20 if omitted or invalid.",
 				"Empty repository or missing ref returns 400.",
+			},
+		},
+		{
+			Method:  "POST",
+			Path:    "/api/v1/repos/{name}/sync",
+			Summary:  "Trigger manual sync for a mirror repository",
+			Params: []apiDocParam{
+				{Name: "name", In: "path", Required: true, Example: "my-mirror", Desc: "Repository name (must be a mirror repo)"},
+			},
+			ResponseExample: `{
+  "ok": true,
+  "sync": {
+    "timestamp": "2026-07-10T12:00:00Z",
+    "duration": 1234,
+    "success": true,
+    "objectsFetched": 42,
+    "refsUpdated": 3,
+    "refsDeleted": 0,
+    "upToDate": false,
+    "trigger": "manual",
+    "wants": 3,
+    "haves": 1,
+    "packSize": 12345
+  }
+}`,
+			Curl: `curl -X POST http://localhost:3000/api/v1/repos/my-mirror/sync`,
+			Notes: []string{
+				"Only mirror repositories can be synced. Non-mirror repos return 400.",
+				"Sync runs synchronously - response includes the sync result.",
+				"If a sync is already in progress, returns 409 Conflict.",
+				"trigger field is always 'manual' for this endpoint.",
+			},
+		},
+		{
+			Method:  "GET",
+			Path:    "/api/v1/repos/{name}/sync-log",
+			Summary:  "List sync log entries for a mirror repository",
+			Params: []apiDocParam{
+				{Name: "name", In: "path", Required: true, Example: "my-mirror", Desc: "Repository name (must be a mirror repo)"},
+				{Name: "limit", In: "query", Required: false, Example: "20", Desc: "Max entries to return (default 50), newest first"},
+			},
+			ResponseExample: `{
+  "entries": [
+    {
+      "timestamp": "2026-07-10T12:10:00Z",
+      "duration": 0,
+      "success": false,
+      "error": "dial tcp: connection refused",
+      "trigger": "scheduled",
+      "wants": 0,
+      "haves": 0,
+      "packSize": 0
+    },
+    {
+      "timestamp": "2026-07-10T12:05:00Z",
+      "duration": 1234,
+      "success": true,
+      "objectsFetched": 42,
+      "refsUpdated": 3,
+      "refsDeleted": 0,
+      "upToDate": false,
+      "trigger": "scheduled",
+      "wants": 3,
+      "haves": 1,
+      "packSize": 12345
+    }
+  ]
+}`,
+			Curl: `curl "http://localhost:3000/api/v1/repos/my-mirror/sync-log?limit=20"`,
+			Notes: []string{
+				"Only mirror repositories have sync logs. Non-mirror repos return 400.",
+				"Entries are returned newest-first.",
+				"Never-synced mirror repos return empty array.",
+				"Sync logs are stored in <repo>.git/pgit-sync.jsonl.",
 			},
 		},
 	},

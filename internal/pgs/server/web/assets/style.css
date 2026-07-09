@@ -204,6 +204,10 @@ table th { font-weight: 600; color: var(--text-muted); background: var(--bg); }
 .badge-tree { background: #f0e6ff; color: var(--purple); }
 .badge-commit { background: #fff4d6; color: var(--orange); }
 .badge-tag { background: #dcffe4; color: var(--green); }
+.badge-mirror { background: #dcffe4; color: var(--green); }
+.badge-sync-ok { background: #dcffe4; color: var(--green); }
+.badge-sync-fail { background: #ffe6e6; color: var(--red); }
+.badge-sync-trigger { background: var(--code-bg); color: var(--text-muted); font-size: 10px; }
 
 /* Breadcrumb */
 .breadcrumb {
@@ -432,3 +436,21 @@ pre code { background: none; padding: 0; }
 .mb-16 { margin-bottom: 16px; }
 .text-muted { color: var(--text-muted); }
 .text-sm { font-size: 13px; }
+
+.checkbox-label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 500; }
+.checkbox-label input { width: auto; }
+
+.sync-log-list { max-height: 400px; overflow-y: auto; }
+.sync-log-entry {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+}
+.sync-log-entry:last-child { border-bottom: none; }
+.sync-log-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.sync-log-time { font-size: 12px; color: var(--text-muted); margin-left: auto; }
+.sync-log-detail { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.sync-log-error { font-size: 12px; color: var(--red); margin-top: 4px; }
