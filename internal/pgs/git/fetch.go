@@ -148,15 +148,16 @@ func FetchRemote(remoteURL, repoRoot string, auth *FetchAuth) (*FetchResult, err
 	}
 
 	pr := NewPktReader(postResp.Body)
-	nakPayload, isFlush, err := pr.ReadPkt()
+	firstPayload, isFlush, err := pr.ReadPkt()
 	if err != nil {
-		return nil, fmt.Errorf("fetch: read NAK: %w", err)
+		return nil, fmt.Errorf("fetch: read first response: %w", err)
 	}
 	if isFlush {
-		return nil, fmt.Errorf("fetch: expected NAK, got flush")
+		return nil, fmt.Errorf("fetch: expected NAK/ACK, got flush")
 	}
-	if string(nakPayload) != "NAK\n" {
-		return nil, fmt.Errorf("fetch: expected NAK, got %q", nakPayload)
+	firstLine := string(firstPayload)
+	if firstLine != "NAK\n" && !strings.HasPrefix(firstLine, "ACK ") {
+		return nil, fmt.Errorf("fetch: expected NAK or ACK, got %q", firstPayload)
 	}
 
 	var packBuf bytes.Buffer

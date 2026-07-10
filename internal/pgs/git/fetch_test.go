@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -356,4 +357,84 @@ func TestFetchRemote_InvalidProxyScheme(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-http proxy scheme")
 	}
+}
+
+// TestFetchRemote_ACKResponse 验证 fetch 客户端能处理 cgit 基本模式下 done 后的
+// ACK <oid> 响应（有共同 commit 时 cgit 发 ACK 而非 NAK）。
+// pgit 自身 upload-pack 总发 NAK，所以用 wrapper 将 NAK 替换为 ACK 模拟 cgit 行为。
+func TestFetchRemote_ACKResponse(t *testing.T) {
+	remoteDir, commit1Oid := makeRepoWithCommit(t)
+	localRoot := makeEmptyLocalRepo(t)
+
+	ts := newFetchTestServer(t, remoteDir)
+	if _, err := FetchRemote(ts.URL+"/repo.git", localRoot, nil); err != nil {
+		t.Fatalf("initial FetchRemote: %v", err)
+	}
+	ts.Close()
+
+	blob1 := makeBlob("hello pgit\n")
+	blob2 := makeBlob("new file\n")
+	tree2 := makeTree([]TreeEntry{
+		{Mode: 0o100644, Name: "a.txt", Oid: blob1.Oid()},
+		{Mode: 0o100644, Name: "b.txt", Oid: blob2.Oid()},
+	})
+	commit2 := makeCommit(tree2.Oid(), []Oid{commit1Oid}, "second commit\n")
+	store := &LooseStore{Root: filepath.Join(remoteDir, "objects")}
+	writeAll(t, store, blob2, tree2, commit2)
+	rs := NewRefStore(remoteDir)
+	if _, err := rs.Update([]RefUpdate{
+		{Name: "refs/heads/master", OldOid: commit1Oid, NewOid: commit2.Oid()},
+	}); err != nil {
+		t.Fatalf("update remote ref: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repo.git/info/refs", func(w http.ResponseWriter, r *http.Request) {
+		service := r.URL.Query().Get("service")
+		w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-advertisement", service))
+		out, err := ServeInfoRefs(remoteDir, service)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write(out)
+	})
+	mux.HandleFunc("/repo.git/git-upload-pack", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
+		w.WriteHeader(http.StatusOK)
+		var buf bytes.Buffer
+		if err := HandleUploadPack(remoteDir, r.Body, &buf); err != nil {
+			t.Logf("upload-pack: %v", err)
+		}
+		data := buf.Bytes()
+		nakPkt := []byte("0008NAK\n")
+		idx := bytes.LastIndex(data, nakPkt)
+		if idx >= 0 {
+			var ackBuf bytes.Buffer
+			aw := NewPktWriter(&ackBuf)
+			aw.WritePktString(fmt.Sprintf("ACK %s\n", commit1Oid))
+			result := make([]byte, 0, len(data)-len(nakPkt)+ackBuf.Len())
+			result = append(result, data[:idx]...)
+			result = append(result, ackBuf.Bytes()...)
+			result = append(result, data[idx+len(nakPkt):]...)
+			w.Write(result)
+		} else {
+			w.Write(data)
+		}
+	})
+	ts2 := httptest.NewServer(mux)
+	defer ts2.Close()
+
+	result, err := FetchRemote(ts2.URL+"/repo.git", localRoot, nil)
+	if err != nil {
+		t.Fatalf("incremental FetchRemote with ACK: %v", err)
+	}
+	if result.UpToDate {
+		t.Errorf("UpToDate = true, want false")
+	}
+	if result.ObjectsWritten != 3 {
+		t.Errorf("ObjectsWritten = %d, want 3", result.ObjectsWritten)
+	}
+	assertObjectExists(t, localRoot, commit2.Oid())
+	assertRefEquals(t, localRoot, "refs/heads/master", commit2.Oid())
 }

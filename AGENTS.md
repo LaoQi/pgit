@@ -39,7 +39,7 @@ internal/pgs/git/             纯 Go git wire protocol v0 服务端（无第三�
   browse.go                   浏览 API 高层：ResolveTreeIsh/TreeAt/BlobAt/ForEachRefs/CommitLog（基于 LooseStore+RefStore）
   protocol.go                 v0 状态机：negotiation + pack 交换（upload-pack 出向 delta 配对）+ sideband-64k + report-status + 操作日志（want/have/对象数；logLevel=detail 时逐条输出 want/have/object/delta 配对）+ force-push 检测标记（isFastForward BFS，仅日志不拒绝）；LogLevel 类型 + SetLogLevel 由 pgs 配置注入（避免 pgs/git → pgs 循环依赖）
   service.go                  对外入口：ServeInfoRefs/HandleUploadPack/HandleReceivePack/HandleSSHSession
-  fetch.go                    纯 Go fetch 客户端：FetchRemote（HTTP smart-http upload-pack 客户端）+ FetchAuth + FetchResult；复用 PktReader/PackDecoder/LooseStore/RefStore；sideband demux + ref 镜像更新（CAS 含删除）+ HEAD best-effort 更新
+  fetch.go                    纯 Go fetch 客户端：FetchRemote（HTTP smart-http upload-pack 客户端）+ FetchAuth + FetchResult；复用 PktReader/PackDecoder/LooseStore/RefStore；sideband demux + ref 镜像更新（CAS 含删除）+ HEAD best-effort 更新；done 后首帧接受 NAK（无共同 commit）与 ACK <oid>（有共同 commit，cgit 基本模式行为）两种响应
 
 internal/pgs/server/          网络服务层
   mux.go                      协议探测分发：peek 前缀 SSH- → SSH 否则 HTTP；peekConn 回放缓冲
@@ -146,7 +146,7 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 ## 测试与质量
 
 - `internal/pgs` 有真实测试：`repository_test.go`（InitBare 生成 pgit.json 验证、InitBare 自定义默认分支、Manager 双索引、alias 增删、扫描恢复、name/alias 校验、SetDefaultBranch 存在/不存在/非法名校验、CreateMirrorRepository、MirrorBackwardCompat、URL 校验）、`repository_browse_test.go`（Tree/Blob/Archive/ForEachRef 端到端，构造 loose 对象验证）、`sync_log_test.go`（追加/读取/空文件/limit 截断）、`sync_manager_test.go`（注册/注销、SyncNow 非镜像报错）、`task_test.go`（约 6 秒，任务调度）。
-- `internal/pgs/git` 覆盖完整：`loose_test`/`delta_test`/`pack_test`/`refs_test`/`reach_test`/`browse_test`/`protocol_test`/`fetch_test`/`e2e_test`（基础读写、delta 应用+生成 roundtrip、pack 编解码与真实 git pack 互验、ofs-delta 编码回环+git index-pack 互验、ref CAS/symref/packed-refs、SetHead 原子写、可达性 BFS+have 差量过滤（完全覆盖/部分覆盖/共享 tree/无覆盖/线性链/缺失 oid/ZeroOid）、treeIsh 解析/tree 遍历/blob 读取/ForEachRefs、v0 状态机+sideband+空仓库回环、upload-pack delta 配对端到端、NAK 首帧独立验证、增量 fetch（have 过滤：基本增量/have==want 无 PACK/多 have/have 间 flush/无关分支/非 sideband 增量/HTTP 中间请求 have flush 无 done 只返 NAK/HTTP 多 POST 增量/单请求 have flush+done 双 NAK）、**fetch 客户端测试**（initial clone/incremental sync/up-to-date/empty remote/basic auth 成功+失败/ref deletion，用 httptest + pgit 自身协议做远程服务器，无需外部 git）、e2e 集成测试（需 `PGIT_E2E=1`，clone/push/fetch 增量拉取端到端验证，含 HTTP stateless_rpc 多轮 negotiation 20 commit 触发 have flush 真实复现 `expected ACK/NAK, got '?PACK'` bug））。`go test ./...` 通过。
+- `internal/pgs/git` 覆盖完整：`loose_test`/`delta_test`/`pack_test`/`refs_test`/`reach_test`/`browse_test`/`protocol_test`/`fetch_test`/`e2e_test`（基础读写、delta 应用+生成 roundtrip、pack 编解码与真实 git pack 互验、ofs-delta 编码回环+git index-pack 互验、ref CAS/symref/packed-refs、SetHead 原子写、可达性 BFS+have 差量过滤（完全覆盖/部分覆盖/共享 tree/无覆盖/线性链/缺失 oid/ZeroOid）、treeIsh 解析/tree 遍历/blob 读取/ForEachRefs、v0 状态机+sideband+空仓库回环、upload-pack delta 配对端到端、NAK 首帧独立验证、增量 fetch（have 过滤：基本增量/have==want 无 PACK/多 have/have 间 flush/无关分支/非 sideband 增量/HTTP 中间请求 have flush 无 done 只返 NAK/HTTP 多 POST 增量/单请求 have flush+done 双 NAK）、**fetch 客户端测试**（initial clone/incremental sync/up-to-date/empty remote/basic auth 成功+失败/ref deletion/ACK 响应（模拟 cgit 基本模式 done 后发 ACK 而非 NAK），用 httptest + pgit 自身协议做远程服务器，无需外部 git）、e2e 集成测试（需 `PGIT_E2E=1`，clone/push/fetch 增量拉取端到端验证，含 HTTP stateless_rpc 多轮 negotiation 20 commit 触发 have flush 真实复现 `expected ACK/NAK, got '?PACK'` bug））。`go test ./...` 通过。
 - 无 linter/formatter/CI 配置。用 `go vet ./...` 和 `go build` 验证。
 
 ## 工作流
