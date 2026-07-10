@@ -343,3 +343,142 @@ func TestCreateMirrorRepository_Validation(t *testing.T) {
 		t.Fatalf("valid proxy URL should pass: %v", err)
 	}
 }
+
+func TestUpdateRepositorySettings_Description(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "pgit-update-desc-*")
+	defer os.RemoveAll(dir)
+	GitRoot = dir
+	InitReposManager(&RepositoriesManagerConfig{GitRoot: dir})
+	defer func() { ReposManager = nil }()
+
+	if err := ReposManager.CreateRepository("r1", "old desc", "master"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReposManager.UpdateRepositorySettings("r1", "new desc", nil); err != nil {
+		t.Fatalf("UpdateRepositorySettings: %v", err)
+	}
+	repo, _ := ReposManager.GetRepository("r1")
+	if repo.Description != "new desc" {
+		t.Errorf("Description = %q, want %q", repo.Description, "new desc")
+	}
+	if repo.IsMirror() {
+		t.Error("regular repo should not become mirror")
+	}
+}
+
+func TestUpdateRepositorySettings_Mirror(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "pgit-update-mirror-*")
+	defer os.RemoveAll(dir)
+	GitRoot = dir
+	InitReposManager(&RepositoriesManagerConfig{GitRoot: dir})
+	defer func() { ReposManager = nil }()
+
+	orig := &MirrorConfig{
+		RemoteURL:    "https://example.com/old.git",
+		SyncInterval: 100,
+		AuthType:     "none",
+		Proxy:        "",
+	}
+	if err := ReposManager.CreateMirrorRepository("mr1", "mirror repo", orig); err != nil {
+		t.Fatal(err)
+	}
+
+	// 更新镜像配置（含密码），密码留空应保留原密码
+	updated := &MirrorConfig{
+		RemoteURL:    "https://example.com/new.git",
+		SyncInterval: 300,
+		AuthType:     "basic",
+		Username:     "user",
+		Password:     "", // 留空 -> 保留原密码（原为空，仍为空）
+		Proxy:        "http://127.0.0.1:7890",
+	}
+	if err := ReposManager.UpdateRepositorySettings("mr1", "updated desc", updated); err != nil {
+		t.Fatalf("UpdateRepositorySettings: %v", err)
+	}
+	repo, _ := ReposManager.GetRepository("mr1")
+	if repo.Description != "updated desc" {
+		t.Errorf("Description = %q", repo.Description)
+	}
+	if repo.Mirror.RemoteURL != "https://example.com/new.git" {
+		t.Errorf("RemoteURL = %q", repo.Mirror.RemoteURL)
+	}
+	if repo.Mirror.SyncInterval != 300 {
+		t.Errorf("SyncInterval = %d", repo.Mirror.SyncInterval)
+	}
+	if repo.Mirror.AuthType != "basic" {
+		t.Errorf("AuthType = %q", repo.Mirror.AuthType)
+	}
+	if repo.Mirror.Proxy != "http://127.0.0.1:7890" {
+		t.Errorf("Proxy = %q", repo.Mirror.Proxy)
+	}
+}
+
+func TestUpdateRepositorySettings_PasswordKept(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "pgit-update-pw-*")
+	defer os.RemoveAll(dir)
+	GitRoot = dir
+	InitReposManager(&RepositoriesManagerConfig{GitRoot: dir})
+	defer func() { ReposManager = nil }()
+
+	orig := &MirrorConfig{
+		RemoteURL:    "https://example.com/repo.git",
+		SyncInterval: 0,
+		AuthType:     "basic",
+		Username:     "u",
+		Password:     "secret",
+	}
+	if err := ReposManager.CreateMirrorRepository("mr2", "", orig); err != nil {
+		t.Fatal(err)
+	}
+	// 更新时密码留空
+	updated := &MirrorConfig{
+		RemoteURL:    "https://example.com/repo.git",
+		SyncInterval: 0,
+		AuthType:     "basic",
+		Username:     "u2",
+		Password:     "",
+	}
+	if err := ReposManager.UpdateRepositorySettings("mr2", "d", updated); err != nil {
+		t.Fatalf("UpdateRepositorySettings: %v", err)
+	}
+	repo, _ := ReposManager.GetRepository("mr2")
+	if repo.Mirror.Password != "secret" {
+		t.Errorf("Password = %q, want kept %q", repo.Mirror.Password, "secret")
+	}
+	if repo.Mirror.Username != "u2" {
+		t.Errorf("Username = %q, want %q", repo.Mirror.Username, "u2")
+	}
+}
+
+func TestUpdateRepositorySettings_Validation(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "pgit-update-val-*")
+	defer os.RemoveAll(dir)
+	GitRoot = dir
+	InitReposManager(&RepositoriesManagerConfig{GitRoot: dir})
+	defer func() { ReposManager = nil }()
+
+	// 不存在的仓库
+	if err := ReposManager.UpdateRepositorySettings("nope", "d", nil); err == nil {
+		t.Fatal("non-existent repo should fail")
+	}
+
+	// 普通仓库传 mirror 应失败
+	ReposManager.CreateRepository("r1", "", "master")
+	if err := ReposManager.UpdateRepositorySettings("r1", "d", &MirrorConfig{RemoteURL: "https://e.com/r.git"}); err == nil {
+		t.Fatal("mirror update on non-mirror repo should fail")
+	}
+
+	// 镜像仓库非法 remoteUrl
+	ReposManager.CreateMirrorRepository("m1", "", &MirrorConfig{RemoteURL: "https://e.com/r.git"})
+	if err := ReposManager.UpdateRepositorySettings("m1", "d", &MirrorConfig{RemoteURL: "ssh://e.com/r.git"}); err == nil {
+		t.Fatal("non-HTTP remote URL should fail")
+	}
+	// 非法 proxy
+	if err := ReposManager.UpdateRepositorySettings("m1", "d", &MirrorConfig{RemoteURL: "https://e.com/r.git", Proxy: "socks5://h:1"}); err == nil {
+		t.Fatal("non-HTTP proxy should fail")
+	}
+	// 负 interval
+	if err := ReposManager.UpdateRepositorySettings("m1", "d", &MirrorConfig{RemoteURL: "https://e.com/r.git", SyncInterval: -1}); err == nil {
+		t.Fatal("negative interval should fail")
+	}
+}

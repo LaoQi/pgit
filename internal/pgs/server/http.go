@@ -52,6 +52,7 @@ func (h *HTTPHandler) buildRouter() http.Handler {
 		r.Post("/repos/{name}/aliases", h.addAlias)
 		r.Delete("/repos/{name}/aliases/{alias}", h.removeAlias)
 		r.Post("/repos/{name}/default-branch", h.setDefaultBranch)
+		r.Post("/repos/{name}/settings", h.updateSettings)
 		r.Get("/repos/{name}/tree/{ref}/*", h.tree)
 		r.Get("/repos/{name}/blob/{ref}/*", h.blob)
 		r.Get("/repos/{name}/archive/{ref}", h.archive)
@@ -411,6 +412,59 @@ func (h *HTTPHandler) syncLog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"entries": entries,
 	})
+}
+
+func (h *HTTPHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	repo, err := h.Manager.GetRepository(name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	description := r.FormValue("description")
+
+	var mirrorUpdates *pgs.MirrorConfig
+	oldInterval := 0
+	if repo.IsMirror() {
+		oldInterval = repo.Mirror.SyncInterval
+		interval := 0
+		if s := r.FormValue("mirrorInterval"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v >= 0 {
+				interval = v
+			} else {
+				writeError(w, http.StatusBadRequest, "invalid mirrorInterval")
+				return
+			}
+		}
+		authType := r.FormValue("mirrorAuthType")
+		if authType == "" {
+			authType = "none"
+		}
+		mirrorUpdates = &pgs.MirrorConfig{
+			RemoteURL:    r.FormValue("mirrorRemoteUrl"),
+			SyncInterval: interval,
+			AuthType:     authType,
+			Username:     r.FormValue("mirrorUsername"),
+			Password:     r.FormValue("mirrorPassword"),
+			Proxy:        r.FormValue("mirrorProxy"),
+		}
+	}
+
+	if err := h.Manager.UpdateRepositorySettings(name, description, mirrorUpdates); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// syncInterval 变化时重新注册定时调度（0<->N、N->M 均重建）
+	if pgs.SyncMgr != nil && repo.IsMirror() {
+		if oldInterval != repo.Mirror.SyncInterval {
+			pgs.SyncMgr.Unregister(name)
+			pgs.SyncMgr.Register(repo)
+		}
+	}
+
+	updated, _ := h.Manager.GetRepository(name)
+	writeJSON(w, http.StatusOK, updated)
 }
 
 // --- Git smart-http transport ---

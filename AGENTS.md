@@ -112,6 +112,7 @@ type MirrorConfig struct {
 - `POST /api/v1/repos/{name}`（创建仓库，`mirrorUrl` 表单字段存在时创建镜像仓库，支持 `mirrorInterval`/`mirrorAuthType`/`mirrorUsername`/`mirrorPassword`/`mirrorProxy`）
 - `POST/DELETE /api/v1/repos/{name}/aliases[/{alias}]`
 - `POST /api/v1/repos/{name}/default-branch`（设置默认分支，要求分支已存在）
+- `POST /api/v1/repos/{name}/settings`（更新 description 与镜像配置：`mirrorRemoteUrl`/`mirrorInterval`/`mirrorAuthType`/`mirrorUsername`/`mirrorPassword`/`mirrorProxy`；密码留空=保留原值；改 interval 重新注册定时调度）
 - `GET /api/v1/repos/{name}/{tree|blob|archive}/{ref}[/*]`
 - `GET /api/v1/repos/{name}/commits/{ref}`（列出最近 commits，支持 `?limit=N`，默认 20）
 - `POST /api/v1/repos/{name}/sync`（手动同步镜像仓库，返回 SyncLogEntry）

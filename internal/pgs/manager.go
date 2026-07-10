@@ -164,30 +164,8 @@ func (r *RepositoriesManager) CreateMirrorRepository(name string, description st
 	if mirror == nil {
 		return fmt.Errorf("mirror config is nil")
 	}
-	if mirror.RemoteURL == "" {
-		return fmt.Errorf("mirror remote URL is empty")
-	}
-	u, err := url.Parse(mirror.RemoteURL)
-	if err != nil {
-		return fmt.Errorf("invalid mirror remote URL: %v", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("mirror remote URL must be http or https, got %q", u.Scheme)
-	}
-	if mirror.SyncInterval < 0 {
-		return fmt.Errorf("mirror sync interval must be >= 0")
-	}
-	if mirror.Proxy != "" {
-		proxyURL, err := url.Parse(mirror.Proxy)
-		if err != nil {
-			return fmt.Errorf("invalid mirror proxy URL: %v", err)
-		}
-		if proxyURL.Scheme != "http" && proxyURL.Scheme != "https" {
-			return fmt.Errorf("mirror proxy URL must be http or https, got %q", proxyURL.Scheme)
-		}
-	}
-	if mirror.AuthType == "" {
-		mirror.AuthType = "none"
+	if err := validateMirror(mirror); err != nil {
+		return err
 	}
 	if r.RepositoryExist(name) {
 		return fmt.Errorf("repository %s already exist", name)
@@ -203,6 +181,61 @@ func (r *RepositoriesManager) CreateMirrorRepository(name string, description st
 	r.addRepository(repo)
 	log.Printf("created mirror repository %s (remote: %s)", name, mirror.RemoteURL)
 	return nil
+}
+
+// validateMirror 校验镜像配置（RemoteURL scheme/Proxy scheme/SyncInterval/AuthType）。
+func validateMirror(m *MirrorConfig) error {
+	if m.RemoteURL == "" {
+		return fmt.Errorf("mirror remote URL is empty")
+	}
+	u, err := url.Parse(m.RemoteURL)
+	if err != nil {
+		return fmt.Errorf("invalid mirror remote URL: %v", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("mirror remote URL must be http or https, got %q", u.Scheme)
+	}
+	if m.SyncInterval < 0 {
+		return fmt.Errorf("mirror sync interval must be >= 0")
+	}
+	if m.Proxy != "" {
+		proxyURL, err := url.Parse(m.Proxy)
+		if err != nil {
+			return fmt.Errorf("invalid mirror proxy URL: %v", err)
+		}
+		if proxyURL.Scheme != "http" && proxyURL.Scheme != "https" {
+			return fmt.Errorf("mirror proxy URL must be http or https, got %q", proxyURL.Scheme)
+		}
+	}
+	if m.AuthType == "" {
+		m.AuthType = "none"
+	}
+	return nil
+}
+
+// UpdateRepositorySettings 更新仓库描述与镜像配置。mirror 为 nil 时仅更新 description；
+// 镜像仓库传 mirror 时全量覆盖镜像字段，Password 为空表示保留原密码。
+func (r *RepositoriesManager) UpdateRepositorySettings(name string, description string, mirror *MirrorConfig) error {
+	repo, err := r.GetRepository(name)
+	if err != nil {
+		return err
+	}
+	if mirror != nil {
+		if !repo.IsMirror() {
+			return fmt.Errorf("repository %s is not a mirror", name)
+		}
+		if err := validateMirror(mirror); err != nil {
+			return err
+		}
+		if mirror.Password == "" {
+			mirror.Password = repo.Mirror.Password
+		}
+		mirror.LastSync = repo.Mirror.LastSync
+		mirror.LastError = repo.Mirror.LastError
+		repo.Mirror = mirror
+	}
+	repo.Description = description
+	return repo.SaveMetadata()
 }
 
 func (r *RepositoriesManager) SyncRepository(name string) (*git.FetchResult, error) {

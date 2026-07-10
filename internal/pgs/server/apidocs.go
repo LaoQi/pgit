@@ -336,6 +336,35 @@ func main() {
 			},
 		},
 		{
+			Method:  "POST",
+			Path:    "/api/v1/repos/{name}/settings",
+			Summary:  "Update repository description and mirror configuration",
+			Params: []apiDocParam{
+				{Name: "name", In: "path", Required: true, Example: "my-mirror", Desc: "Repository name"},
+				{Name: "description", In: "form", Required: true, Example: "Updated desc", Desc: "New description (empty string clears it)"},
+				{Name: "mirrorRemoteUrl", In: "form", Required: false, Example: "https://github.com/user/repo.git", Desc: "New mirror remote URL (http/https). Mirror repos only"},
+				{Name: "mirrorInterval", In: "form", Required: false, Example: "300", Desc: "New sync interval in seconds (0=manual). Mirror repos only. Changing it reschedules the sync timer"},
+				{Name: "mirrorAuthType", In: "form", Required: false, Example: "basic", Desc: "Auth type: 'none' (default) or 'basic'. Mirror repos only"},
+				{Name: "mirrorUsername", In: "form", Required: false, Example: "user", Desc: "Username for basic auth. Mirror repos only"},
+				{Name: "mirrorPassword", In: "form", Required: false, Example: "token", Desc: "Password/token. Empty = keep current password. Mirror repos only"},
+				{Name: "mirrorProxy", In: "form", Required: false, Example: "http://user:pass@127.0.0.1:7890", Desc: "HTTP proxy URL (empty=direct). Mirror repos only"},
+			},
+			RequestExample: `POST /api/v1/repos/my-mirror/settings HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+description=Updated&mirrorRemoteUrl=https://github.com/user/repo.git&mirrorInterval=600&mirrorProxy=http://127.0.0.1:7890`,
+			Curl: `curl -X POST http://localhost:3000/api/v1/repos/my-mirror/settings \
+  -d "description=Updated" \
+  -d "mirrorInterval=600"`,
+			Notes: []string{
+				"description is always updated (empty clears it); applies to both regular and mirror repos.",
+				"Mirror fields are only applied when the repo is a mirror; mirrorRemoteUrl/mirrorInterval/etc. are ignored for regular repos.",
+				"mirrorPassword empty keeps the existing password (avoid re-entering on edits).",
+				"Changing mirrorInterval reschedules the sync timer (0 stops scheduled sync, >0 starts/reschedules).",
+				"Returns the updated Repository object on success.",
+			},
+		},
+		{
 			Method:  "GET",
 			Path:    "/api/v1/repos/{name}/sync-log",
 			Summary:  "List sync log entries for a mirror repository",

@@ -179,6 +179,7 @@ function viewRepos(app) {
             + '<div class="form-group"><label>Username</label><input id="mirrorUsername" placeholder="username" autocomplete="off"></div>'
             + '<div class="form-group"><label>Password / Token</label><input id="mirrorPassword" type="password" placeholder="password or token" autocomplete="off"></div>'
             + '</div>'
+            + '<div class="form-group"><label>Proxy (optional)</label><input id="mirrorProxy" placeholder="http://user:pass@host:port" autocomplete="off"></div>'
             + '</div>'
             + '<button class="btn btn-primary btn-sm" id="createRepoBtn">Create</button>'
             + '</div></div>';
@@ -238,6 +239,8 @@ function viewRepos(app) {
                     params.mirrorUsername = document.getElementById('mirrorUsername').value.trim();
                     params.mirrorPassword = document.getElementById('mirrorPassword').value;
                 }
+                var proxy = document.getElementById('mirrorProxy').value.trim();
+                if (proxy) params.mirrorProxy = proxy;
                 apiForm('POST', API + '/repos/' + enc(name), params).then(function() {
                     showToast('Mirror repository created, sync will start shortly');
                     navigate('/repo/' + enc(name));
@@ -277,10 +280,12 @@ function viewRepoDetail(app, name) {
              var lastSyncText = m.lastSync ? fmtDate(m.lastSync) : 'Never';
              var errorHtml = m.lastError ? '<p class="text-sm mt-4" style="color:var(--red)">Last Error: ' + esc(m.lastError) + '</p>' : '';
              var authText = m.authType === 'basic' ? 'Basic Auth (' + esc(m.username || '') + ')' : 'None';
+             var proxyText = m.proxy ? esc(m.proxy) : 'Direct (no proxy)';
              html += '<div class="card"><h3>Mirror</h3>'
                  + '<p class="text-sm text-muted">Remote: <code>' + esc(m.remoteUrl) + '</code></p>'
                  + '<p class="text-sm text-muted mt-4">Sync: ' + esc(intervalText) + '</p>'
                  + '<p class="text-sm text-muted mt-4">Auth: ' + esc(authText) + '</p>'
+                 + '<p class="text-sm text-muted mt-4">Proxy: ' + proxyText + '</p>'
                  + '<p class="text-sm text-muted mt-4">Last Sync: ' + esc(lastSyncText) + '</p>'
                  + errorHtml
                  + '<button class="btn btn-primary btn-sm mt-8" id="syncNowBtn">Sync Now</button></div>';
@@ -369,6 +374,21 @@ function viewRepoDetail(app, name) {
                  + '<div id="syncLogList" class="sync-log-list"><div class="loading">Loading sync log...</div></div></div>';
          }
 
+         html += '<div class="card"><h3>Settings</h3>'
+             + '<div class="form-group"><label>Description</label><input id="setDesc" value="' + escAttr(repo.description || '') + '"></div>';
+         if (repo.mirror) {
+             var sm = repo.mirror;
+             html += '<div class="form-group"><label>Remote URL</label><input id="setMirrorUrl" value="' + escAttr(sm.remoteUrl || '') + '"></div>'
+                 + '<div class="form-group"><label>Sync Interval (seconds, 0=manual)</label><input id="setMirrorInterval" value="' + escAttr(String(sm.syncInterval || 0)) + '"></div>'
+                 + '<div class="form-group"><label>Auth Type</label><select id="setMirrorAuthType"><option value="none"' + (sm.authType !== 'basic' ? ' selected' : '') + '>None</option><option value="basic"' + (sm.authType === 'basic' ? ' selected' : '') + '>Basic Auth</option></select></div>'
+                 + '<div id="setMirrorAuthFields" style="' + (sm.authType === 'basic' ? 'display:block' : 'display:none') + '">'
+                 + '<div class="form-group"><label>Username</label><input id="setMirrorUsername" value="' + escAttr(sm.username || '') + '"></div>'
+                 + '<div class="form-group"><label>Password / Token</label><input id="setMirrorPassword" type="password" placeholder="leave blank to keep current" autocomplete="off"></div>'
+                 + '</div>'
+                 + '<div class="form-group"><label>Proxy (optional)</label><input id="setMirrorProxy" value="' + escAttr(sm.proxy || '') + '" placeholder="http://user:pass@host:port"></div>';
+         }
+         html += '<button class="btn btn-primary btn-sm mt-8" id="saveSettingsBtn">Save Settings</button></div>';
+
          html += '<div class="card"><h3>Danger Zone</h3>'
              + '<p class="text-muted text-sm">Delete this repository. This action cannot be undone.</p>'
              + '<button class="btn btn-danger btn-sm" id="deleteRepoBtn">Delete Repository</button></div>';
@@ -408,7 +428,35 @@ function viewRepoDetail(app, name) {
               });
           }
 
-         var commitsContainer = document.getElementById('commitsList');
+          var saveSettingsBtn = document.getElementById('saveSettingsBtn');
+          if (saveSettingsBtn) {
+              saveSettingsBtn.addEventListener('click', function() {
+                  var params = { description: document.getElementById('setDesc').value };
+                  if (repo.mirror) {
+                      params.mirrorRemoteUrl = document.getElementById('setMirrorUrl').value.trim();
+                      params.mirrorInterval = document.getElementById('setMirrorInterval').value.trim();
+                      params.mirrorAuthType = document.getElementById('setMirrorAuthType').value;
+                      params.mirrorProxy = document.getElementById('setMirrorProxy').value.trim();
+                      if (params.mirrorAuthType === 'basic') {
+                          params.mirrorUsername = document.getElementById('setMirrorUsername').value.trim();
+                          var pw = document.getElementById('setMirrorPassword').value;
+                          if (pw) params.mirrorPassword = pw;
+                      }
+                  }
+                  apiForm('POST', API + '/repos/' + enc(repo.name) + '/settings', params).then(function() {
+                      showToast('Settings saved');
+                      viewRepoDetail(app, name);
+                  }).catch(function(err) { showToast(err.message, 'error'); });
+              });
+          }
+          var setMirrorAuthSelect = document.getElementById('setMirrorAuthType');
+          if (setMirrorAuthSelect) {
+              setMirrorAuthSelect.addEventListener('change', function() {
+                  document.getElementById('setMirrorAuthFields').style.display = this.value === 'basic' ? 'block' : 'none';
+              });
+          }
+
+          var commitsContainer = document.getElementById('commitsList');
          if (commitsContainer) {
              var commitsRef = data.defaultBranch || 'master';
              apiJSON(API + '/repos/' + enc(repo.name) + '/commits/' + enc(commitsRef) + '?limit=20').then(function(commits) {
