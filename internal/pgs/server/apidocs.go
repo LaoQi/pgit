@@ -63,6 +63,7 @@ var apiDocs = apiDocData{
 			{Name: "mirrorAuthType", In: "form", Required: false, Example: "basic", Desc: "Auth type: 'none' (default) or 'basic'. Only used when mirrorUrl is set"},
 			{Name: "mirrorUsername", In: "form", Required: false, Example: "user", Desc: "Username for basic auth. Only used when mirrorAuthType=basic"},
 			{Name: "mirrorPassword", In: "form", Required: false, Example: "token", Desc: "Password/token for basic auth. Only used when mirrorAuthType=basic"},
+			{Name: "mirrorProxy", In: "form", Required: false, Example: "http://user:pass@127.0.0.1:7890", Desc: "HTTP proxy URL for mirror sync (http(s)://[user:pass@]host:port). Only used when mirrorUrl is set"},
 		},
 			RequestExample: `POST /api/v1/repos/my-repo HTTP/1.1
 Content-Type: application/x-www-form-urlencoded
@@ -86,6 +87,7 @@ description=A%20demo%20repo&defaultBranch=main`,
 				"When mirrorUrl form field is present, creates a mirror repository instead of a regular one.",
 				"Mirror repos sync all refs from the remote (HTTP/HTTPS smart-http). First sync runs asynchronously.",
 				"mirrorInterval=0 means manual sync only (POST /api/v1/repos/{name}/sync).",
+				"mirrorProxy sets an HTTP proxy for sync fetches (optional); URL userinfo enables proxy auth.",
 			},
 		},
 		{

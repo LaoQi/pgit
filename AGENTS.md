@@ -67,6 +67,7 @@ type MirrorConfig struct {
     AuthType     string    `json:"authType"`      // "none" | "basic"
     Username     string    `json:"username,omitempty"`
     Password     string    `json:"password,omitempty"`
+    Proxy        string    `json:"proxy,omitempty"` // HTTP 代理 URL（含 userinfo 自动代理认证），空=直连
     LastSync     time.Time `json:"lastSync,omitempty"`
     LastError    string    `json:"lastError,omitempty"`
 }
@@ -108,7 +109,7 @@ type MirrorConfig struct {
 
 管理 API（`/api/v1/`，`HttpAuth=true` 时加 Basic Auth）：
 - `GET /api/v1/`（API 文档 JSON）、`GET/POST /api/v1/repos`、`GET/DELETE /api/v1/repos/{name}`
-- `POST /api/v1/repos/{name}`（创建仓库，`mirrorUrl` 表单字段存在时创建镜像仓库，支持 `mirrorInterval`/`mirrorAuthType`/`mirrorUsername`/`mirrorPassword`）
+- `POST /api/v1/repos/{name}`（创建仓库，`mirrorUrl` 表单字段存在时创建镜像仓库，支持 `mirrorInterval`/`mirrorAuthType`/`mirrorUsername`/`mirrorPassword`/`mirrorProxy`）
 - `POST/DELETE /api/v1/repos/{name}/aliases[/{alias}]`
 - `POST /api/v1/repos/{name}/default-branch`（设置默认分支，要求分支已存在）
 - `GET /api/v1/repos/{name}/{tree|blob|archive}/{ref}[/*]`

@@ -2,10 +2,12 @@ package git
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 )
 
@@ -293,4 +295,65 @@ func TestFetchRemote_RefDeletion(t *testing.T) {
 	}
 	assertRefDeleted(t, localRoot, "refs/heads/feature")
 	assertRefEquals(t, localRoot, "refs/heads/master", commit2.Oid())
+}
+
+// newForwardProxy 起一个简易 HTTP 正向代理，转发所有请求到其绝对 URI 目标，并计数命中次数。
+func newForwardProxy(t *testing.T, hits *int64) *httptest.Server {
+	t.Helper()
+	direct := &http.Transport{}
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(hits, 1)
+		resp, err := direct.RoundTrip(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		for k, vv := range resp.Header {
+			for _, v := range vv {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
+	}))
+	t.Cleanup(proxy.Close)
+	return proxy
+}
+
+func TestFetchRemote_Proxy(t *testing.T) {
+	remoteDir, commitOid := makeRepoWithCommit(t)
+	ts := newFetchTestServer(t, remoteDir)
+	localRoot := makeEmptyLocalRepo(t)
+
+	var proxyHits int64
+	proxy := newForwardProxy(t, &proxyHits)
+
+	auth := &FetchAuth{Proxy: proxy.URL}
+	result, err := FetchRemote(ts.URL+"/repo.git", localRoot, auth)
+	if err != nil {
+		t.Fatalf("FetchRemote via proxy: %v", err)
+	}
+	if result.UpToDate {
+		t.Error("expected fresh fetch, got up-to-date")
+	}
+	if result.ObjectsWritten == 0 {
+		t.Error("expected objects written via proxy")
+	}
+	if proxyHits < 2 {
+		t.Errorf("proxy hits = %d, want >= 2 (info/refs + upload-pack)", proxyHits)
+	}
+	assertRefEquals(t, localRoot, "refs/heads/master", commitOid)
+}
+
+func TestFetchRemote_InvalidProxyScheme(t *testing.T) {
+	remoteDir, _ := makeRepoWithCommit(t)
+	ts := newFetchTestServer(t, remoteDir)
+	localRoot := makeEmptyLocalRepo(t)
+
+	auth := &FetchAuth{Proxy: "socks5://127.0.0.1:1080"}
+	_, err := FetchRemote(ts.URL+"/repo.git", localRoot, auth)
+	if err == nil {
+		t.Fatal("expected error for non-http proxy scheme")
+	}
 }

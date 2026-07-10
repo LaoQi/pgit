@@ -137,6 +137,7 @@ func (h *HTTPHandler) createRepo(w http.ResponseWriter, r *http.Request) {
 			AuthType:     authType,
 			Username:     r.FormValue("mirrorUsername"),
 			Password:     r.FormValue("mirrorPassword"),
+			Proxy:        r.FormValue("mirrorProxy"),
 		}
 		if err := h.Manager.CreateMirrorRepository(name, description, mirror); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())

@@ -22,6 +22,7 @@ type MirrorConfig struct {
 	AuthType     string    `json:"authType"`
 	Username     string    `json:"username,omitempty"`
 	Password     string    `json:"password,omitempty"`
+	Proxy        string    `json:"proxy,omitempty"`
 	LastSync     time.Time `json:"lastSync,omitempty"`
 	LastError    string    `json:"lastError,omitempty"`
 }

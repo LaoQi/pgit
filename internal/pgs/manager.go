@@ -177,6 +177,15 @@ func (r *RepositoriesManager) CreateMirrorRepository(name string, description st
 	if mirror.SyncInterval < 0 {
 		return fmt.Errorf("mirror sync interval must be >= 0")
 	}
+	if mirror.Proxy != "" {
+		proxyURL, err := url.Parse(mirror.Proxy)
+		if err != nil {
+			return fmt.Errorf("invalid mirror proxy URL: %v", err)
+		}
+		if proxyURL.Scheme != "http" && proxyURL.Scheme != "https" {
+			return fmt.Errorf("mirror proxy URL must be http or https, got %q", proxyURL.Scheme)
+		}
+	}
 	if mirror.AuthType == "" {
 		mirror.AuthType = "none"
 	}
@@ -205,11 +214,12 @@ func (r *RepositoriesManager) SyncRepository(name string) (*git.FetchResult, err
 		return nil, fmt.Errorf("repository %s is not a mirror", name)
 	}
 	var auth *git.FetchAuth
-	if repo.Mirror.AuthType == "basic" {
+	if repo.Mirror.AuthType == "basic" || repo.Mirror.Proxy != "" {
 		auth = &git.FetchAuth{
-			Type:     "basic",
+			Type:     repo.Mirror.AuthType,
 			Username: repo.Mirror.Username,
 			Password: repo.Mirror.Password,
+			Proxy:    repo.Mirror.Proxy,
 		}
 	}
 	result, fetchErr := git.FetchRemote(repo.Mirror.RemoteURL, repo.Path(), auth)

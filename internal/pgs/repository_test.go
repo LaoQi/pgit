@@ -328,4 +328,18 @@ func TestCreateMirrorRepository_Validation(t *testing.T) {
 	if err == nil {
 		t.Fatal("negative SyncInterval should fail")
 	}
+
+	err = ReposManager.CreateMirrorRepository("m4", "", &MirrorConfig{RemoteURL: "https://example.com/repo.git", Proxy: "socks5://127.0.0.1:1080"})
+	if err == nil {
+		t.Fatal("non-HTTP proxy scheme should fail")
+	}
+
+	err = ReposManager.CreateMirrorRepository("m5", "", &MirrorConfig{RemoteURL: "https://example.com/repo.git", Proxy: "://bad"})
+	if err == nil {
+		t.Fatal("malformed proxy URL should fail")
+	}
+
+	if err := ReposManager.CreateMirrorRepository("m6", "", &MirrorConfig{RemoteURL: "https://example.com/repo.git", Proxy: "http://user:pass@127.0.0.1:7890"}); err != nil {
+		t.Fatalf("valid proxy URL should pass: %v", err)
+	}
 }

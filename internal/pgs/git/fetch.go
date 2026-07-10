@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ type FetchAuth struct {
 	Type     string // "none" | "basic"
 	Username string
 	Password string
+	Proxy    string // HTTP 代理 URL（含 userinfo 时自动代理认证），如 http://user:pass@host:port
 }
 
 // FetchResult fetch 操作结果
@@ -34,6 +36,16 @@ func FetchRemote(remoteURL, repoRoot string, auth *FetchAuth) (*FetchResult, err
 	fetchStart := time.Now()
 	remoteURL = strings.TrimRight(remoteURL, "/")
 	client := &http.Client{Timeout: 5 * time.Minute}
+	if auth != nil && auth.Proxy != "" {
+		proxyURL, err := url.Parse(auth.Proxy)
+		if err != nil {
+			return nil, fmt.Errorf("fetch: invalid proxy URL: %w", err)
+		}
+		if proxyURL.Scheme != "http" && proxyURL.Scheme != "https" {
+			return nil, fmt.Errorf("fetch: proxy URL must be http or https, got %q", proxyURL.Scheme)
+		}
+		client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	}
 
 	remoteRefs, serverCaps, err := fetchInfoRefs(client, remoteURL, auth)
 	if err != nil {
