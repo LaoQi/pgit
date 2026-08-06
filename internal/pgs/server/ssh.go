@@ -127,6 +127,15 @@ func (s *SSHHandler) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 			repoPath := filepath.Join(s.GitRoot, repo.Name+".git")
 			log.Printf("SSH: exec %s %s", cmdName, repoPath)
 
+			// mirror 仓库禁止 push：拒绝 git-receive-pack。
+			if cmdName == "git-receive-pack" && repo.IsMirror() {
+				log.Printf("SSH: receive-pack denied: mirror repo %q (alias %q)", repo.Name, alias)
+				req.Reply(true, nil)
+				_, _ = io.WriteString(ch.Stderr(), "fatal: mirror repository: push disabled\n")
+				ch.SendRequest("exit-status", false, []byte{0, 0, 0, 1})
+				return
+			}
+
 			req.Reply(true, nil)
 			if err := git.HandleSSHSession(cmdName, repoPath, ch); err != nil {
 				log.Printf("SSH: %s %s failed: %v", cmdName, alias, err)

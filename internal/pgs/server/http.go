@@ -493,6 +493,21 @@ func (h *HTTPHandler) gitTransport(w http.ResponseWriter, r *http.Request) {
 	}
 	repoPath := repo.Path()
 
+	// mirror 仓库禁止 push：拒绝 receive-pack 的广告(info/refs)与实际推送(git-receive-pack)。
+	if repo.IsMirror() {
+		service := ""
+		if sub == "info/refs" {
+			service = r.FormValue("service")
+		} else if strings.HasPrefix(sub, "git-") {
+			service = "git-" + strings.TrimPrefix(sub, "git-")
+		}
+		if service == "git-receive-pack" {
+			log.Printf("receive-pack denied: mirror repo %q (alias %q)", repo.Name, alias)
+			http.Error(w, "mirror repository: push disabled", http.StatusForbidden)
+			return
+		}
+	}
+
 	switch {
 	case sub == "info/refs":
 		h.infoRefs(w, r, repoPath)

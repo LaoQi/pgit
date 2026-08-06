@@ -77,7 +77,7 @@ type MirrorConfig struct {
 - **元数据**：`<GitRoot>/<name>.git/pgit.json`（name/aliases/description/createdAt/mirror），SaveMetadata 原子写（tmp+rename）
 - **同步日志**：`<GitRoot>/<name>.git/pgit-sync.jsonl`（JSONL 追加写，仅镜像仓库）
 - **启动扫描**：遍历 `<GitRoot>/*.git/pgit.json` 重建双索引(`byName`/`byAlias`)；缺 pgit.json 的旧目录自动迁移补齐（name=目录名、aliases=[目录名]）
-- **镜像仓库**：Mirror 字段非 nil 时为镜像仓库，启动时自动注册 SyncManager（SyncInterval>0 时定时同步）
+- **镜像仓库**：Mirror 字段非 nil 时为镜像仓库，启动时自动注册 SyncManager（SyncInterval>0 时定时同步）；**禁止 push**（HTTP/SSH 入口拦截 receive-pack，详见协议层说明）
 - **alias 规则**：Name 是默认 alias 不可删；全局唯一；禁止 `/` 开头、`..`、空段、`api` 前缀
 - **name 规则**：禁止 `/`、`..`、以 `.` 开头、`api`
 
@@ -89,6 +89,7 @@ type MirrorConfig struct {
 - upload-pack 广告 caps 不含 `multi_ack_detailed`（实现基本模式 v0 多轮 negotiation）：wants+flush → haves 分批（每批 flush 处回 NAK，不带 flush pkt）→ done → NAK+PACK+flush。HTTP stateless_rpc 下每个 POST 是一次 `ServeUploadPack` 调用，have 批 flush 后请求体 EOF 即 `return`（仅已发 NAK），含 done 的 POST 才发 NAK+PACK+flush；SSH 流式下 have flush 后 continue。NAK 数与 fetch-pack 客户端 `get_ack` 次数自洽（对齐 fetch-pack.c:619-628：`if(retval!=0) flushes++` + `while(flushes)`）。不广告 `multi_ack_detailed` 的原因：需实现 `ok_to_give_up` 可达性判断与 `ACK common/ready` 状态机，基本模式 + have flush 回 NAK 已覆盖 HTTP/SSH 增量 fetch。
 - upload-pack 支持 have 过滤增量 fetch：`CollectReachable` 接收 `haveOids` 可变参数，从 have 出发 BFS 标记排除集，want 可达但 have 也可达的对象不发送；want 全部被 have 覆盖时仅发 NAK+flush 不发 PACK
 - push 安全仅 old-oid CAS，不限制 force-push，无大小上限；receive-pack 日志中通过 `isFastForward` BFS 检测非快进推送并标记 `[force-push]`（仅审计日志，不拒绝）
+- **mirror 仓库禁止 push**：HTTP `gitTransport`（`http.go`）与 SSH `handleSession`（`ssh.go`）在协议入口最外层拦截 `git-receive-pack`（HTTP 同时拦截 `info/refs?service=git-receive-pack` 广告阶段），`repo.IsMirror()` 为真时返回 403 / SSH stderr `fatal: mirror repository: push disabled` + exit 1。upload-pack（clone/fetch）不受影响，镜像同步功能正常
 - receive-pack 空命令列表请求（body 仅 flush-pkt，无 ref 更新、无 packfile）容忍并返回空 report-status（unpack ok + flush-pkt），与 cgit 一致
 - 对象完整性逐对象 SHA1 重算校验，不做可达性检查
 - REF_DELTA base 优先在 pack 内查找，fallback 回查 LooseStore（push 时 base 常是仓库已有对象）
