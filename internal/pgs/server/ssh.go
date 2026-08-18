@@ -1,9 +1,11 @@
 package server
 
 import (
-	"crypto/rsa"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -18,10 +20,9 @@ import (
 )
 
 type SSHHandler struct {
-	HostKey    *rsa.PrivateKey
-	PublicKey  *rsa.PublicKey
-	Manager    *pgs.RepositoriesManager
-	GitRoot    string
+	HostKey ssh.Signer
+	Manager *pgs.RepositoriesManager
+	GitRoot string
 }
 
 func NewSSHHandler(hostKeyPath string, gitRoot string, manager *pgs.RepositoriesManager) (*SSHHandler, error) {
@@ -34,23 +35,50 @@ func NewSSHHandler(hostKeyPath string, gitRoot string, manager *pgs.Repositories
 
 func (s *SSHHandler) LoadPrivateKey(path string) error {
 	if pgs.FileExist(path) {
-		pkey, err := os.ReadFile(path)
+		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		skey, _ := pem.Decode(pkey)
-		s.HostKey, err = x509.ParsePKCS1PrivateKey(skey.Bytes)
-		return err
+		signer, err := parseHostKey(data)
+		if err != nil {
+			return err
+		}
+		s.HostKey = signer
+		return nil
 	}
 
-	log.Printf("SSH: host key not found, generating")
-	key, err := pgs.GenerateKey()
+	log.Printf("SSH: host key not found, generating ed25519 key")
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return err
 	}
-	s.HostKey = key
-	pkey := pgs.KeyEncode(s.HostKey, true)
-	return os.WriteFile(path, pkey, 0600)
+	signer, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		return err
+	}
+	s.HostKey = signer
+
+	keyBytes, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return err
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes})
+	return os.WriteFile(path, pemBytes, 0600)
+}
+
+// parseHostKey 解析 host key PEM，兼容：
+//   - 标准 PEM 格式（RSA PRIVATE KEY / EC PRIVATE KEY / OPENSSH PRIVATE KEY / PKCS8 PRIVATE KEY）
+//   - 旧版 pgit 生成的 PKCS1 RSA，但 PEM Type 标记为 "PRIVATE KEY"
+func parseHostKey(data []byte) (ssh.Signer, error) {
+	if signer, err := ssh.ParsePrivateKey(data); err == nil {
+		return signer, nil
+	}
+	if block, _ := pem.Decode(data); block != nil {
+		if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+			return ssh.NewSignerFromKey(key)
+		}
+	}
+	return nil, errors.New("ssh: unable to parse host key")
 }
 
 func (s *SSHHandler) HandleConn(conn net.Conn) {
@@ -62,13 +90,7 @@ func (s *SSHHandler) HandleConn(conn net.Conn) {
 			return nil, nil
 		},
 	}
-	signer, err := ssh.NewSignerFromKey(s.HostKey)
-	if err != nil {
-		log.Printf("SSH: NewSignerFromKey: %v", err)
-		conn.Close()
-		return
-	}
-	config.AddHostKey(signer)
+	config.AddHostKey(s.HostKey)
 
 	sConn, chans, reqs, err := ssh.NewServerConn(conn, config)
 	if err != nil {
@@ -104,7 +126,9 @@ func (s *SSHHandler) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 	for req := range reqs {
 		switch req.Type {
 		case "env":
+			// 明确拒绝 GIT_PROTOCOL（version=2），让客户端确定性降级 v0
 			log.Printf("SSH: env: %#v", string(req.Payload))
+			req.Reply(false, nil)
 		case "exec":
 			if len(req.Payload) < 5 {
 				log.Printf("SSH: payload too short")
@@ -117,7 +141,7 @@ func (s *SSHHandler) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 			}
 			cmdName := payload[0]
 			rawArg := strings.Trim(payload[1], "'")
-			alias := strings.TrimSuffix(rawArg, ".git")
+			alias := strings.TrimSuffix(strings.TrimPrefix(rawArg, "/"), ".git")
 
 			repo, err := s.Manager.GetByAlias(alias)
 			if err != nil {

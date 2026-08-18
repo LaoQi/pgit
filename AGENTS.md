@@ -24,7 +24,7 @@ internal/pgs/                 业务核心包
   sync_log.go                 SyncLogEntry + AppendSyncLog（JSONL 追加写）+ ReadSyncLog（最新 N 条倒序）
   sync_manager.go             SyncManager：per-repo goroutine 定时调度（1-10s 错峰+initial+ticker scheduled）+ 并发保护（syncing 防重入）+ SyncNow（手动同步返回 SyncLogEntry）+ Stop
   task.go / task_manager.go   任务系统：状态机 + cron 调度 + 回调（有测试）
-  util.go                     FileExist/GenerateKey/KeyEncode
+  util.go                     FileExist
 
 internal/pgs/git/             纯 Go git wire protocol v0 服务端（无第三方依赖）
   oid.go object.go            ObjectID（SHA1 hex/bytes 互转）+ Object 类型常量
@@ -44,7 +44,7 @@ internal/pgs/git/             纯 Go git wire protocol v0 服务端（无第三�
 internal/pgs/server/          网络服务层
   mux.go                      协议探测分发：peek 前缀 SSH- → SSH 否则 HTTP；peekConn 回放缓冲
   http.go                     chi 路由(/api/v1/* + /{webuiPrefix}/* + alias.git 兜底) + 管理 API handler + git smart-http 传输（接入 git 包，Content-Encoding: gzip 自动解压）+ Basic Auth + 请求日志中间件（方法/路径/状态码/耗时/用户/远程地址）
-  ssh.go                      SSHHandler：连接级 handleConn + exec payload 解析 alias → repo（接入 git 包）
+  ssh.go                      SSHHandler：host key 支持 ed25519（生成）/RSA（兼容旧 PKCS1）+ exec payload 解析 alias（剥离前导 `/`）→ repo（接入 git 包）；env 请求明确 Reply(false) 拒绝 GIT_PROTOCOL v2，客户端确定性降级 v0
   web.go                      WebUI：embed 嵌入 web/ 资源 + ExportWebUI 导出 + serveWebUI（静态资源 + SPA fallback + 前缀注入）
   apidocs.go                  API 文档端点：GET /api/v1/ 返回 13 个管理 API 的结构化描述 JSON
   web/                        embed 源：index.html（含 __WEBUI_PREFIX__ 占位符）+ assets/（app.js/style.css/favicon.svg）
@@ -105,6 +105,8 @@ type MirrorConfig struct {
 - HTTP 侧用 `singleConnListener` 包装单连接喂给 `http.Server.Serve`。
 - SSH 侧直接 `ssh.NewServerConn(peekedConn, config)`。
 - **SSH 认证是全放行桩**（`PasswordCallback`/`PublicKeyCallback` 都返回 nil）—— 不要假设认证被强制执行。
+- **SSH host key**：默认生成 **ed25519** 密钥（PKCS8 PEM 写盘）；已存在的旧 RSA hostkey（旧版 pgit 的 PKCS1 + `PRIVATE KEY` Type）自动兼容解析。依赖 `golang.org/x/crypto` 已升级至 v0.55.0——服务端对 RSA signer 自动通告 `rsa-sha2-256/512`（不再只通告 SHA-1 的 `ssh-rsa`），现代 OpenSSH 客户端（≥8.8 默认禁用 ssh-rsa）默认可连，无需 `-o HostKeyAlgorithms=+ssh-rsa`。
+- **SSH exec 路径解析**：git 客户端 exec 参数形如 `git-upload-pack /alias.git`，alias 解析先 `TrimPrefix("/")` 再 `TrimSuffix(".git")`，与 HTTP alias 一致（不含 `/`）。
 
 ## API 路由
 
@@ -147,6 +149,7 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 ## 测试与质量
 
 - `internal/pgs` 有真实测试：`repository_test.go`（InitBare 生成 pgit.json 验证、InitBare 自定义默认分支、Manager 双索引、alias 增删、扫描恢复、name/alias 校验、SetDefaultBranch 存在/不存在/非法名校验、CreateMirrorRepository、MirrorBackwardCompat、URL 校验）、`repository_browse_test.go`（Tree/Blob/Archive/ForEachRef 端到端，构造 loose 对象验证）、`sync_log_test.go`（追加/读取/空文件/limit 截断）、`sync_manager_test.go`（注册/注销、SyncNow 非镜像报错）、`task_test.go`（约 6 秒，任务调度）。
+- `internal/pgs/server` 有 **SSH 测试链路**：`ssh_test.go`（真实 TCP + `SSHHandler` + x/crypto 客户端走 SSH 通道，无需 git/ssh 二进制——upload-pack clone 全量交换验证 pack 对象、receive-pack push 验证 ref+loose 落盘、mirror 仓库 push 拒绝 stderr）、`TestSSHClonePushE2E`（需 `PGIT_E2E=1` + git/ssh 二进制，真实 `git clone ssh://` + `git push`，默认配置即连，无需 `+ssh-rsa`，验证 ed25519 host key 与 rsa-sha2 修复）。
 - `internal/pgs/git` 覆盖完整：`loose_test`/`delta_test`/`pack_test`/`refs_test`/`reach_test`/`browse_test`/`protocol_test`/`fetch_test`/`e2e_test`（基础读写、delta 应用+生成 roundtrip、pack 编解码与真实 git pack 互验、ofs-delta 编码回环+git index-pack 互验、ref CAS/symref/packed-refs、SetHead 原子写、可达性 BFS+have 差量过滤（完全覆盖/部分覆盖/共享 tree/无覆盖/线性链/缺失 oid/ZeroOid）、treeIsh 解析/tree 遍历/blob 读取/ForEachRefs、v0 状态机+sideband+空仓库回环、upload-pack delta 配对端到端、NAK 首帧独立验证、增量 fetch（have 过滤：基本增量/have==want 无 PACK/多 have/have 间 flush/无关分支/非 sideband 增量/HTTP 中间请求 have flush 无 done 只返 NAK/HTTP 多 POST 增量/单请求 have flush+done 双 NAK）、**fetch 客户端测试**（initial clone/incremental sync/up-to-date/empty remote/basic auth 成功+失败/ref deletion/ACK 响应（模拟 cgit 基本模式 done 后发 ACK 而非 NAK），用 httptest + pgit 自身协议做远程服务器，无需外部 git）、e2e 集成测试（需 `PGIT_E2E=1`，clone/push/fetch 增量拉取端到端验证，含 HTTP stateless_rpc 多轮 negotiation 20 commit 触发 have flush 真实复现 `expected ACK/NAK, got '?PACK'` bug））。`go test ./...` 通过。
 - 无 linter/formatter/CI 配置。用 `go vet ./...` 和 `go build` 验证。
 

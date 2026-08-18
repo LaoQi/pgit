@@ -344,7 +344,8 @@ func TestGitFetchHTTPIncrementalE2E(t *testing.T) {
 	repoURL := ts.URL + "/repo.git"
 
 	runGit := func(dir string, args ...string) {
-		cmd := exec.Command("git", args...)
+		// -c http.proxy= 绕过本机全局代理（否则 httptest 127.0.0.1 经代理返回 502）
+		cmd := exec.Command("git", append([]string{"-c", "http.proxy="}, args...)...)
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(),
 			"GIT_AUTHOR_EMAIL=test@test.com",
@@ -379,7 +380,7 @@ func TestGitFetchHTTPIncrementalE2E(t *testing.T) {
 
 	// clone HTTP（全量，验证 clone 仍正常）
 	cloneDir := filepath.Join(workdir, "clone")
-	cmd := exec.Command("git", "clone", repoURL, cloneDir)
+	cmd := exec.Command("git", "-c", "http.proxy=", "clone", repoURL, cloneDir)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git clone: %v\n%s", err, out)
@@ -394,7 +395,7 @@ func TestGitFetchHTTPIncrementalE2E(t *testing.T) {
 	runGit(srcDir, "push", "origin", "master")
 
 	// git fetch HTTP 增量（核心验证点：客户端 20 commit → >16 have → have flush 多轮）
-	cmd = exec.Command("git", "fetch", "origin")
+	cmd = exec.Command("git", "-c", "http.proxy=", "fetch", "origin")
 	cmd.Dir = cloneDir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
