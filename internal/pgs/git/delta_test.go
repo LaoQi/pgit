@@ -144,3 +144,52 @@ func TestEncodeDeltaTargetShorterThanWindow(t *testing.T) {
 		t.Fatal("short target roundtrip mismatch")
 	}
 }
+
+// --- deltaPrecheck 预检 ---
+
+func TestDeltaPrecheckSimilar(t *testing.T) {
+	base := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog "), 40)
+	target := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog "), 40)
+	target = append(target[:len(target)-20], []byte("THE QUICK BROWN FOX jumps over the lazy dog")...)
+	if !deltaPrecheck(base, target) {
+		t.Fatal("similar content should pass precheck")
+	}
+}
+
+func TestDeltaPrecheckUnrelated(t *testing.T) {
+	base := bytes.Repeat([]byte("A"), 4096)
+	target := bytes.Repeat([]byte("B"), 4096)
+	if deltaPrecheck(base, target) {
+		t.Fatal("unrelated content should fail precheck")
+	}
+}
+
+func TestDeltaPrecheckShortInputs(t *testing.T) {
+	if deltaPrecheck([]byte("short"), []byte("target content long enough")) {
+		t.Fatal("base shorter than window should fail precheck")
+	}
+	if deltaPrecheck([]byte("base content long enough here"), []byte("short")) {
+		t.Fatal("target shorter than window should fail precheck")
+	}
+}
+
+// TestEncodeDeltaLargeBucketScanLimit: 桶大小超过 deltaBucketScanLimit 的高重复内容，
+// 扫描限制 + 首个长匹配提前退出下仍须正确 roundtrip 且 delta 有收益（大量 copy）。
+func TestEncodeDeltaLargeBucketScanLimit(t *testing.T) {
+	base := bytes.Repeat([]byte("abcd"), 1250) // 5000B，周期 4，每 16 字节窗口 hash 桶 ≈1250 > 64
+	target := base[8 : 8+1000]                 // 与 base 同相的一段，长匹配可达
+	d, err := EncodeDelta(base, target)
+	if err != nil {
+		t.Fatalf("EncodeDelta: %v", err)
+	}
+	got, err := ApplyDelta(base, d)
+	if err != nil {
+		t.Fatalf("ApplyDelta: %v", err)
+	}
+	if !bytes.Equal(got, target) {
+		t.Fatal("large bucket scan roundtrip mismatch")
+	}
+	if len(d) >= len(target) {
+		t.Fatalf("large bucket delta %d should be < target %d (copy dominated)", len(d), len(target))
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // LogLevel 控制 upload-pack 详细日志级别（由 pgs 配置注入，避免 pgs/git → pgs 循环依赖）。
@@ -133,6 +134,8 @@ func AdvertiseRefs(repoRoot string, service string) ([]byte, error) {
 func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	pr := NewPktReader(in)
 	pw := NewPktWriter(out)
+	tStart := time.Now()
+	tAfterNegotiation := tStart
 
 	// 详细日志：建立 oid→refname 映射，供 want oid 反查来源 ref（标准 want 行不含 refname）。
 	refOf := map[Oid]string{}
@@ -233,6 +236,7 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	if !sawDone {
 		return nil
 	}
+	tAfterNegotiation = time.Now()
 
 	// 4. done 后发 NAK 终结 negotiation（基本模式 v0，无 multi_ack）。
 	// NAK 作为普通 pkt-line 写到 pw，不走 sideband ch1（与 cgit 一致）。
@@ -246,6 +250,7 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("upload-pack: collect reachable: %w", err)
 	}
+	tAfterReach := time.Now()
 	if logLevel >= LogDetail {
 		for _, o := range objs {
 			log.Printf("upload-pack: object %s type=%s size=%d", o.Oid(), o.Type, o.Size)
@@ -266,6 +271,7 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("upload-pack: plan deltas: %w", err)
 	}
+	tAfterPlan := time.Now()
 
 	// 7. 编码 pack（可能走 sideband）
 	useSideband := strings.Contains(clientCaps, "side-band-64k")
@@ -302,6 +308,12 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("upload-pack: flush: %w", err)
 	}
 	log.Printf("upload-pack: wants=%d haves=%d objects=%d", len(wantOids), len(haveOids), len(objs))
+	log.Printf("upload-pack timing: negotiate=%s reach=%s plan=%s encode=%s total=%s",
+		tAfterNegotiation.Sub(tStart).Round(time.Millisecond),
+		tAfterReach.Sub(tAfterNegotiation).Round(time.Millisecond),
+		tAfterPlan.Sub(tAfterReach).Round(time.Millisecond),
+		time.Since(tAfterPlan).Round(time.Millisecond),
+		time.Since(tStart).Round(time.Millisecond))
 	return nil
 }
 
@@ -534,6 +546,14 @@ func planPackEntries(objs []*RawObject) ([]packEntry, error) {
 		if hi > 2*lo {
 			if logLevel >= LogDetail {
 				log.Printf("upload-pack: delta skip (size ratio) base=%s target=%s hi=%d lo=%d", base.Oid(), tgt.Oid(), hi, lo)
+			}
+			continue
+		}
+		// 收益预检：随机/低相似数据（采样命中率低）直接跳过 delta，target 走 full，
+		// 避免 EncodeDelta 在无收益输入上白算（大 blob 的 O(n) 索引构建 + O(n²) 匹配扫描）。
+		if !deltaPrecheck(base.Content, tgt.Content) {
+			if logLevel >= LogDetail {
+				log.Printf("upload-pack: delta skip (precheck) base=%s target=%s hi=%d lo=%d", base.Oid(), tgt.Oid(), hi, lo)
 			}
 			continue
 		}

@@ -27,17 +27,17 @@ internal/pgs/                 业务核心包
   util.go                     FileExist
 
 internal/pgs/git/             纯 Go git wire protocol v0 服务端（无第三方依赖）
-  oid.go object.go            ObjectID（SHA1 hex/bytes 互转）+ Object 类型常量
+  oid.go object.go            ObjectID（SHA1 hex/bytes 互转）+ Object 类型常量 + RawObject.Oid() lazy 缓存
   loose.go                    松散对象读写：zlib 压缩落盘 + 逐对象 SHA1 重算校验
   parse.go                    松散对象内容解析（header + body）
   refs.go                     RefStore：loose + packed-refs 合并视图；per-ref lock+rename 原子写；CAS/symref；SetHead（原子写 HEAD symref）
   pktline.go                  pkt-line 读写器（含 flush/delim）
-  delta.go                    delta 应用（ApplyDelta）+ 生成（EncodeDelta，固定窗口滚动hash）+ varintLE
-  pack_encode.go              packfile 编码：full 对象 + 出向 OFS_DELTA（偏移追踪）
+  delta.go                    delta 应用（ApplyDelta）+ 生成（EncodeDelta，固定窗口滚动hash，桶扫描限制≤64 position + 死亡桶淘汰）+ 收益预检（deltaPrecheck 采样命中）+ varintLE
+  pack_encode.go              packfile 编码：full 对象 + 出向 OFS_DELTA（偏移追踪）；zlib BestSpeed 压缩（大仓库 clone 速度优先）
   pack_decode.go              packfile 解码 + 逐对象校验；REF_DELTA base 不在 pack 内时回查 LooseStore
   reach.go                    可达性遍历（BFS 去重，跳过 gitlink）
   browse.go                   浏览 API 高层：ResolveTreeIsh/TreeAt/BlobAt/ForEachRefs/CommitLog（基于 LooseStore+RefStore）
-  protocol.go                 v0 状态机：negotiation + pack 交换（upload-pack 出向 delta 配对）+ sideband-64k + report-status + 操作日志（want/have/对象数；logLevel=detail 时逐条输出 want/have/object/delta 配对）+ force-push 检测标记（isFastForward BFS，仅日志不拒绝）；LogLevel 类型 + SetLogLevel 由 pgs 配置注入（避免 pgs/git → pgs 循环依赖）
+  protocol.go                 v0 状态机：negotiation + pack 交换（upload-pack 出向 delta 配对，含收益预检跳过）+ sideband-64k + report-status + 操作日志（want/have/对象数；logLevel=detail 时逐条输出 want/have/object/delta 配对）+ 阶段计时日志（negotiate/reach/plan/encode）+ force-push 检测标记（isFastForward BFS，仅日志不拒绝）；LogLevel 类型 + SetLogLevel 由 pgs 配置注入（避免 pgs/git → pgs 循环依赖）
   service.go                  对外入口：ServeInfoRefs/HandleUploadPack/HandleReceivePack/HandleSSHSession
   fetch.go                    纯 Go fetch 客户端：FetchRemote（HTTP smart-http upload-pack 客户端）+ FetchAuth + FetchResult；复用 PktReader/PackDecoder/LooseStore/RefStore；sideband demux + ref 镜像更新（CAS 含删除）+ HEAD best-effort 更新；done 后首帧接受 NAK（无共同 commit）与 ACK <oid>（有共同 commit，cgit 基本模式行为）两种响应
 
@@ -95,7 +95,7 @@ type MirrorConfig struct {
 - REF_DELTA base 优先在 pack 内查找，fallback 回查 LooseStore（push 时 base 常是仓库已有对象）
 - ref 原子性 per-ref（lock file + rename）；packed-refs 只读合并视图，写入只 loose
 - 存储初始版全 loose（不落盘 pack、不 repack）
-- 出向 delta（clone 编码）：仅 blob 配对，单层 OFS_DELTA，固定窗口滚动hash；负收益回退（deltaLen ≥ target 一半则退 full）
+- 出向 delta（clone 编码）：仅 blob 配对，单层 OFS_DELTA，固定窗口滚动hash；负收益回退（deltaLen ≥ target 一半则退 full）。**性能保护**：采样收益预检（deltaPrecheck，低相似/随机对跳过走 full，避免大 blob 白算）+ 桶扫描限制（单桶 ≤64 position，首个 ≥16 匹配贪心采用，全桶无匹配死亡桶淘汰）——vistty 样例仓库 clone 的 upload-pack 处理从 ~21s 降至 ~3s（含 zlib BestSpeed + Oid 缓存）
 - 明确不做：protocol v2 / multi_ack 与 multi_ack_detailed 交互式 ACK 状态机（ACK common/ready + ok_to_give_up）/ shallow / partial clone / thin pack / packfile 落盘 / repack-gc / dumb HTTP / reflog / alternates
 
 ## 端口多路复用
@@ -150,7 +150,7 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 
 - `internal/pgs` 有真实测试：`repository_test.go`（InitBare 生成 pgit.json 验证、InitBare 自定义默认分支、Manager 双索引、alias 增删、扫描恢复、name/alias 校验、SetDefaultBranch 存在/不存在/非法名校验、CreateMirrorRepository、MirrorBackwardCompat、URL 校验）、`repository_browse_test.go`（Tree/Blob/Archive/ForEachRef 端到端，构造 loose 对象验证）、`sync_log_test.go`（追加/读取/空文件/limit 截断）、`sync_manager_test.go`（注册/注销、SyncNow 非镜像报错）、`task_test.go`（约 6 秒，任务调度）。
 - `internal/pgs/server` 有 **SSH 测试链路**：`ssh_test.go`（真实 TCP + `SSHHandler` + x/crypto 客户端走 SSH 通道，无需 git/ssh 二进制——upload-pack clone 全量交换验证 pack 对象、receive-pack push 验证 ref+loose 落盘、mirror 仓库 push 拒绝 stderr）、`TestSSHClonePushE2E`（需 `PGIT_E2E=1` + git/ssh 二进制，真实 `git clone ssh://` + `git push`，默认配置即连，无需 `+ssh-rsa`，验证 ed25519 host key 与 rsa-sha2 修复）。
-- `internal/pgs/git` 覆盖完整：`loose_test`/`delta_test`/`pack_test`/`refs_test`/`reach_test`/`browse_test`/`protocol_test`/`fetch_test`/`e2e_test`（基础读写、delta 应用+生成 roundtrip、pack 编解码与真实 git pack 互验、ofs-delta 编码回环+git index-pack 互验、ref CAS/symref/packed-refs、SetHead 原子写、可达性 BFS+have 差量过滤（完全覆盖/部分覆盖/共享 tree/无覆盖/线性链/缺失 oid/ZeroOid）、treeIsh 解析/tree 遍历/blob 读取/ForEachRefs、v0 状态机+sideband+空仓库回环、upload-pack delta 配对端到端、NAK 首帧独立验证、增量 fetch（have 过滤：基本增量/have==want 无 PACK/多 have/have 间 flush/无关分支/非 sideband 增量/HTTP 中间请求 have flush 无 done 只返 NAK/HTTP 多 POST 增量/单请求 have flush+done 双 NAK）、**fetch 客户端测试**（initial clone/incremental sync/up-to-date/empty remote/basic auth 成功+失败/ref deletion/ACK 响应（模拟 cgit 基本模式 done 后发 ACK 而非 NAK），用 httptest + pgit 自身协议做远程服务器，无需外部 git）、e2e 集成测试（需 `PGIT_E2E=1`，clone/push/fetch 增量拉取端到端验证，含 HTTP stateless_rpc 多轮 negotiation 20 commit 触发 have flush 真实复现 `expected ACK/NAK, got '?PACK'` bug））。`go test ./...` 通过。
+- `internal/pgs/git` 覆盖完整：`loose_test`/`delta_test`/`pack_test`/`refs_test`/`reach_test`/`browse_test`/`protocol_test`/`fetch_test`/`e2e_test`（基础读写、delta 应用+生成 roundtrip、deltaPrecheck 预检（相似/无关/短输入）、大桶扫描限制 roundtrip、pack 编解码与真实 git pack 互验、ofs-delta 编码回环+git index-pack 互验、ref CAS/symref/packed-refs、SetHead 原子写、可达性 BFS+have 差量过滤（完全覆盖/部分覆盖/共享 tree/无覆盖/线性链/缺失 oid/ZeroOid）、treeIsh 解析/tree 遍历/blob 读取/ForEachRefs、v0 状态机+sideband+空仓库回环、upload-pack delta 配对端到端、NAK 首帧独立验证、增量 fetch（have 过滤：基本增量/have==want 无 PACK/多 have/have 间 flush/无关分支/非 sideband 增量/HTTP 中间请求 have flush 无 done 只返 NAK/HTTP 多 POST 增量/单请求 have flush+done 双 NAK）、**fetch 客户端测试**（initial clone/incremental sync/up-to-date/empty remote/basic auth 成功+失败/ref deletion/ACK 响应（模拟 cgit 基本模式 done 后发 ACK 而非 NAK），用 httptest + pgit 自身协议做远程服务器，无需外部 git）、e2e 集成测试（需 `PGIT_E2E=1`，clone/push/fetch 增量拉取端到端验证，含 HTTP stateless_rpc 多轮 negotiation 20 commit 触发 have flush 真实复现 `expected ACK/NAK, got '?PACK'` bug））。`go test ./...` 通过。
 - 无 linter/formatter/CI 配置。用 `go vet ./...` 和 `go build` 验证。
 
 ## 工作流

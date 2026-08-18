@@ -84,9 +84,12 @@ func (e *PackEncoder) WriteObject(obj *RawObject) error {
 	if _, err := e.write(hdr); err != nil {
 		return err
 	}
-	// zlib(content)
+	// zlib(content) — BestSpeed 压缩级别：大仓库 clone 输出场景速度优先，体积牺牲可接受
 	var zbuf bytes.Buffer
-	zw := zlib.NewWriter(&zbuf)
+	zw, err := zlib.NewWriterLevel(&zbuf, zlib.BestSpeed)
+	if err != nil {
+		return fmt.Errorf("pack: zlib init: %w", err)
+	}
 	if _, err := zw.Write(obj.Content); err != nil {
 		zw.Close()
 		return fmt.Errorf("pack: zlib write: %w", err)
@@ -137,9 +140,12 @@ func (e *PackEncoder) WriteOfsDelta(baseOid Oid, delta []byte) error {
 	if _, err := e.write(encodeOfsDelta(uint64(off))); err != nil {
 		return err
 	}
-	// zlib(delta)
+	// zlib(delta) — BestSpeed 压缩级别（与 WriteObject 一致，速度优先）
 	var zbuf bytes.Buffer
-	zw := zlib.NewWriter(&zbuf)
+	zw, err := zlib.NewWriterLevel(&zbuf, zlib.BestSpeed)
+	if err != nil {
+		return fmt.Errorf("pack: ofs-delta zlib init: %w", err)
+	}
 	if _, err := zw.Write(delta); err != nil {
 		zw.Close()
 		return fmt.Errorf("pack: ofs-delta zlib write: %w", err)
@@ -147,7 +153,7 @@ func (e *PackEncoder) WriteOfsDelta(baseOid Oid, delta []byte) error {
 	if err := zw.Close(); err != nil {
 		return fmt.Errorf("pack: ofs-delta zlib close: %w", err)
 	}
-	_, err := e.write(zbuf.Bytes())
+	_, err = e.write(zbuf.Bytes())
 	return err
 }
 

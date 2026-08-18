@@ -118,6 +118,11 @@ func encodeVarintLE(v uint64) []byte {
 const deltaWindow = 16         // 固定匹配窗口长度
 const deltaHashBase uint32 = 31 // 滚动 hash 基数
 
+// deltaBucketScanLimit 单个 hash 桶最多尝试的 base position 数。
+// 防止高重复/高相似内容下桶内 position 过多导致 matchLen 调用爆炸（O(n²)）；
+// 找到首个 ≥ deltaWindow 的匹配即提前退出。
+const deltaBucketScanLimit = 64
+
 // deltaHashPow = deltaHashBase^(deltaWindow-1)，滚动 hash 移除旧字节时用
 var deltaHashPow = func() uint32 {
 	var p uint32 = 1
@@ -241,11 +246,27 @@ func EncodeDelta(base, target []byte) ([]byte, error) {
 		if ti+deltaWindow <= len(target) {
 			th := hashWindow(target[ti:])
 			if positions, ok := index[th]; ok {
-				for _, bi := range positions {
+				// 限制单桶扫描量：至多尝试前 deltaBucketScanLimit 个 position，
+				// 找到首个 ≥ deltaWindow 的匹配即采用（贪心，避免全桶遍历的 O(n²)）。
+				scanned := len(positions)
+				if scanned > deltaBucketScanLimit {
+					scanned = deltaBucketScanLimit
+				}
+				found := false
+				for _, bi := range positions[:scanned] {
 					if l := matchLen(base, target, bi, ti); l > bestLen {
 						bestLen = l
 						bestOff = bi
 					}
+					if bestLen >= deltaWindow {
+						found = true
+						break
+					}
+				}
+				// 全桶扫描仍无 ≥W 匹配 → 死亡桶淘汰：从索引删除，防止后续
+				// 窗口反复扫描同一失效桶（错位/不相似内容的重复开销）。
+				if !found && scanned == len(positions) {
+					delete(index, th)
 				}
 			}
 		}
@@ -269,4 +290,43 @@ func EncodeDelta(base, target []byte) ([]byte, error) {
 		appendInsertOp(&d, pending)
 	}
 	return d, nil
+}
+
+// delta 预检采样参数
+const (
+	deltaPrecheckSamples = 1024 // 每侧采样窗口数上限（均匀分布）
+	deltaPrecheckMinHits = 10   // target 侧采样命中下限（≈1%）
+)
+
+// deltaPrecheck 快速判定 base/target 是否存在潜在 delta 匹配（相似度预检）。
+// 均匀采样窗口 hash：base 侧构建集合，target 侧查命中。
+// 命中数低于阈值（随机/低相似数据）返回 false，调用方跳过 delta 生成直接走 full，
+// 避免 EncodeDelta 在无收益输入上白算（大 blob 的 O(n) 索引构建 + O(n²) 匹配扫描）。
+// 预检成本 O(1)（固定采样数，不遍历全部字节）。
+func deltaPrecheck(base, target []byte) bool {
+	if len(base) < deltaWindow || len(target) < deltaWindow {
+		return false
+	}
+	// base 侧采样窗口 hash 集合（高重复内容 set 自然更小，不影响判定）
+	set := make(map[uint32]struct{}, deltaPrecheckSamples)
+	step := (len(base) - deltaWindow) / deltaPrecheckSamples
+	if step < 1 {
+		step = 1
+	}
+	for i := 0; i+deltaWindow <= len(base) && len(set) < deltaPrecheckSamples; i += step {
+		set[hashWindow(base[i:])] = struct{}{}
+	}
+	// target 侧采样查命中
+	hits, total := 0, 0
+	tstep := (len(target) - deltaWindow) / deltaPrecheckSamples
+	if tstep < 1 {
+		tstep = 1
+	}
+	for i := 0; i+deltaWindow <= len(target) && total < deltaPrecheckSamples; i += tstep {
+		total++
+		if _, ok := set[hashWindow(target[i:])]; ok {
+			hits++
+		}
+	}
+	return hits >= deltaPrecheckMinHits
 }
