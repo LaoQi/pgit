@@ -90,7 +90,7 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
    `pgs.Settings`、`pgs.ReposManager` 全局（阶段 4/5 处理配置热加载与多实例）。
 7. ~~**接入层生命周期缺失**~~ → **阶段 4 已修**（408f394）：共享 `http.Server` + 连接通道 listener
    （修复连接滞留）；`ReadHeaderTimeout`/`IdleTimeout`；`MuxServer.Shutdown` 优雅关闭替代 `os.Exit`。
-   **仍存**：`requestLogger` 包装的 ResponseWriter 未实现 `Flusher/ReaderFrom`（对 SSE/大响应转发有影响）。
+   ~~`requestLogger` 包装的 ResponseWriter 未实现 `Flusher/ReaderFrom`~~ → 已修（9a7c7f7）。
 8. ~~**可观测性空白**~~ → **阶段 5 已修**：`/healthz` + `/metrics`（Prometheus 文本格式，无第三方依赖）、
    `slog` 结构化日志（text/json、`X-Request-Id`、级别分层，逐对象日志降 DEBUG）；
    配置经 SIGHUP 热加载。**仍存**：ROADMAP 的 mirror webhook 未实现（阶段 6）。
@@ -98,10 +98,10 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
 ## 4. P2：技术债清单
 
 - ~~权限位过宽~~ → 阶段 4 已收紧（目录 `0o750` / 文件 `0o640`）。
-- `parsePackedRefs` 每次调用全量重解析，更新 N 个 ref 时每 ref 一次（`refs.go:176,202,244`）→ O(n²) 磁盘读；
-  `List()` 的 `filepath.Walk` 同理。
-- `ForEachRefs` 每请求读+解析每个 ref 的对象（`browse.go:279`），`GET /repos/{name}` 每次都做，无缓存无分页；
-  `listRepos` 调 `List()` 两次（`http.go:113-114`）。
+- ~~`parsePackedRefs` 每次调用全量重解析~~ → 已修（9a7c7f7）：`Update` 解析一次并传入复用；
+  基准 1000 refs 批量更新 190ms → 56ms（3.4×）。**仍存**：`List()` 的 `filepath.Walk` 每请求全量扫描。
+- ~~`ForEachRefs` 每请求解析每个 ref 对象~~ → 已修（9a7c7f7）：refs 指纹缓存（未变直接返回）；
+  ~~`listRepos` 调 `List()` 两次~~ → 已修。**仍存**：`GET /repos/{name}` 无分页；`List()` 每次 Walk。
 - ~~错误分类靠字符串匹配~~ → 阶段 4 已改哨兵错误 + `errors.Is`。
 - ~~git URL 用首个 `.git/` 切分~~ → 阶段 4 已改 `LastIndex`（含 `.git/` 段的 alias 可访问）。
 - ~~`InitBare` 失败无回滚~~ → 阶段 4 已加回滚（失败时移除半成品目录）。
@@ -158,7 +158,7 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
   - `ReadHeaderTimeout`(15s)/`IdleTimeout`(120s)；协议探测 peek 超时 10s（原有）；
   - 优雅关闭 `MuxServer.Shutdown`（等活动中请求与 SSH 会话，30s 上限），`main.go` 不再 `os.Exit` 硬切；
   - P2 收尾：哨兵错误 + `errors.Is`、`LastIndex(".git/")`、`InitBare` 失败回滚、权限位收紧。
-- 未做：`requestLogger` 的 ResponseWriter 未实现 `Flusher/ReaderFrom`。
+- 后续（9a7c7f7）ResponseWriter 能力透传已单独修复。
 
 ### 阶段 5：运维与可观测性（已完成，6647da7 / 16d7f50 / 875c80d）
 

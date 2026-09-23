@@ -32,20 +32,20 @@ internal/pgs/git/             纯 Go git wire protocol v0 服务端（无第三�
   oid.go object.go            ObjectID（SHA1 hex/bytes 互转）+ Object 类型常量 + RawObject.Oid() lazy 缓存
   loose.go                    ObjectStore 接口（Read/Exists/Write/Stat）+ NewObjectStore(repoRoot)；LooseStore 松散对象读写：zlib 压缩落盘 + 逐对象 SHA1 重算校验；Stat 只解压头部取 type/size
   parse.go                    松散对象内容解析（header + body）
-  refs.go                     RefStore：loose + packed-refs 合并视图；per-ref lock+rename 原子写；CAS/symref；SetHead（原子写 HEAD symref）
+  refs.go                     RefStore：loose + packed-refs 合并视图（Update 一次解析并复用视图）；per-ref lock+rename 原子写；CAS/symref；SetHead（原子写 HEAD symref）
   pktline.go                  pkt-line 读写器（含 flush/delim）
   delta.go                    delta 应用（ApplyDelta，边界检查 + tgtSize 上限）+ 生成（EncodeDelta，固定窗口滚动hash，桶扫描限制≤64 position + 死亡桶淘汰）+ 收益预检（deltaPrecheck 采样命中）+ varintLE
   pack_encode.go              packfile 编码：full 对象 + 出向 OFS_DELTA（偏移追踪）；zlib BestSpeed 压缩
   pack_decode.go              packfile 流式解码（DecodeTo 逐对象落盘 / Decode 收集）+ 逐对象校验 + trailer SHA1 边读边校验；OFS/REF_DELTA base 经偏移→oid 回查 ObjectStore
   reach.go                    可达性遍历：WalkReachable（只 Stat 读头部，clone 用）/ CollectReachable（内容全量驻留，测试与小仓库用）；BFS 去重、跳过 gitlink、have 排除集
-  browse.go                   浏览 API 高层：ResolveTreeIsh/TreeAt/BlobAt/ForEachRefs/CommitLog（基于 LooseStore+RefStore）
+  browse.go                   浏览 API 高层：ResolveTreeIsh/TreeAt/BlobAt/ForEachRefs（refs 指纹缓存 + InvalidateRefsCache）/CommitLog（基于 ObjectStore+RefStore）
   protocol.go                 v0 状态机：negotiation + pack 交换（upload-pack 单遍 encodePack，blob 按 size 降序配对 + 采样预检 + 负收益回退；receive-pack 流式落盘，pack 被拒回 report-status）+ sideband-64k + report-status + 操作日志（logLevel=detail）+ 阶段计时（negotiate/reach/encode）+ force-push 审计标记（isFastForward BFS，仅日志不拒绝）；LogLevel/SetLogLevel 与 SetMaxReceivePackBytes 由 pgs 配置注入
   service.go                  对外入口：ServeInfoRefs/HandleUploadPack/HandleReceivePack/HandleSSHSession
   fetch.go                    纯 Go fetch 客户端：FetchRemote/FetchRemoteWithOptions（HTTP smart-http upload-pack 客户端）+ FetchAuth/FetchOptions/FetchResult；分层超时（Dial/TLS/ResponseHeader/IdleConn + stallReader 停滞看门狗）取代整体超时 + 指数退避重试（isRetryableFetchError 分类）；复用 PktReader/PackDecoder/LooseStore/RefStore；sideband demux + ref 镜像更新（CAS 含删除）+ HEAD best-effort；done 后首帧接受 NAK 或 ACK <oid>
 
 internal/pgs/server/          网络服务层
   mux.go                      协议探测分发（peek 前缀 SSH- → SSH 否则 HTTP）+ 共享 http.Server（ReadHeaderTimeout/IdleTimeout）+ connChanListener 投递连接 + peekConn 回放缓冲 + Shutdown 优雅关闭（等活动中请求/SSH 会话，超时强断，幂等）
-  http.go                     chi 路由(/api/v1/* + /{webuiPrefix}/* + alias.git 兜底，HTTPHandler 持有 Manager/Settings/Sync) + 管理 API handler + git smart-http 传输（接入 git 包，Content-Encoding: gzip 自动解压）+ Basic Auth + 请求日志中间件（方法/路径/状态码/耗时/用户/远程地址）
+  http.go                     chi 路由(/api/v1/* + /{webuiPrefix}/* + alias.git 兜底，HTTPHandler 持有 Manager/Settings/Sync) + 管理 API handler + git smart-http 传输（接入 git 包，Content-Encoding: gzip 自动解压）+ Basic Auth + 请求日志/请求 ID 中间件（responseStatusWriter 透传 Flush/Hijack/Push/ReadFrom/Unwrap）
   ssh.go                      SSHHandler：host key 支持 ed25519（生成）/RSA（兼容旧 PKCS1）+ exec payload 解析 alias（剥离前导 `/`）→ repo（仓库路径用 repo.Path()）；env 请求明确 Reply(false) 拒绝 GIT_PROTOCOL v2，客户端确定性降级 v0
   web.go                      WebUI：embed 嵌入 web/ 资源 + ExportWebUI 导出 + serveWebUI（静态资源 + SPA fallback + 前缀注入）
   apidocs.go                  API 文档端点：GET /api/v1/ 返回 13 个管理 API 的结构化描述 JSON

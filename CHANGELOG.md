@@ -5,6 +5,16 @@ pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；�
 
 ## 2026-09-24
 
+**perf(server,git): 清理技术债 B/C/D**（9a7c7f7）
+- B 中间件 ResponseWriter 透传可选能力：补 `Flush`/`Hijack`/`Push`/`ReadFrom`/`Unwrap`
+  （此前包装后丢失，SSE 无法即时刷新、大响应 `io.Copy` 失去快速路径）；
+  修正状态记录语义（`Write` 隐式 200、重复 `WriteHeader` 忽略）
+- C `RefStore.Update` 只解析一次 packed-refs（此前每 ref 一次 → O(N²) 磁盘读）；
+  基准 1000 refs 批量更新 **190ms → 56ms（3.4×）**
+- D `listRepos` 只取一次仓库列表；`ForEachRefs` 加 refs 指纹缓存（未变则直接返回，
+  仓库删除时显式失效）
+
+
 **fix(fetch): 镜像同步分层超时与失败重试**（P1-5，3ac08c9）
 - 问题：`http.Client.Timeout = 5min` 作为整体超时会覆盖 body 读取 → 大仓库镜像传输中途被掐断；
   且无重试，瞬时抖动即整次同步失败
