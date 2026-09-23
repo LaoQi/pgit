@@ -9,23 +9,18 @@ import (
 	"io"
 )
 
-// ObjectReader 按 oid 读取对象（LooseStore 实现），供 PackDecoder 解 REF_DELTA 时回查已有对象。
-type ObjectReader interface {
-	Read(oid Oid) (*RawObject, error)
-}
-
 // PackDecoder 解析 packfile（入向，含 OFS_DELTA/REF_DELTA 应用，push 用）。
 // 对象按 pack 内出现顺序解析；OFS_DELTA 的 base 必须在 pack 内（按偏移引用），
 // REF_DELTA 的 base 优先在 pack 内查找，fallback 到 Store（仓库已有对象）。
 type PackDecoder struct {
 	R        io.Reader
-	Store    ObjectReader // 可选：REF_DELTA base 不在 pack 内时回查仓库已有对象
+	Store    ObjectStore  // 可选：REF_DELTA base 不在 pack 内时回查仓库已有对象
 	objects  []*RawObject // 按解析顺序
 	byOid    map[Oid]int  // oid -> objects 索引（供 REF_DELTA）
 	byOffset map[int]int  // 对象 type 字节起始偏移 -> 索引（供 OFS_DELTA）
 }
 
-func NewPackDecoder(r io.Reader, store ...ObjectReader) *PackDecoder {
+func NewPackDecoder(r io.Reader, store ...ObjectStore) *PackDecoder {
 	d := &PackDecoder{R: r, byOid: map[Oid]int{}, byOffset: map[int]int{}}
 	if len(store) > 0 {
 		d.Store = store[0]

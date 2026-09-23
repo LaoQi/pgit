@@ -12,6 +12,8 @@ import (
 // 一个仓库同一时刻最多一个同步在跑（inflight 判重），定时调度器（scheduler）
 // 与同步执行解耦：scheduler 只负责触发，手动同步不再需要预占槽位。
 type SyncManager struct {
+	manager *RepositoriesManager
+
 	mu       sync.Mutex
 	mirrors  map[string]*mirrorScheduler
 	inflight map[string]bool
@@ -22,10 +24,10 @@ type mirrorScheduler struct {
 	stop chan struct{}
 }
 
-var SyncMgr *SyncManager
-
-func InitSyncManager() {
-	SyncMgr = &SyncManager{
+// NewSyncManager 构造镜像同步管理器，仓库元数据统一经 manager 访问。
+func NewSyncManager(manager *RepositoriesManager) *SyncManager {
+	return &SyncManager{
+		manager:  manager,
 		mirrors:  make(map[string]*mirrorScheduler),
 		inflight: make(map[string]bool),
 	}
@@ -112,7 +114,7 @@ func (sm *SyncManager) doSync(name string, trigger string) {
 
 // SyncNow 手动同步镜像仓库，返回本次同步日志条目。
 func (sm *SyncManager) SyncNow(name string) (*SyncLogEntry, error) {
-	repo, err := ReposManager.GetRepository(name)
+	repo, err := sm.manager.GetRepository(name)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +131,7 @@ func (sm *SyncManager) SyncNow(name string) (*SyncLogEntry, error) {
 // runSync 执行一次同步并写同步日志（调用方须已持有 inflight 名额）。
 func (sm *SyncManager) runSync(name string, trigger string) (*SyncLogEntry, error) {
 	start := time.Now()
-	result, err := ReposManager.SyncRepository(name)
+	result, err := sm.manager.SyncRepository(name)
 	entry := &SyncLogEntry{
 		Timestamp: start,
 		Duration:  time.Since(start).Milliseconds(),
@@ -151,7 +153,7 @@ func (sm *SyncManager) runSync(name string, trigger string) (*SyncLogEntry, erro
 		entry.Haves = result.Haves
 		entry.PackSize = result.PackSize
 	}
-	if repo, err := ReposManager.GetRepository(name); err == nil {
+	if repo, err := sm.manager.GetRepository(name); err == nil {
 		if logErr := AppendSyncLog(repo.Path(), *entry); logErr != nil {
 			log.Printf("append sync log for %s failed: %v", name, logErr)
 		}

@@ -9,10 +9,26 @@ import (
 	"path/filepath"
 )
 
+// ObjectStore 是仓库对象存储抽象：读、存在性判断、写。
+// 当前唯一实现是 LooseStore（全松散对象）；packfile 后端、缓存层、
+// 对象配额等后续实现只需满足本接口即可接入 git 协议层与浏览 API。
+type ObjectStore interface {
+	Read(oid Oid) (*RawObject, error)
+	Exists(oid Oid) bool
+	Write(obj *RawObject) (Oid, error)
+}
+
+// NewObjectStore 打开仓库的松散对象存储（<repoRoot>/objects）。
+func NewObjectStore(repoRoot string) ObjectStore {
+	return &LooseStore{Root: filepath.Join(repoRoot, "objects")}
+}
+
 // LooseStore 松散对象存储，对应 <repo>/objects 目录
 type LooseStore struct {
 	Root string // objects 目录绝对路径
 }
+
+var _ ObjectStore = (*LooseStore)(nil)
 
 // Path 返回 oid 对应的 loose 文件路径
 func (s *LooseStore) Path(oid Oid) string {

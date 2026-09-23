@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,10 +19,15 @@ const (
 	LogDetail                 // 逐条 want/have/object/delta
 )
 
-var logLevel LogLevel = LogOff
+// logLevel 是进程级日志级别（pgs.Reload 经 SetLogLevel 注入）。
+// 用 atomic 保存：配置注入与并发请求（ServeUploadPack/ReceivePack）可能同时发生。
+var logLevel atomic.Int32
 
-// SetLogLevel 设置 git 包日志级别（pgs.Reload 调用）。
-func SetLogLevel(l LogLevel) { logLevel = l }
+// SetLogLevel 设置 git 包日志级别（pgs.Reload 调用），并发安全。
+func SetLogLevel(l LogLevel) { logLevel.Store(int32(l)) }
+
+// currentLogLevel 读取当前日志级别。
+func currentLogLevel() LogLevel { return LogLevel(logLevel.Load()) }
 
 // upload-pack v0 capabilities
 const uploadPackCaps = "thin-pack side-band-64k ofs-delta no-progress include-tag"
@@ -139,7 +144,7 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 
 	// 详细日志：建立 oid→refname 映射，供 want oid 反查来源 ref（标准 want 行不含 refname）。
 	refOf := map[Oid]string{}
-	if logLevel >= LogDetail {
+	if currentLogLevel() >= LogDetail {
 		if refs, err := NewRefStore(repoRoot).List(); err == nil {
 			for _, r := range refs {
 				if _, ok := refOf[r.Oid]; !ok {
@@ -168,7 +173,7 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("upload-pack: no want oid in first line %q", first)
 	}
 	wantOids := []Oid{firstOid}
-	if logLevel >= LogDetail {
+	if currentLogLevel() >= LogDetail {
 		log.Printf("upload-pack: want %s ref=%s", firstOid, refName(firstOid))
 	}
 
@@ -184,7 +189,7 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		oid, _, ok := parseWantLine(string(payload))
 		if ok {
 			wantOids = append(wantOids, oid)
-			if logLevel >= LogDetail {
+			if currentLogLevel() >= LogDetail {
 				log.Printf("upload-pack: want %s ref=%s", oid, refName(oid))
 			}
 		}
@@ -224,7 +229,7 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 			if len(fields) >= 2 {
 				ho := Oid(fields[1])
 				haveOids = append(haveOids, ho)
-				if logLevel >= LogDetail {
+				if currentLogLevel() >= LogDetail {
 					log.Printf("upload-pack: have %s", ho)
 				}
 			}
@@ -245,13 +250,13 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	}
 
 	// 5. CollectReachable（排除 have 可达对象）
-	store := &LooseStore{Root: filepath.Join(repoRoot, "objects")}
+	store := NewObjectStore(repoRoot)
 	objs, err := CollectReachable(store, wantOids, haveOids...)
 	if err != nil {
 		return fmt.Errorf("upload-pack: collect reachable: %w", err)
 	}
 	tAfterReach := time.Now()
-	if logLevel >= LogDetail {
+	if currentLogLevel() >= LogDetail {
 		for _, o := range objs {
 			log.Printf("upload-pack: object %s type=%s size=%d", o.Oid(), o.Type, o.Size)
 		}
@@ -366,7 +371,7 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("receive-pack: read pack: %w", err)
 	}
 	var objs []*RawObject
-	store := &LooseStore{Root: filepath.Join(repoRoot, "objects")}
+	store := NewObjectStore(repoRoot)
 	if len(remaining) > 0 {
 		dec := NewPackDecoder(bytes.NewReader(remaining), store)
 		objs, err = dec.Decode()
@@ -544,7 +549,7 @@ func planPackEntries(objs []*RawObject) ([]packEntry, error) {
 			hi, lo = lo, hi
 		}
 		if hi > 2*lo {
-			if logLevel >= LogDetail {
+			if currentLogLevel() >= LogDetail {
 				log.Printf("upload-pack: delta skip (size ratio) base=%s target=%s hi=%d lo=%d", base.Oid(), tgt.Oid(), hi, lo)
 			}
 			continue
@@ -552,7 +557,7 @@ func planPackEntries(objs []*RawObject) ([]packEntry, error) {
 		// 收益预检：随机/低相似数据（采样命中率低）直接跳过 delta，target 走 full，
 		// 避免 EncodeDelta 在无收益输入上白算（大 blob 的 O(n) 索引构建 + O(n²) 匹配扫描）。
 		if !deltaPrecheck(base.Content, tgt.Content) {
-			if logLevel >= LogDetail {
+			if currentLogLevel() >= LogDetail {
 				log.Printf("upload-pack: delta skip (precheck) base=%s target=%s hi=%d lo=%d", base.Oid(), tgt.Oid(), hi, lo)
 			}
 			continue
@@ -563,7 +568,7 @@ func planPackEntries(objs []*RawObject) ([]packEntry, error) {
 		}
 		// 负收益回退：delta 字节数 >= target 原始字节数一半 → 退化为 full
 		if len(delta)*2 >= tgt.Size {
-			if logLevel >= LogDetail {
+			if currentLogLevel() >= LogDetail {
 				log.Printf("upload-pack: delta fallback (negative) base=%s target=%s deltaLen=%d tgtSize=%d", base.Oid(), tgt.Oid(), len(delta), tgt.Size)
 			}
 			continue
@@ -573,7 +578,7 @@ func planPackEntries(objs []*RawObject) ([]packEntry, error) {
 		entries[j].isDelta = true
 		entries[j].baseOid = base.Oid()
 		entries[j].delta = delta
-		if logLevel >= LogDetail {
+		if currentLogLevel() >= LogDetail {
 			log.Printf("upload-pack: delta base=%s target=%s baseSize=%d tgtSize=%d deltaLen=%d", base.Oid(), tgt.Oid(), base.Size, tgt.Size, len(delta))
 		}
 	}
@@ -590,7 +595,7 @@ func oidShort(o Oid) string {
 // isFastForward 检查 ancestor 是否是 descendant 的祖先（快进推送）。
 // 从 descendant 沿 parent 链 BFS，若能到达 ancestor 则为快进。
 // 任一对象读取失败视为非快进（保守策略，不影响推送本身）。
-func isFastForward(store *LooseStore, ancestor, descendant Oid) bool {
+func isFastForward(store ObjectStore, ancestor, descendant Oid) bool {
 	visited := make(map[Oid]bool)
 	queue := []Oid{descendant}
 	for len(queue) > 0 {

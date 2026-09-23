@@ -12,7 +12,7 @@ const gitlinkMode uint32 = 0o160000
 // haveOids 为 nil 时退化为全量收集（兼容旧调用）。
 // 返回去重后的对象列表（按 BFS 访问顺序）。gitlink 不入队。
 // ZeroOid 跳过；store.Read 失败返回错误（可能损坏仓库）。
-func CollectReachable(store *LooseStore, rootOids []Oid, haveOids ...Oid) ([]*RawObject, error) {
+func CollectReachable(store ObjectStore, rootOids []Oid, haveOids ...Oid) ([]*RawObject, error) {
 	exclude := make(map[Oid]bool)
 	if len(haveOids) > 0 {
 		exclQueue := make([]Oid, 0, len(haveOids))
@@ -141,6 +141,6 @@ func CollectReachable(store *LooseStore, rootOids []Oid, haveOids ...Oid) ([]*Ra
 }
 
 // CollectReachableRefs 从多个 ref oid 出发收集（便利函数，等价于 CollectReachable）。
-func CollectReachableRefs(store *LooseStore, refOids []Oid) ([]*RawObject, error) {
+func CollectReachableRefs(store ObjectStore, refOids []Oid) ([]*RawObject, error) {
 	return CollectReachable(store, refOids)
 }

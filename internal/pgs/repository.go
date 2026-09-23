@@ -33,6 +33,10 @@ type Repository struct {
 	Aliases     []string      `json:"aliases"`
 	CreatedAt   time.Time     `json:"createdAt"`
 	Mirror      *MirrorConfig `json:"mirror,omitempty"`
+
+	// root 是该仓库所属的存储根目录（<root>/<name>.git），不参与 JSON 序列化。
+	// 由 RepositoriesManager/InitBare 注入，使 Repository 自包含、Path() 不再依赖全局状态。
+	root string
 }
 
 func (repo *Repository) IsMirror() bool {
@@ -56,8 +60,16 @@ func (repo *Repository) Snapshot() *Repository {
 	return &c
 }
 
+// Root 返回仓库所属的存储根目录。
+func (repo *Repository) Root() string {
+	if repo.root != "" {
+		return repo.root
+	}
+	return GitRoot // 过渡兜底：未注入 root 的仓库对象（阶段 2-3 收口）
+}
+
 func (repo *Repository) Path() string {
-	return filepath.Join(GitRoot, fmt.Sprintf("%s.git", repo.Name))
+	return filepath.Join(repo.Root(), fmt.Sprintf("%s.git", repo.Name))
 }
 
 func (repo *Repository) SaveMetadata() error {
@@ -139,8 +151,9 @@ func NewBareRepoConfig() *RepoConfig {
 
 // InitBare builds a bare repository directory by hand (no `git init --bare`),
 // writes config/HEAD/description plus pgit.json metadata.
-// defaultBranch sets the initial HEAD symref target (e.g. "master"); empty defaults to "master".
-func InitBare(name string, description string, defaultBranch string) (*Repository, error) {
+// gitRoot 指定存储根目录（<gitRoot>/<name>.git）；defaultBranch 设置 HEAD symref
+// 目标（如 "master"），空值默认 "master"。
+func InitBare(gitRoot string, name string, description string, defaultBranch string) (*Repository, error) {
 	if defaultBranch == "" {
 		defaultBranch = "master"
 	}
@@ -149,6 +162,7 @@ func InitBare(name string, description string, defaultBranch string) (*Repositor
 		Description: description,
 		Aliases:     []string{name},
 		CreatedAt:   time.Now(),
+		root:        gitRoot,
 	}
 	desc := fmt.Sprintf("%s;%s", name, description)
 	root := repo.Path()
@@ -225,7 +239,7 @@ func (repo Repository) Tree(treeIsh string, subtree string) ([]TreeNode, error) 
 	if err != nil {
 		return nil, err
 	}
-	store := &git.LooseStore{Root: filepath.Join(repo.Path(), "objects")}
+	store := git.NewObjectStore(repo.Path())
 	entries, err := git.TreeAt(store, treeOid, subtree)
 	if err != nil {
 		return nil, err
@@ -246,7 +260,7 @@ func (repo Repository) Blob(ref string, path string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &git.LooseStore{Root: filepath.Join(repo.Path(), "objects")}
+	store := git.NewObjectStore(repo.Path())
 	blob, err := git.BlobAt(store, treeOid, path)
 	if err != nil {
 		return nil, err
@@ -260,7 +274,7 @@ func (repo Repository) Archive(ref string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &git.LooseStore{Root: filepath.Join(root, "objects")}
+	store := git.NewObjectStore(root)
 	var modTime time.Time
 	if commitOid != "" {
 		if obj, err := store.Read(commitOid); err == nil {
@@ -304,7 +318,7 @@ func (repo Repository) Commits(ref string, limit int) ([]Commit, error) {
 	if commitOid == "" {
 		return nil, nil
 	}
-	store := &git.LooseStore{Root: filepath.Join(repo.Path(), "objects")}
+	store := git.NewObjectStore(repo.Path())
 	log, err := git.CommitLog(store, commitOid, limit)
 	if err != nil {
 		return nil, err
@@ -341,7 +355,7 @@ func modeType(mode uint32) string {
 
 // archiveZip 递归遍历 treeOid，将所有 blob 写入 zip，路径前缀为 prefix。
 // gitlink（0o160000）跳过，与 git archive 行为一致。
-func archiveZip(w io.Writer, store *git.LooseStore, treeOid git.Oid, prefix string, modTime time.Time) error {
+func archiveZip(w io.Writer, store git.ObjectStore, treeOid git.Oid, prefix string, modTime time.Time) error {
 	zw := zip.NewWriter(w)
 	if err := walkTreeToZip(store, treeOid, prefix, zw, modTime); err != nil {
 		_ = zw.Close()
@@ -350,7 +364,7 @@ func archiveZip(w io.Writer, store *git.LooseStore, treeOid git.Oid, prefix stri
 	return zw.Close()
 }
 
-func walkTreeToZip(store *git.LooseStore, treeOid git.Oid, prefix string, zw *zip.Writer, modTime time.Time) error {
+func walkTreeToZip(store git.ObjectStore, treeOid git.Oid, prefix string, zw *zip.Writer, modTime time.Time) error {
 	entries, err := git.TreeAt(store, treeOid, "")
 	if err != nil {
 		return err

@@ -117,7 +117,7 @@ func startSSH(t *testing.T, gitRoot string) (*SSHHandler, string) {
 	pgs.InitReposManager(&pgs.RepositoriesManagerConfig{GitRoot: gitRoot})
 
 	hostKeyPath := filepath.Join(t.TempDir(), "hostkey")
-	handler, err := NewSSHHandler(hostKeyPath, gitRoot, pgs.ReposManager)
+	handler, err := NewSSHHandler(hostKeyPath, pgs.ReposManager)
 	if err != nil {
 		t.Fatalf("NewSSHHandler: %v", err)
 	}

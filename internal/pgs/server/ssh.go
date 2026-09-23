@@ -10,7 +10,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"pgit/internal/pgs"
@@ -22,11 +21,10 @@ import (
 type SSHHandler struct {
 	HostKey ssh.Signer
 	Manager *pgs.RepositoriesManager
-	GitRoot string
 }
 
-func NewSSHHandler(hostKeyPath string, gitRoot string, manager *pgs.RepositoriesManager) (*SSHHandler, error) {
-	h := &SSHHandler{GitRoot: gitRoot, Manager: manager}
+func NewSSHHandler(hostKeyPath string, manager *pgs.RepositoriesManager) (*SSHHandler, error) {
+	h := &SSHHandler{Manager: manager}
 	if err := h.LoadPrivateKey(hostKeyPath); err != nil {
 		return nil, err
 	}
@@ -148,7 +146,7 @@ func (s *SSHHandler) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 				log.Printf("SSH: unknown repo alias %q: %v", alias, err)
 				return
 			}
-			repoPath := filepath.Join(s.GitRoot, repo.Name+".git")
+			repoPath := repo.Path()
 			log.Printf("SSH: exec %s %s", cmdName, repoPath)
 
 			// mirror 仓库禁止 push：拒绝 git-receive-pack。

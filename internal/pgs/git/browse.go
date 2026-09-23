@@ -2,7 +2,6 @@ package git
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 )
 
@@ -61,7 +60,7 @@ func resolveRefName(rs *RefStore, name string) (Oid, error) {
 // commit → 取其 tree；tag → 递归解引用到 commit/tree；tree → 直接返回。
 // 返回 (commitOid, treeOid)。commitOid 为空表示输入直接是 tree（无 commit 时间戳）。
 // 深度限制 16 防 tag 循环。
-func derefToTree(store *LooseStore, oid Oid) (commitOid, treeOid Oid, err error) {
+func derefToTree(store ObjectStore, oid Oid) (commitOid, treeOid Oid, err error) {
 	const maxDepth = 16
 	cur := oid
 	for depth := 0; depth < maxDepth; depth++ {
@@ -96,7 +95,7 @@ func derefToTree(store *LooseStore, oid Oid) (commitOid, treeOid Oid, err error)
 // 返回 (commitOid, treeOid)。commitOid 为空表示 treeIsh 直接指向 tree。
 // 40hex 当作对象 oid 处理（commit/tag/tree）；否则当作 ref 名（含 short）解析。
 func ResolveTreeIsh(repoRoot, treeIsh string) (commitOid, treeOid Oid, err error) {
-	store := &LooseStore{Root: filepath.Join(repoRoot, "objects")}
+	store := NewObjectStore(repoRoot)
 	if Oid(treeIsh).Valid() {
 		return derefToTree(store, Oid(treeIsh))
 	}
@@ -111,7 +110,7 @@ func ResolveTreeIsh(repoRoot, treeIsh string) (commitOid, treeOid Oid, err error
 // TreeAt 读取 treeOid 下指定 path 的 tree 条目。
 // path 为空返回 treeOid 自身的条目；否则逐段下探。
 // 任一非末段不是 tree 或路径不存在均返回错误。
-func TreeAt(store *LooseStore, treeOid Oid, path string) ([]TreeEntry, error) {
+func TreeAt(store ObjectStore, treeOid Oid, path string) ([]TreeEntry, error) {
 	cur := treeOid
 	if path != "" {
 		for _, seg := range strings.Split(path, "/") {
@@ -158,7 +157,7 @@ func TreeAt(store *LooseStore, treeOid Oid, path string) ([]TreeEntry, error) {
 
 // BlobAt 读取 treeOid 下指定 path 的 blob 对象。
 // path 必须非空；逐段下探，末段定位 blob。
-func BlobAt(store *LooseStore, treeOid Oid, path string) (*RawObject, error) {
+func BlobAt(store ObjectStore, treeOid Oid, path string) (*RawObject, error) {
 	if path == "" {
 		return nil, fmt.Errorf("blob path is empty")
 	}
@@ -215,7 +214,7 @@ type CommitInfo struct {
 
 // CommitLog 从 startOid 出发沿 parent 链回溯，返回最多 limit 条 commit 摘要。
 // limit <= 0 表示不限制。遇到读取失败或 parent 不存在时停止。
-func CommitLog(store *LooseStore, startOid Oid, limit int) ([]CommitInfo, error) {
+func CommitLog(store ObjectStore, startOid Oid, limit int) ([]CommitInfo, error) {
 	var out []CommitInfo
 	visited := make(map[Oid]bool)
 	cur := startOid
@@ -261,7 +260,7 @@ func ForEachRefs(repoRoot string) ([]RefInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("for-each-ref: list: %w", err)
 	}
-	store := &LooseStore{Root: filepath.Join(repoRoot, "objects")}
+	store := NewObjectStore(repoRoot)
 	out := make([]RefInfo, 0, len(refs))
 	for _, r := range refs {
 		if r.Name == "HEAD" {

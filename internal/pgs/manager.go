@@ -35,7 +35,7 @@ var ReposManager *RepositoriesManager
 
 func InitReposManager(config *RepositoriesManagerConfig) {
 	if config.GitRoot != "" {
-		GitRoot = config.GitRoot
+		GitRoot = config.GitRoot // 过渡兜底，见 Repository.Root()
 	}
 	ReposManager = &RepositoriesManager{
 		Config:  config,
@@ -45,8 +45,16 @@ func InitReposManager(config *RepositoriesManagerConfig) {
 	ReposManager.CheckRepositories()
 }
 
+// root 返回本 manager 使用的存储根目录。
+func (r *RepositoriesManager) root() string {
+	if r.Config != nil && r.Config.GitRoot != "" {
+		return r.Config.GitRoot
+	}
+	return GitRoot // 过渡兜底
+}
+
 func (r *RepositoriesManager) CheckRepositories() {
-	files, err := os.ReadDir(GitRoot)
+	files, err := os.ReadDir(r.root())
 	if err != nil {
 		panic(err)
 	}
@@ -67,7 +75,7 @@ func (r *RepositoriesManager) CheckRepositories() {
 
 // loadRepo 读取仓库元数据（调用方须持有 r.mu）。
 func (r *RepositoriesManager) loadRepo(dirName string) (*Repository, error) {
-	repoDir := filepath.Join(GitRoot, dirName)
+	repoDir := filepath.Join(r.root(), dirName)
 	metaPath := filepath.Join(repoDir, "pgit.json")
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
@@ -86,13 +94,14 @@ func (r *RepositoriesManager) loadRepo(dirName string) (*Repository, error) {
 	if len(repo.Aliases) == 0 {
 		repo.Aliases = []string{repo.Name}
 	}
+	repo.root = r.root()
 	return &repo, nil
 }
 
 // migrateLegacyRepo 为缺 pgit.json 的旧仓库补元数据（调用方须持有 r.mu）。
 func (r *RepositoriesManager) migrateLegacyRepo(dirName string) (*Repository, error) {
 	name := strings.TrimSuffix(dirName, ".git")
-	repoDir := filepath.Join(GitRoot, dirName)
+	repoDir := filepath.Join(r.root(), dirName)
 	descData, err := os.ReadFile(filepath.Join(repoDir, "description"))
 	if err != nil {
 		return nil, err
@@ -103,6 +112,7 @@ func (r *RepositoriesManager) migrateLegacyRepo(dirName string) (*Repository, er
 		Description: description,
 		Aliases:     []string{name},
 		CreatedAt:   time.Now(),
+		root:        r.root(),
 	}
 	if err := repo.SaveMetadata(); err != nil {
 		log.Printf("migrate: write pgit.json for %s failed: %v", name, err)
@@ -199,7 +209,7 @@ func (r *RepositoriesManager) CreateRepository(name string, description string, 
 	if r.repoExistsLocked(name) {
 		return fmt.Errorf("repository %s already exist", name)
 	}
-	repo, err := InitBare(name, description, defaultBranch)
+	repo, err := InitBare(r.root(), name, description, defaultBranch)
 	if err != nil {
 		return err
 	}
@@ -225,7 +235,7 @@ func (r *RepositoriesManager) CreateMirrorRepository(name string, description st
 	if r.repoExistsLocked(name) {
 		return fmt.Errorf("repository %s already exist", name)
 	}
-	repo, err := InitBare(name, description, "master")
+	repo, err := InitBare(r.root(), name, description, "master")
 	if err != nil {
 		return err
 	}

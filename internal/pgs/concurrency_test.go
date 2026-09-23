@@ -96,49 +96,49 @@ func TestRepositorySnapshotIsolation(t *testing.T) {
 // 手动同步之后 Register 仍须真正启动定时调度（回归：曾因 scheduler 占位而静默失效）。
 func TestSyncRegisterAfterManualSync(t *testing.T) {
 	newAuditManager(t)
-	InitSyncManager()
-	t.Cleanup(func() { SyncMgr = nil })
+	syncMgr := NewSyncManager(ReposManager)
+	t.Cleanup(syncMgr.Stop)
 
 	mirror := &MirrorConfig{RemoteURL: "http://127.0.0.1:1/none.git", SyncInterval: 3600, AuthType: "none"}
 	if err := ReposManager.CreateMirrorRepository("m1", "", mirror); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := SyncMgr.SyncNow("m1"); err == nil {
+	if _, err := syncMgr.SyncNow("m1"); err == nil {
 		t.Log("SyncNow returned no error (unreachable remote is expected to fail)")
 	}
 	repo, _ := ReposManager.GetRepository("m1")
-	SyncMgr.Register(repo)
+	syncMgr.Register(repo)
 
-	SyncMgr.mu.Lock()
-	s := SyncMgr.mirrors["m1"]
+	syncMgr.mu.Lock()
+	s := syncMgr.mirrors["m1"]
 	running := s != nil && s.stop != nil
-	SyncMgr.mu.Unlock()
+	syncMgr.mu.Unlock()
 	if !running {
 		t.Fatal("Register is a no-op after manual sync: scheduled sync would never start")
 	}
 
-	SyncMgr.Stop()
-	SyncMgr.Stop() // 可重复调用
+	syncMgr.Stop()
+	syncMgr.Stop() // 可重复调用
 }
 
 // Register 幂等；条件不满足（interval<=0 / 非镜像）时不注册。
 func TestSyncRegisterIdempotent(t *testing.T) {
 	newAuditManager(t)
-	InitSyncManager()
-	t.Cleanup(func() { SyncMgr = nil })
+	syncMgr := NewSyncManager(ReposManager)
+	t.Cleanup(syncMgr.Stop)
 
 	mirror := &MirrorConfig{RemoteURL: "http://127.0.0.1:1/none.git", SyncInterval: 3600, AuthType: "none"}
 	if err := ReposManager.CreateMirrorRepository("m1", "", mirror); err != nil {
 		t.Fatal(err)
 	}
 	repo, _ := ReposManager.GetRepository("m1")
-	SyncMgr.Register(repo)
-	SyncMgr.Register(repo) // 第二次不得重建/泄漏 goroutine
+	syncMgr.Register(repo)
+	syncMgr.Register(repo) // 第二次不得重建/泄漏 goroutine
 
-	SyncMgr.mu.Lock()
-	n := len(SyncMgr.mirrors)
-	SyncMgr.mu.Unlock()
+	syncMgr.mu.Lock()
+	n := len(syncMgr.mirrors)
+	syncMgr.mu.Unlock()
 	if n != 1 {
 		t.Errorf("schedulers = %d, want 1", n)
 	}
@@ -148,15 +148,15 @@ func TestSyncRegisterIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	r2, _ := ReposManager.GetRepository("m2")
-	SyncMgr.Register(r2) // interval=0：仅手动，不注册调度
+	syncMgr.Register(r2) // interval=0：仅手动，不注册调度
 
-	SyncMgr.mu.Lock()
-	_, registered := SyncMgr.mirrors["m2"]
-	SyncMgr.mu.Unlock()
+	syncMgr.mu.Lock()
+	_, registered := syncMgr.mirrors["m2"]
+	syncMgr.mu.Unlock()
 	if registered {
 		t.Error("interval=0 repo should not get a scheduler")
 	}
-	SyncMgr.Stop()
+	syncMgr.Stop()
 }
 
 // 同步（含失败路径）与改设置并发：状态回写与元数据落盘必须串行，不丢字段。

@@ -75,10 +75,10 @@ func main() {
 
 	pgs.InitReposManager(&pgs.RepositoriesManagerConfig{GitRoot: pgs.Settings.GitRoot})
 
-	pgs.InitSyncManager()
+	syncMgr := pgs.NewSyncManager(pgs.ReposManager)
 	for _, repo := range pgs.ReposManager.List() {
 		if repo.IsMirror() {
-			pgs.SyncMgr.Register(repo)
+			syncMgr.Register(repo)
 		}
 	}
 
@@ -89,12 +89,12 @@ func main() {
 
 	var sshHandler *server.SSHHandler
 	if pgs.Settings.EnableSSH {
-		sshHandler, err = server.NewSSHHandler(pgs.Settings.SSHHostKey, pgs.Settings.GitRoot, pgs.ReposManager)
+		sshHandler, err = server.NewSSHHandler(pgs.Settings.SSHHostKey, pgs.ReposManager)
 		if err != nil {
 			log.Printf("SSH handler init failed: %v", err)
 		}
 	}
-	httpHandler := server.NewHTTPHandler(pgs.ReposManager, pgs.Settings)
+	httpHandler := server.NewHTTPHandler(pgs.ReposManager, pgs.Settings, syncMgr)
 
 	mux := server.NewMuxServer(ln, pgs.Settings.EnableSSH, sshHandler, httpHandler)
 	log.Printf("pgit listening on %s (SSH: %v)", pgs.Settings.Listen, pgs.Settings.EnableSSH)
@@ -104,9 +104,7 @@ func main() {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		log.Printf("shutting down...")
-		if pgs.SyncMgr != nil {
-			pgs.SyncMgr.Stop()
-		}
+		syncMgr.Stop()
 		_ = ln.Close()
 		os.Exit(NoError)
 	}()

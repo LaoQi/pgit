@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -200,7 +199,7 @@ func FetchRemote(remoteURL, repoRoot string, auth *FetchAuth) (*FetchResult, err
 
 	log.Printf("fetch: pack received, size=%d bytes", packBuf.Len())
 
-	store := &LooseStore{Root: filepath.Join(repoRoot, "objects")}
+	store := NewObjectStore(repoRoot)
 	dec := NewPackDecoder(bytes.NewReader(packBuf.Bytes()), store)
 	objs, err := dec.Decode()
 	if err != nil {

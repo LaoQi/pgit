@@ -15,7 +15,7 @@ func TestNewBareRepoConfig(t *testing.T) {
 
 func TestInitBareCreatesPgitJSON(t *testing.T) {
 	GitRoot = os.TempDir()
-	repo, err := InitBare("test1", "this is test repo", "master")
+	repo, err := InitBare(GitRoot, "test1", "this is test repo", "master")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestInitBareCreatesPgitJSON(t *testing.T) {
 
 func TestInitBareCustomDefaultBranch(t *testing.T) {
 	GitRoot = os.TempDir()
-	repo, err := InitBare("test-custom", "custom default branch", "main")
+	repo, err := InitBare(GitRoot, "test-custom", "custom default branch", "main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestInitBareCustomDefaultBranch(t *testing.T) {
 
 func TestSetDefaultBranch(t *testing.T) {
 	GitRoot = os.TempDir()
-	repo, err := InitBare("test-set", "test set default", "master")
+	repo, err := InitBare(GitRoot, "test-set", "test set default", "master")
 	if err != nil {
 		t.Fatal(err)
 	}

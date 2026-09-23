@@ -23,11 +23,12 @@ import (
 type HTTPHandler struct {
 	Manager  *pgs.RepositoriesManager
 	Settings *pgs.Setting
+	Sync     *pgs.SyncManager
 	router   http.Handler
 }
 
-func NewHTTPHandler(manager *pgs.RepositoriesManager, settings *pgs.Setting) *HTTPHandler {
-	h := &HTTPHandler{Manager: manager, Settings: settings}
+func NewHTTPHandler(manager *pgs.RepositoriesManager, settings *pgs.Setting, syncMgr *pgs.SyncManager) *HTTPHandler {
+	h := &HTTPHandler{Manager: manager, Settings: settings, Sync: syncMgr}
 	h.router = h.buildRouter()
 	return h
 }
@@ -144,8 +145,8 @@ func (h *HTTPHandler) createRepo(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		repo, _ := h.Manager.GetRepository(name)
-		if pgs.SyncMgr != nil {
-			pgs.SyncMgr.Register(repo)
+		if h.Sync != nil {
+			h.Sync.Register(repo)
 		}
 		writeJSON(w, http.StatusOK, repo)
 		return
@@ -186,8 +187,8 @@ func (h *HTTPHandler) deleteRepo(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("confirm mismatch, expected %s", name))
 		return
 	}
-	if pgs.SyncMgr != nil {
-		pgs.SyncMgr.Unregister(name)
+	if h.Sync != nil {
+		h.Sync.Unregister(name)
 	}
 	if err := h.Manager.DeleteRepository(name); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -363,11 +364,11 @@ func (h *HTTPHandler) commits(w http.ResponseWriter, r *http.Request) {
 
 func (h *HTTPHandler) syncRepo(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
-	if pgs.SyncMgr == nil {
+	if h.Sync == nil {
 		writeError(w, http.StatusInternalServerError, "sync manager not initialized")
 		return
 	}
-	entry, err := pgs.SyncMgr.SyncNow(name)
+	entry, err := h.Sync.SyncNow(name)
 	if err != nil {
 		if strings.Contains(err.Error(), "not exist") {
 			writeError(w, http.StatusNotFound, err.Error())
@@ -456,10 +457,10 @@ func (h *HTTPHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	updated, _ := h.Manager.GetRepository(name)
 
 	// syncInterval 变化时重新注册定时调度（0<->N、N->M 均重建）
-	if pgs.SyncMgr != nil && updated != nil && updated.IsMirror() {
+	if h.Sync != nil && updated != nil && updated.IsMirror() {
 		if oldInterval != updated.Mirror.SyncInterval {
-			pgs.SyncMgr.Unregister(name)
-			pgs.SyncMgr.Register(updated)
+			h.Sync.Unregister(name)
+			h.Sync.Register(updated)
 		}
 	}
 
