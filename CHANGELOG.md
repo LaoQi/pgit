@@ -5,6 +5,18 @@ pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；�
 
 ## 2026-09-24
 
+**fix(fetch): 镜像同步分层超时与失败重试**（P1-5，3ac08c9）
+- 问题：`http.Client.Timeout = 5min` 作为整体超时会覆盖 body 读取 → 大仓库镜像传输中途被掐断；
+  且无重试，瞬时抖动即整次同步失败
+- 分层超时取代整体超时：`DialTimeout`(15s)/`TLSHandshakeTimeout`(15s)/`ResponseHeaderTimeout`(可配)/
+  `IdleConnTimeout`(90s) + `StallTimeout`(停滞检测，默认 120s，可配)；不再设 `client.Timeout`
+- `StallTimeout` 语义是「连续无数据」上限（看门狗 + 每次读到数据即重置），非总时长
+- 失败重试：指数退避 + ±25% jitter（默认 3 次尝试、基数 1s、上限 30s）
+- 错误分类：网络类与 5xx/429 可重试；4xx 与数据损坏（pack/delta 校验失败）不重试
+- 配置项（可热加载）：`mirrorStallTimeoutSec` / `mirrorRetryAttempts` / `mirrorRetryBaseDelaySec`
+- 实测：503→503→200 在第 3 次成功（退避 755ms/2.1s）；不可达远端重试 3 次后 `lastError` 记录
+
+
 **refactor(server): 阶段 4 接入层生命周期**（408f394）
 - 共享 `http.Server` + 连接通道 listener：`MuxServer` 内置单个 server
   （`ReadHeaderTimeout` 15s、`IdleTimeout` 120s），由 `connChanListener` 投递探测后的连接，

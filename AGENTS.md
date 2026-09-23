@@ -41,7 +41,7 @@ internal/pgs/git/             纯 Go git wire protocol v0 服务端（无第三�
   browse.go                   浏览 API 高层：ResolveTreeIsh/TreeAt/BlobAt/ForEachRefs/CommitLog（基于 LooseStore+RefStore）
   protocol.go                 v0 状态机：negotiation + pack 交换（upload-pack 单遍 encodePack，blob 按 size 降序配对 + 采样预检 + 负收益回退；receive-pack 流式落盘，pack 被拒回 report-status）+ sideband-64k + report-status + 操作日志（logLevel=detail）+ 阶段计时（negotiate/reach/encode）+ force-push 审计标记（isFastForward BFS，仅日志不拒绝）；LogLevel/SetLogLevel 与 SetMaxReceivePackBytes 由 pgs 配置注入
   service.go                  对外入口：ServeInfoRefs/HandleUploadPack/HandleReceivePack/HandleSSHSession
-  fetch.go                    纯 Go fetch 客户端：FetchRemote（HTTP smart-http upload-pack 客户端）+ FetchAuth + FetchResult；复用 PktReader/PackDecoder/LooseStore/RefStore；sideband demux + ref 镜像更新（CAS 含删除）+ HEAD best-effort 更新；done 后首帧接受 NAK 或 ACK <oid>（cgit 基本模式兼容）
+  fetch.go                    纯 Go fetch 客户端：FetchRemote/FetchRemoteWithOptions（HTTP smart-http upload-pack 客户端）+ FetchAuth/FetchOptions/FetchResult；分层超时（Dial/TLS/ResponseHeader/IdleConn + stallReader 停滞看门狗）取代整体超时 + 指数退避重试（isRetryableFetchError 分类）；复用 PktReader/PackDecoder/LooseStore/RefStore；sideband demux + ref 镜像更新（CAS 含删除）+ HEAD best-effort；done 后首帧接受 NAK 或 ACK <oid>
 
 internal/pgs/server/          网络服务层
   mux.go                      协议探测分发（peek 前缀 SSH- → SSH 否则 HTTP）+ 共享 http.Server（ReadHeaderTimeout/IdleTimeout）+ connChanListener 投递连接 + peekConn 回放缓冲 + Shutdown 优雅关闭（等活动中请求/SSH 会话，超时强断，幂等）
@@ -144,9 +144,9 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 ## 配置与运行
 
 - 生成默认配置：`pgit -d > config.json`；运行：`pgit -c config.json`。无配置以 `ConfigError` 退出。
-- 热加载：向进程发 `SIGHUP` 重读配置文件。可热加载字段：`logLevel`/`logFormat`/`maxPushBytes`/`maxConcurrentPacks`/`credentials`；需重启字段：`listen`/`enableSSH`/`gitRoot`/`httpAuth`/`sshAuthType`/`sshHostKey`/`webuiPrefix`/`webuiAssets`（改动被忽略并记 WARN）。配置非法时拒绝且不半应用。
+- 热加载：向进程发 `SIGHUP` 重读配置文件。可热加载字段：`logLevel`/`logFormat`/`maxPushBytes`/`maxConcurrentPacks`/`credentials`/`mirrorStallTimeoutSec`/`mirrorRetryAttempts`/`mirrorRetryBaseDelaySec`；需重启字段：`listen`/`enableSSH`/`gitRoot`/`httpAuth`/`sshAuthType`/`sshHostKey`/`webuiPrefix`/`webuiAssets`（改动被忽略并记 WARN）。配置非法时拒绝且不半应用。
 - 导出 WebUI 资源：`pgit -w ./webui`（将 embed 的 web/ 写到磁盘，可自定义修改后通过 `webuiAssets` 加载）。
-- 配置字段：`listen`（单一监听地址，默认 `0.0.0.0:3000`）、`enableSSH`、`gitRoot`、`httpAuth`、`credentials`、`sshHostKey`/`sshPublicKey`、`sshAuthType`、`webuiPrefix`（默认 `__webui`）、`webuiAssets`（默认空=用 embed，非空=从磁盘目录读）、`logLevel`（默认空=`off` 仅汇总行；`detail` 逐条 want/have/object/delta）、`maxPushBytes`（默认 0=2GiB）、`maxConcurrentPacks`（默认 0=4）。`logLevel`/`maxPushBytes` 由 `Reload` 注入 git 包。无分离端口字段。
+- 配置字段：`listen`（单一监听地址，默认 `0.0.0.0:3000`）、`enableSSH`、`gitRoot`、`httpAuth`、`credentials`、`sshHostKey`/`sshPublicKey`、`sshAuthType`、`webuiPrefix`（默认 `__webui`）、`webuiAssets`（默认空=用 embed，非空=从磁盘目录读）、`logLevel`（`debug`(兼容旧 `detail`)/`info`/`warn`/`error`，空=`info`）、`logFormat`（`text`/`json`）、`maxPushBytes`（默认 0=2GiB）、`maxConcurrentPacks`（默认 0=4）、`mirrorStallTimeoutSec`（默认 0=120）、`mirrorRetryAttempts`（默认 0=3）、`mirrorRetryBaseDelaySec`（默认 0=1）。无分离端口字段。
 - `webuiPrefix` 校验：非空、不为 `api`、不含 `..`；可含多段斜杠（如 `custom/ui`）。
 - `webuiAssets` 校验：非空时目录必须存在且可访问。
 - SSH host key 缺失时自动生成到配置路径。
@@ -162,7 +162,7 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 - `internal/pgs/server`：`mux_test.go`（并发连接/关闭回收连接/Shutdown 幂等与等待进行中请求/Serve 返回）、`health_test.go`、`limit_test.go`、`ssh_test.go` 走真实 TCP + x/crypto 客户端（upload-pack clone 全量交换验证 pack 对象、receive-pack push 验证 ref+loose 落盘、mirror 仓库 push 拒绝 stderr），无需 git/ssh 二进制；`TestSSHClonePushE2E` 需 `PGIT_E2E=1` + git/ssh 二进制。
 - `internal/pgs/git`：`loose_test`/`store_test`（内存 ObjectStore 驱动浏览 API/可达性/REF_DELTA 回查）/`stream_test`（流式解码内存对比、WalkReachable 只 Stat、单遍 encodePack 等价性）/`hardening_test`（畸形输入回归 + fuzz）/`delta_test`/`pack_test`/`refs_test`/`reach_test`/`browse_test`/`protocol_test`/`fetch_test`/`e2e_test`，覆盖 delta 应用与生成 roundtrip、deltaPrecheck 预检、桶扫描限制、pack 编解码（与真实 git pack、index-pack 互验）、ofs-delta 回环、ref CAS/symref/packed-refs、可达性 BFS 与 have 差量过滤、treeIsh/tree/blob/ForEachRefs、v0 状态机 + sideband、增量 fetch（have flush/多 POST/无 done 等）、fetch 客户端（initial/incremental/up-to-date/empty/basic auth/ref 删除/ACK 响应，httptest + 自身协议当远程，无需外部 git）；e2e 集成需 `PGIT_E2E=1`。`go test ./...` 通过。
 - 无 linter/formatter/CI 配置。用 `go vet ./...` 和 `go build` 验证。
-- 测试中调用真实 `git` 时必须注入 `-c commit.gpgsign=false`（见 `internal/pgs/git/gitcmd_test.go` 的 `newGitCmd`）：否则用户的全局 `commit.gpgsign=true` 会让 `git commit` 等待 GPG 口令直至超时。
+- 测试中调用真实 `git` 时必须注入 `-c commit.gpgsign=false`（`internal/pgs/git/gitcmd_test.go` 的 `newGitCmd`、`internal/pgs/testmain_test.go` 调低重试次数）（见 `internal/pgs/git/gitcmd_test.go` 的 `newGitCmd`）：否则用户的全局 `commit.gpgsign=true` 会让 `git commit` 等待 GPG 口令直至超时。
 
 ## 工作流
 

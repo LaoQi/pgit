@@ -81,8 +81,9 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
    （`sync_manager.go:140`），`Register` 见同名键即早退（`:35-38`）→「先手动同步、后配 interval」的镜像仓库定时同步静默失效。
    另有：`Stop()` 无 WaitGroup 等待（`:185-194`）；`doSync` 与 `SyncNow` 约 60 行重复；goroutine 直读
    `repo.Mirror.SyncInterval`（与改设置并发 → race + ticker 旧值）。
-5. **fetch 客户端整体 5 分钟超时**（`fetch.go:38`，`http.Client.Timeout` 覆盖 body）→ 大仓库镜像必失败；
-   无重试/退避；仅 HTTP(S)。（阶段 5 未处理，留待后续）
+5. ~~**fetch 客户端整体 5 分钟超时 + 无重试**~~ → **已修**（3ac08c9）：分层超时（Dial/TLS/ResponseHeader/
+   IdleConn + 停滞检测 `StallTimeout`）取代 `client.Timeout`；指数退避 + jitter 重试；错误分类决定是否重试；
+   配置项 `mirrorStallTimeoutSec`/`mirrorRetryAttempts`/`mirrorRetryBaseDelaySec`。**仍存**：仅支持 HTTP(S)。
 6. **全局单例与包级可变状态**：~~`Settings`、`GitRoot`、`ReposManager`、`SyncMgr`、`git.logLevel`~~
    → **阶段 2 部分修复**：`SyncMgr` 已改为注入（`NewSyncManager(manager)`）；`Repository` 自包含 root，
    `Path()` 不再读全局；`git.logLevel` 改 `atomic.Int32`。仍存：`pgs.GitRoot`（仅作兼容兜底）、
@@ -166,7 +167,8 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
 - 5-2（16d7f50）`/healthz` + `/metrics`（自研 Prometheus 文本格式）；采集 HTTP/git/pack/镜像/仓库指标。
 - 5-3/5-4（875c80d）SIGHUP 热加载（可热加载 vs 需重启字段分类、非法配置不半应用）；
   `SyncManager.Status/Statuses` + `/mirror-status` 端点 + 间隔变更重建调度器。
-- 未做：fetch 客户端超时/重试（见 P1-5）、mirror webhook（阶段 6）。
+- 后续（3ac08c9）P1-5 fetch 分层超时与重试已单独修复，见上文。
+- 未做：mirror webhook（阶段 6）。
 
 ### 阶段 6：功能扩展
 
