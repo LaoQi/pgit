@@ -59,10 +59,13 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
 且 `TSOpen` 任务在派发时未先置 Running → 下一轮重复派发；`TSFailed` 分支不移除任务 → 每秒重复回调。
 阶段 1 已修（`GetStatus/SetStatus` + 派发前置 Running + 终态移除），并加调度完结断言。
 
-### 2.5 认证/授权几乎为零
+### 2.5 认证/授权几乎为零（仅记录策略，暂不实施）
 
-`PasswordCallback`/`PublicKeyCallback` 一律放行（`ssh.go:86-92`）；HTTP 单一全局 Basic 凭据、明文比对
-（`http.go:573-589`）；无 per-repo 权限、无 token、无 TLS（`main.go:85` 仅 `net.Listen`）。
+`PasswordCallback`/`PublicKeyCallback` 一律放行（`ssh.go:84-92`）；HTTP 单一全局 Basic 凭据、明文比对
+（`http.go:609-625`）；无 per-repo 权限、无 token、无 TLS（`main.go` 仅 `net.Listen`）。
+
+**处置：目标策略、决策与兼容性说明记录于 `docs/security-policy.md`（决策 A：SSH 忽略用户名只认密钥；
+决策 B：`sshAuthType` 默认 `none` 保持现状；决策 C：仅自带证书，暂不引入 ACME）。当前阶段不实施。**
 
 ## 3. P1：架构级限制（扩展主要阻力）
 
@@ -143,11 +146,14 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
   clone 峰值 RSS −27%（产物与旧实现字节级一致）。
 - 已取舍得证：单遍编码避免重复解压，代价（+22% 时间）来自对象不再常驻内存。
 
-### 阶段 4：接入层安全与生命周期
+### 阶段 4：接入层生命周期（安全部分仅记录，暂不实施）
 
-- TLS + 用户/令牌/per-repo 读写权限；SSH authorized_keys 表替代放行桩；
-- 修 `singleConnListener`（关闭底层连接）、加 `ReadHeaderTimeout/IdleTimeout`；
-- 优雅关闭：`http.Server.Shutdown` + `SyncMgr` 等待，替换 `os.Exit`。
+- 安全（用户表/权限/SSH 密钥/TLS）：**策略已记录于 `docs/security-policy.md`，暂不实施**。
+- 本阶段实施范围收敛为与安全无关的接入层生命周期问题：
+  - 修 `singleConnListener.Close()` 不关闭底层连接（keep-alive 连接滞留）；
+  - 加 `ReadHeaderTimeout/IdleTimeout`（slowloris）与请求体读取超时；
+  - 优雅关闭：`http.Server.Shutdown` + 等待进行中的 pack 传输与同步，替换 `os.Exit`；
+  - P2 收尾：git URL 用 `LastIndex(".git/")` 切分、错误分类改哨兵错误、`InitBare` 失败回滚。
 
 ### 阶段 5：运维与可观测性
 
