@@ -3,7 +3,23 @@
 pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；变更过程、缺陷修复、
 性能调优与历史决策收录于此。条目按时间倒序，括注提交短 hash。
 
-## 2026-09-23
+## 2026-09-24
+
+**refactor(server): 阶段 4 接入层生命周期**（408f394）
+- 共享 `http.Server` + 连接通道 listener：`MuxServer` 内置单个 server
+  （`ReadHeaderTimeout` 15s、`IdleTimeout` 120s），由 `connChanListener` 投递探测后的连接，
+  取代「每连接新建 http.Server + 共享字段」；`connChanListener.Close` 关闭投递通道使
+  `Accept` 立即返回 —— 修复 `singleConnListener.Close` 不关底层连接导致的 keep-alive 连接滞留
+- 优雅关闭：`MuxServer.Shutdown(ctx)`（停止 Accept → `http.Server.Shutdown` 等活动中请求 →
+  等 SSH 会话/超时强断 → 关投递通道，幂等）；`main.go` 的 SIGINT/SIGTERM 改走
+  `Shutdown(30s)` + `SyncMgr.Stop()`，替换 `os.Exit` 硬切
+- 哨兵错误：`ErrRepoNotFound`/`ErrAliasNotFound`/`ErrNotMirror`/`ErrSyncInProgress`/`ErrRepoExist`，
+  HTTP 层改用 `errors.Is` 判定状态码（不再字符串匹配错误信息）
+- git 传输路径改 `LastIndex(".git/")` 切分，修复含 `.git/` 段的 alias 不可访问
+- `InitBare` 失败回滚半成品目录；权限位收紧为目录 `0o750` / 文件 `0o640`
+- 测试加固：真实 git 调用统一注入 `-c commit.gpgsign=false`
+  （此前受用户全局 GPG 配置影响，测试内 `git commit` 会等待口令直至超时失败）
+
 
 **feat(ops): 阶段 5-3/5-4 配置热加载与镜像状态**（875c80d）
 - SIGHUP 热加载：`logLevel`/`logFormat`/`maxPushBytes`/`maxConcurrentPacks`/`credentials` 即时生效；

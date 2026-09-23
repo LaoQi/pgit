@@ -87,25 +87,26 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
    → **阶段 2 部分修复**：`SyncMgr` 已改为注入（`NewSyncManager(manager)`）；`Repository` 自包含 root，
    `Path()` 不再读全局；`git.logLevel` 改 `atomic.Int32`。仍存：`pgs.GitRoot`（仅作兼容兜底）、
    `pgs.Settings`、`pgs.ReposManager` 全局（阶段 4/5 处理配置热加载与多实例）。
-7. **接入层生命周期缺失**：`h.server` 每连接并发赋值（`http.go:74-77`，自身即 race）；每连接新建 `http.Server`；
-   `singleConnListener.Close()` 不关底层连接（`http.go:91`）；无 `ReadHeaderTimeout/IdleTimeout`；
-   `requestLogger` 包装的 ResponseWriter 无 `Flusher/ReaderFrom`；退出用 `os.Exit`（`main.go:111`）无优雅关闭。
+7. ~~**接入层生命周期缺失**~~ → **阶段 4 已修**（408f394）：共享 `http.Server` + 连接通道 listener
+   （修复连接滞留）；`ReadHeaderTimeout`/`IdleTimeout`；`MuxServer.Shutdown` 优雅关闭替代 `os.Exit`。
+   **仍存**：`requestLogger` 包装的 ResponseWriter 未实现 `Flusher/ReaderFrom`（对 SSE/大响应转发有影响）。
 8. ~~**可观测性空白**~~ → **阶段 5 已修**：`/healthz` + `/metrics`（Prometheus 文本格式，无第三方依赖）、
    `slog` 结构化日志（text/json、`X-Request-Id`、级别分层，逐对象日志降 DEBUG）；
    配置经 SIGHUP 热加载。**仍存**：ROADMAP 的 mirror webhook 未实现（阶段 6）。
 
 ## 4. P2：技术债清单
 
-- 权限位过宽：`os.ModePerm`(`repository.go:140`)、`0o777`(`loose.go:82`、`refs.go:232,237`)。
+- ~~权限位过宽~~ → 阶段 4 已收紧（目录 `0o750` / 文件 `0o640`）。
 - `parsePackedRefs` 每次调用全量重解析，更新 N 个 ref 时每 ref 一次（`refs.go:176,202,244`）→ O(n²) 磁盘读；
   `List()` 的 `filepath.Walk` 同理。
 - `ForEachRefs` 每请求读+解析每个 ref 的对象（`browse.go:279`），`GET /repos/{name}` 每次都做，无缓存无分页；
   `listRepos` 调 `List()` 两次（`http.go:113-114`）。
-- 错误分类靠 `strings.Contains(err.Error(), "not exist")`（`http.go:373-378`）。
-- git URL 用**首个** `.git/` 切分（`http.go:477`）→ 含 `.git/` 段的 alias 不可访问，应改 `LastIndex`。
-- `InitBare` 用 `os.Mkdir` 失败无回滚（`repository.go:140-162`），残留半成品目录被扫描静默跳过（`manager.go:84-87`）。
+- ~~错误分类靠字符串匹配~~ → 阶段 4 已改哨兵错误 + `errors.Is`。
+- ~~git URL 用首个 `.git/` 切分~~ → 阶段 4 已改 `LastIndex`（含 `.git/` 段的 alias 可访问）。
+- ~~`InitBare` 失败无回滚~~ → 阶段 4 已加回滚（失败时移除半成品目录）。
 - `apidocs.go` 手写静态 JSON，与 chi 路由双份维护。
-- 无 CI/lint/fuzz；测试零并发、零畸形输入用例（本次 race 与两个 panic 全在盲区）；e2e 需 `PGIT_E2E=1`。
+- ~~测试零并发/零畸形输入~~ → 阶段 1/3 已补（concurrency_test、hardening_test、fuzz 目标）。
+  **仍存**：无 CI/lint 门禁；e2e 需 `PGIT_E2E=1` 手工跑；测试调真实 git 需注入 `commit.gpgsign=false`（阶段 4 已加固）。
 - 依赖 `chi v4.0.2`（2019）。
 
 ## 5. 分阶段改造计划
@@ -148,14 +149,15 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
   clone 峰值 RSS −27%（产物与旧实现字节级一致）。
 - 已取舍得证：单遍编码避免重复解压，代价（+22% 时间）来自对象不再常驻内存。
 
-### 阶段 4：接入层生命周期（安全部分仅记录，暂不实施）
+### 阶段 4：接入层生命周期（已完成，408f394；安全部分仅记录，暂不实施）
 
 - 安全（用户表/权限/SSH 密钥/TLS）：**策略已记录于 `docs/security-policy.md`，暂不实施**。
-- 本阶段实施范围收敛为与安全无关的接入层生命周期问题：
-  - 修 `singleConnListener.Close()` 不关闭底层连接（keep-alive 连接滞留）；
-  - 加 `ReadHeaderTimeout/IdleTimeout`（slowloris）与请求体读取超时；
-  - 优雅关闭：`http.Server.Shutdown` + 等待进行中的 pack 传输与同步，替换 `os.Exit`；
-  - P2 收尾：git URL 用 `LastIndex(".git/")` 切分、错误分类改哨兵错误、`InitBare` 失败回滚。
+- 已实施（408f394）：
+  - 共享 `http.Server` + `connChanListener`：修复 keep-alive 连接滞留（原 `singleConnListener.Close` 不关底层连接）；
+  - `ReadHeaderTimeout`(15s)/`IdleTimeout`(120s)；协议探测 peek 超时 10s（原有）；
+  - 优雅关闭 `MuxServer.Shutdown`（等活动中请求与 SSH 会话，30s 上限），`main.go` 不再 `os.Exit` 硬切；
+  - P2 收尾：哨兵错误 + `errors.Is`、`LastIndex(".git/")`、`InitBare` 失败回滚、权限位收紧。
+- 未做：`requestLogger` 的 ResponseWriter 未实现 `Flusher/ReaderFrom`。
 
 ### 阶段 5：运维与可观测性（已完成，6647da7 / 16d7f50 / 875c80d）
 

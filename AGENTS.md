@@ -44,7 +44,7 @@ internal/pgs/git/             纯 Go git wire protocol v0 服务端（无第三�
   fetch.go                    纯 Go fetch 客户端：FetchRemote（HTTP smart-http upload-pack 客户端）+ FetchAuth + FetchResult；复用 PktReader/PackDecoder/LooseStore/RefStore；sideband demux + ref 镜像更新（CAS 含删除）+ HEAD best-effort 更新；done 后首帧接受 NAK 或 ACK <oid>（cgit 基本模式兼容）
 
 internal/pgs/server/          网络服务层
-  mux.go                      协议探测分发：peek 前缀 SSH- → SSH 否则 HTTP；peekConn 回放缓冲
+  mux.go                      协议探测分发（peek 前缀 SSH- → SSH 否则 HTTP）+ 共享 http.Server（ReadHeaderTimeout/IdleTimeout）+ connChanListener 投递连接 + peekConn 回放缓冲 + Shutdown 优雅关闭（等活动中请求/SSH 会话，超时强断，幂等）
   http.go                     chi 路由(/api/v1/* + /{webuiPrefix}/* + alias.git 兜底，HTTPHandler 持有 Manager/Settings/Sync) + 管理 API handler + git smart-http 传输（接入 git 包，Content-Encoding: gzip 自动解压）+ Basic Auth + 请求日志中间件（方法/路径/状态码/耗时/用户/远程地址）
   ssh.go                      SSHHandler：host key 支持 ed25519（生成）/RSA（兼容旧 PKCS1）+ exec payload 解析 alias（剥离前导 `/`）→ repo（仓库路径用 repo.Path()）；env 请求明确 Reply(false) 拒绝 GIT_PROTOCOL v2，客户端确定性降级 v0
   web.go                      WebUI：embed 嵌入 web/ 资源 + ExportWebUI 导出 + serveWebUI（静态资源 + SPA fallback + 前缀注入）
@@ -106,6 +106,8 @@ type MirrorConfig struct {
 - `peekConn` 包装 conn，首次 Read 回放 peek 的字节再透传底层。
 - HTTP 侧用 `singleConnListener` 包装单连接喂给 `http.Server.Serve`。
 - SSH 侧直接 `ssh.NewServerConn(peekedConn, config)`。
+- **连接生命周期**：所有 HTTP 连接共用 MuxServer 内置的单个 `http.Server`（超时：ReadHeader 15s / Idle 120s；协议探测 peek 10s）；`MuxServer.Shutdown(ctx)` 停止 Accept、等待活动中请求与 SSH 会话、超时强制断开。`main.go` 的 SIGINT/SIGTERM 走优雅关闭（30s 上限）后再退出。
+- 错误分类用哨兵错误（`pgs.ErrRepoNotFound` 等）+ `errors.Is`，不要字符串匹配 `err.Error()`。
 - **SSH 认证是全放行桩**（`PasswordCallback`/`PublicKeyCallback` 都返回 nil，且不读用户名）—— 不要假设认证被强制执行。HTTP 侧仅全局 Basic 凭据（明文比对，`httpAuth` 默认 false）。无 per-repo 权限、无 TLS。TLS 不实现（HTTPS 交由外层反向代理）。目标策略与决策见 `docs/security-policy.md`（**仅记录，暂不实施**）。
 - **SSH host key**：默认生成 **ed25519** 密钥（PKCS8 PEM 写盘）；旧的 RSA hostkey（PKCS1 + `PRIVATE KEY` Type）兼容解析。RSA signer 自动通告 `rsa-sha2-256/512`，现代 OpenSSH 客户端（≥8.8 默认禁用 ssh-rsa）免额外配置即可连接（历史原因见 `CHANGELOG.md`）。
 - **SSH exec 路径解析**：git 客户端 exec 参数形如 `git-upload-pack /alias.git`，alias 解析先 `TrimPrefix("/")` 再 `TrimSuffix(".git")`，与 HTTP alias 一致（不含 `/`）。
@@ -156,10 +158,11 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 
 ## 测试与质量
 
-- `internal/pgs`：`log_test.go`（级别/格式解析与标准库 log 重定向）、`metrics_test.go`（文本格式/标签转义/并发采集）、`config_hotreload_test.go`（热加载生效/需重启回报/非法拒绝/并发无竞态）、`concurrency_test.go`、`repository_test.go`（InitBare 与 pgit.json/自定义默认分支、Manager 双索引与扫描恢复、alias 增删与校验、SetDefaultBranch、CreateMirrorRepository、MirrorBackwardCompat、URL 校验）、`repository_browse_test.go`（Tree/Blob/Archive/ForEachRef 端到端，构造 loose 对象）、`concurrency_test.go`（Manager 并发读写无崩溃、快照隔离、sync 注册回归、sync 与设置更新并发）、`sync_log_test.go`、`sync_manager_test.go`、`task_test.go`（约 6 秒）。
-- `internal/pgs/server`：`ssh_test.go` 走真实 TCP + x/crypto 客户端（upload-pack clone 全量交换验证 pack 对象、receive-pack push 验证 ref+loose 落盘、mirror 仓库 push 拒绝 stderr），无需 git/ssh 二进制；`TestSSHClonePushE2E` 需 `PGIT_E2E=1` + git/ssh 二进制。
+- `internal/pgs`：`errors.go` 哨兵错误；`hardening2_test.go`（哨兵错误/InitBare 回滚/权限位）、`log_test.go`（级别/格式解析与标准库 log 重定向）、`metrics_test.go`（文本格式/标签转义/并发采集）、`config_hotreload_test.go`（热加载生效/需重启回报/非法拒绝/并发无竞态）、`concurrency_test.go`、`repository_test.go`（InitBare 与 pgit.json/自定义默认分支、Manager 双索引与扫描恢复、alias 增删与校验、SetDefaultBranch、CreateMirrorRepository、MirrorBackwardCompat、URL 校验）、`repository_browse_test.go`（Tree/Blob/Archive/ForEachRef 端到端，构造 loose 对象）、`concurrency_test.go`（Manager 并发读写无崩溃、快照隔离、sync 注册回归、sync 与设置更新并发）、`sync_log_test.go`、`sync_manager_test.go`、`task_test.go`（约 6 秒）。
+- `internal/pgs/server`：`mux_test.go`（并发连接/关闭回收连接/Shutdown 幂等与等待进行中请求/Serve 返回）、`health_test.go`、`limit_test.go`、`ssh_test.go` 走真实 TCP + x/crypto 客户端（upload-pack clone 全量交换验证 pack 对象、receive-pack push 验证 ref+loose 落盘、mirror 仓库 push 拒绝 stderr），无需 git/ssh 二进制；`TestSSHClonePushE2E` 需 `PGIT_E2E=1` + git/ssh 二进制。
 - `internal/pgs/git`：`loose_test`/`store_test`（内存 ObjectStore 驱动浏览 API/可达性/REF_DELTA 回查）/`stream_test`（流式解码内存对比、WalkReachable 只 Stat、单遍 encodePack 等价性）/`hardening_test`（畸形输入回归 + fuzz）/`delta_test`/`pack_test`/`refs_test`/`reach_test`/`browse_test`/`protocol_test`/`fetch_test`/`e2e_test`，覆盖 delta 应用与生成 roundtrip、deltaPrecheck 预检、桶扫描限制、pack 编解码（与真实 git pack、index-pack 互验）、ofs-delta 回环、ref CAS/symref/packed-refs、可达性 BFS 与 have 差量过滤、treeIsh/tree/blob/ForEachRefs、v0 状态机 + sideband、增量 fetch（have flush/多 POST/无 done 等）、fetch 客户端（initial/incremental/up-to-date/empty/basic auth/ref 删除/ACK 响应，httptest + 自身协议当远程，无需外部 git）；e2e 集成需 `PGIT_E2E=1`。`go test ./...` 通过。
 - 无 linter/formatter/CI 配置。用 `go vet ./...` 和 `go build` 验证。
+- 测试中调用真实 `git` 时必须注入 `-c commit.gpgsign=false`（见 `internal/pgs/git/gitcmd_test.go` 的 `newGitCmd`）：否则用户的全局 `commit.gpgsign=true` 会让 `git commit` 等待 GPG 口令直至超时。
 
 ## 工作流
 
