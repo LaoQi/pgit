@@ -183,27 +183,29 @@ func (s *RefStore) getOid(name string) (Oid, error) {
 	return "", fmt.Errorf("ref %q not found", name)
 }
 
-// readCurrentOid 读 ref 现值（loose 没有则查 packed-refs；都没有 ZeroOid）。
-// 支持 symref 跟随。供 Update CAS 校验用。
-func (s *RefStore) readCurrentOid(name string) (Oid, error) {
+// readCurrentOid 读 ref 现值（loose 没有则查 packed；都没有 ZeroOid）。
+// 支持 symref 跟随。供 Update CAS 校验用；packed 为调用方解析好的 packed-refs 视图
+// （nil 表示需要时自行解析）。
+func (s *RefStore) readCurrentOid(name string, packed map[string]Oid) (Oid, error) {
 	path := filepath.Join(s.Root, name)
 	data, err := os.ReadFile(path)
 	if err == nil {
 		line := strings.TrimSpace(string(data))
 		if strings.HasPrefix(line, "ref: ") {
 			target := strings.TrimSpace(line[len("ref: "):])
-			return s.readCurrentOid(target)
+			return s.readCurrentOid(target, packed)
 		}
 		return Oid(line), nil
 	}
 	if !os.IsNotExist(err) {
 		return "", err
 	}
-	m, err := s.parsePackedRefs()
-	if err != nil {
-		return "", err
+	if packed == nil {
+		if packed, err = s.parsePackedRefs(); err != nil {
+			return "", err
+		}
 	}
-	if oid, ok := m[name]; ok {
+	if oid, ok := packed[name]; ok {
 		return oid, nil
 	}
 	return ZeroOid, nil
@@ -216,15 +218,21 @@ func (s *RefStore) Update(updates []RefUpdate) ([]RefUpdateResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// packed-refs 只解析一次：此前每个 ref 都重新解析整个文件（N 个 ref → O(N²) 磁盘读）。
+	packed, err := s.parsePackedRefs()
+	if err != nil {
+		return nil, err
+	}
+
 	results := make([]RefUpdateResult, 0, len(updates))
 	for _, u := range updates {
-		results = append(results, s.updateOne(u))
+		results = append(results, s.updateOne(u, packed))
 	}
 	return results, nil
 }
 
-// updateOne 处理单个 ref 更新。
-func (s *RefStore) updateOne(u RefUpdate) RefUpdateResult {
+// updateOne 处理单个 ref 更新。packed 是本次操作共用的 packed-refs 视图。
+func (s *RefStore) updateOne(u RefUpdate, packed map[string]Oid) RefUpdateResult {
 	path := filepath.Join(s.Root, u.Name)
 	lockPath := path + ".lock"
 
@@ -240,8 +248,8 @@ func (s *RefStore) updateOne(u RefUpdate) RefUpdateResult {
 	}
 	defer os.Remove(lockPath) // rename 成功后此 Remove 无效；失败时清理
 
-	// 读现值
-	currentOid, err := s.readCurrentOid(u.Name)
+	// 读现值（共用本次操作的 packed-refs 视图）
+	currentOid, err := s.readCurrentOid(u.Name, packed)
 	if err != nil {
 		lf.Close()
 		return RefUpdateResult{Name: u.Name, Reason: "read current: " + err.Error()}

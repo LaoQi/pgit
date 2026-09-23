@@ -1,8 +1,11 @@
 package git
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // RefInfo 是带元数据的 ref 视图，供浏览 API 使用。
@@ -13,7 +16,7 @@ type RefInfo struct {
 	Oid       Oid
 	Author    string // committer 或 tagger 的名字
 	Email     string
-	Timestamp int64 // committer 或 tagger 的 Unix 时间戳
+	Timestamp int64  // committer 或 tagger 的 Unix 时间戳
 	Subject   string // message 首行
 }
 
@@ -252,13 +255,45 @@ func CommitLog(store ObjectStore, startOid Oid, limit int) ([]CommitInfo, error)
 	return out, nil
 }
 
+// refsCacheEntry 缓存某个仓库的 for-each-ref 结果。
+// fingerprint 由 refs 名与 oid 构图 —— push/fetch 改变任一 ref 都会使其变化，
+// 因此无需额外的失效通知（refs 本身很便宜，每个 ref 的对象解析才是代价大头）。
+type refsCacheEntry struct {
+	fingerprint string
+	refs        []RefInfo
+}
+
+var refsCache sync.Map // repoRoot -> *refsCacheEntry
+
+// refsFingerprint 计算 refs 视图的指纹（名字 + oid）。
+func refsFingerprint(refs []Ref) string {
+	h := sha1.New()
+	for _, r := range refs {
+		fmt.Fprintf(h, "%s\x00%s\x00", r.Name, r.Oid)
+		if r.Symref != nil {
+			fmt.Fprintf(h, "->%s\x00", *r.Symref)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// InvalidateRefsCache 清除指定仓库的 for-each-ref 缓存（仓库删除时调用）。
+func InvalidateRefsCache(repoRoot string) { refsCache.Delete(repoRoot) }
+
 // ForEachRefs 列出仓库所有 ref（不含 HEAD）及其元数据。
+// 结果按 refs 指纹缓存：refs 未变时直接返回，避免每请求都读取并解析每个 ref 的对象。
 // ref 指向的对象读取失败时该 ref 被跳过（损坏仓库不阻断整体枚举）。
 func ForEachRefs(repoRoot string) ([]RefInfo, error) {
 	rs := NewRefStore(repoRoot)
 	refs, err := rs.List()
 	if err != nil {
 		return nil, fmt.Errorf("for-each-ref: list: %w", err)
+	}
+	fingerprint := refsFingerprint(refs)
+	if v, ok := refsCache.Load(repoRoot); ok {
+		if e, ok := v.(*refsCacheEntry); ok && e.fingerprint == fingerprint {
+			return e.refs, nil
+		}
 	}
 	store := NewObjectStore(repoRoot)
 	out := make([]RefInfo, 0, len(refs))
@@ -299,5 +334,6 @@ func ForEachRefs(repoRoot string) ([]RefInfo, error) {
 		}
 		out = append(out, info)
 	}
+	refsCache.Store(repoRoot, &refsCacheEntry{fingerprint: fingerprint, refs: out})
 	return out, nil
 }

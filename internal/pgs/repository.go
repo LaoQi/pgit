@@ -205,6 +205,7 @@ func InitBare(gitRoot string, name string, description string, defaultBranch str
 }
 
 func (repo Repository) Delete() error {
+	git.InvalidateRefsCache(repo.Path())
 	return os.RemoveAll(repo.Path())
 }
 

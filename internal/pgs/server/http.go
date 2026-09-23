@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"compress/gzip"
 	"context"
 	"crypto/rand"
@@ -177,9 +178,10 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 func (h *HTTPHandler) listRepos(w http.ResponseWriter, r *http.Request) {
+	repos := h.Manager.List() // 取一次：此前调用两次会各自构造切片
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"total":        len(h.Manager.List()),
-		"repositories": h.Manager.List(),
+		"total":        len(repos),
+		"repositories": repos,
 	})
 }
 
@@ -701,15 +703,69 @@ func unauthorized(w http.ResponseWriter, realm string) {
 	_, _ = w.Write([]byte("Unauthorized"))
 }
 
+// responseStatusWriter 记录响应状态码，并透传底层 ResponseWriter 的可选能力。
+// 若不实现这些接口，下游 handler 对 Flush/大文件转发/长连接的处理会退化
+// （例如 http.ResponseWriter 的 io.ReaderFrom 快速路径失效、SSE 无法即时刷新）。
 type responseStatusWriter struct {
 	http.ResponseWriter
 	status int
+	wrote  bool
 }
 
 func (w *responseStatusWriter) WriteHeader(code int) {
+	if w.wrote {
+		return // 与 net/http 语义一致：重复 WriteHeader 无效
+	}
+	w.wrote = true
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
 }
+
+func (w *responseStatusWriter) Write(p []byte) (int, error) {
+	if !w.wrote {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+// Flush 透传（SSE/流式响应需要）。
+func (w *responseStatusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack 透传（协议升级，如 websocket）。
+func (w *responseStatusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return h.Hijack()
+}
+
+// Push 透传（HTTP/2 server push）。
+func (w *responseStatusWriter) Push(target string, opts *http.PushOptions) error {
+	p, ok := w.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+	return p.Push(target, opts)
+}
+
+// ReadFrom 走底层快速路径（io.Copy 大响应时避免额外拷贝）。
+func (w *responseStatusWriter) ReadFrom(r io.Reader) (int64, error) {
+	if !w.wrote {
+		w.WriteHeader(http.StatusOK)
+	}
+	if rf, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	return io.Copy(w.ResponseWriter, r)
+}
+
+// Unwrap 供 http.ResponseController 访问底层 writer。
+func (w *responseStatusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // requestIDHeader 是请求 ID 的入口/出口头名（透传客户端提供的值，否则服务端生成）。
 const requestIDHeader = "X-Request-Id"
