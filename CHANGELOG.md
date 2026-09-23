@@ -3,6 +3,21 @@
 pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；变更过程、缺陷修复、
 性能调优与历史决策收录于此。条目按时间倒序，括注提交短 hash。
 
+## 2026-09-23
+
+**refactor(concurrency): 阶段 1 并发地基**（8769cb0）
+- `RepositoriesManager` 引入 `RWMutex`，对外方法返回 `Repository` 快照（`Snapshot()`），元数据落盘统一在锁内
+  - 修复：并发 map 读写导致的 `fatal error: concurrent map read and map write`（进程级退出，recover 拦不住）
+  - 修复：`Aliases`/`Mirror` 字段竞态与 `SaveMetadata` 全量覆盖导致的元数据丢更新
+- `SyncRepository` 改为「锁内取配置快照 → 无锁 fetch → 锁内回写 `LastSync/LastError`」
+- `UpdateRepositorySettings` 返回旧 `SyncInterval`（供调用方判断是否重建调度），且不再修改调用方入参
+- `SyncManager` 重构：修复「手动同步过的镜像仓库此后 Register 静默失效、定时同步永不启动」；
+  per-repo `inflight` 判重取代 scheduler 占位；`Stop()` 加 WaitGroup 且可重复调用；合并 `doSync`/`SyncNow` 重复逻辑
+- `HTTPHandler` 去掉每连接共享的 `server` 字段（其自身即 data race）
+- task 系统：`status` 改由 `GetStatus`/`SetStatus` 保护；启动前置 Running 防止重复派发；
+  失败任务回调后移除（原实现每秒重复回调且不移除）
+- 新增 `internal/pgs/concurrency_test.go`：并发读写、快照隔离、sync 注册回归、sync 与设置更新并发
+
 ## 2026-08-19
 
 **perf(git): upload-pack 加速**（ecea7a2）

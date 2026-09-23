@@ -52,6 +52,12 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
 
 本地样例 `repo/vistty.git` 仅 36MB/1540 对象，故当前无感；GB 级仓库必然失败。
 
+### 2.6 task 系统状态竞态与重复派发（阶段 1 `-race` 新发现）
+
+`Task.Status` 由执行 goroutine 写、调度循环读（`task_manager.go:27` vs `task.go:49`），实测 race；
+且 `TSOpen` 任务在派发时未先置 Running → 下一轮重复派发；`TSFailed` 分支不移除任务 → 每秒重复回调。
+阶段 1 已修（`GetStatus/SetStatus` + 派发前置 Running + 终态移除），并加调度完结断言。
+
 ### 2.5 认证/授权几乎为零
 
 `PasswordCallback`/`PublicKeyCallback` 一律放行（`ssh.go:86-92`）；HTTP 单一全局 Basic 凭据、明文比对
@@ -98,7 +104,7 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
 
 每阶段独立可交付、独立提交；验收统一为 `go build ./... && go vet ./... && go test -race ./...`（含新增回归测试）。
 
-### 阶段 1：并发地基（_进行中_）
+### 阶段 1：并发地基（已完成，8769cb0）
 
 - 目标：消除 race 与 fatal map 崩溃；元数据写入串行化；sync 注册状态自洽。
 - 内容：
@@ -110,7 +116,9 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
      `Stop()` 加 WaitGroup；合并 `doSync`/`SyncNow` 重复逻辑。
   5. `HTTPHandler.server` 改局部变量（每连接一个 Server），消除自身 race。
   6. 新增并发回归测试（3 个）覆盖上述竞态。
+- 额外：修复 task 系统状态竞态/重复派发/失败任务重复回调（附录 A-5，`-race` 发现）。
 - 验收：新增测试在 `-race` 下通过；`fatal error: concurrent map read and map write` 不再可复现（附录 A-1 场景）。
+  `go build ./... && go vet ./... && go test -race ./...` 全绿。
 
 ### 阶段 2：存储抽象与去全局化
 
@@ -184,11 +192,19 @@ A-3 畸形 delta（copy 指令字段截断）：
 ApplyDelta(nil, []byte{0x00, 0x01, 0x81}) // panic: index out of range [3] with length 3
 ```
 
-A-4 手动同步后注册定时同步失效：
+A-4 手动同步后注册定时同步失效（阶段 1 前的 bug，已修并加回归测试 `TestSyncRegisterAfterManualSync`）：
 
 ```go
 // 镜像仓库 m1（RemoteURL 指向不可达地址即可，SyncNow 失败也会占用 mirrors 槽位）
 SyncMgr.SyncNow("m1")      // scheduler present=true stop=false
 SyncMgr.Register(repo)     // interval=60，应启动 ticker
 // 结果：map 已有同名键 → Register 早退，stop 仍为 nil（定时同步永不启动）
+```
+
+A-5 task 系统竞态（阶段 1 由 `go test -race` 发现）：
+
+```
+WARNING: DATA RACE
+  Read at ... by goroutine 10: (*TaskManager).Run()   task_manager.go:27
+  Previous write ... : (*Task).Process()              task.go:49
 ```
