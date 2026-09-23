@@ -65,7 +65,8 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
 （`http.go:609-625`）；无 per-repo 权限、无 token、无 TLS（`main.go` 仅 `net.Listen`）。
 
 **处置：目标策略、决策与兼容性说明记录于 `docs/security-policy.md`（决策 A：SSH 忽略用户名只认密钥；
-决策 B：`sshAuthType` 默认 `none` 保持现状；决策 C：仅自带证书，暂不引入 ACME）。当前阶段不实施。**
+决策 B：`sshAuthType` 默认 `none` 保持现状；决策 C：**pgit 不实现 TLS**，HTTPS 交由外层反向代理）。
+当前阶段不实施。**
 
 ## 3. P1：架构级限制（扩展主要阻力）
 

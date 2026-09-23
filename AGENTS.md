@@ -105,7 +105,7 @@ type MirrorConfig struct {
 - `peekConn` 包装 conn，首次 Read 回放 peek 的字节再透传底层。
 - HTTP 侧用 `singleConnListener` 包装单连接喂给 `http.Server.Serve`。
 - SSH 侧直接 `ssh.NewServerConn(peekedConn, config)`。
-- **SSH 认证是全放行桩**（`PasswordCallback`/`PublicKeyCallback` 都返回 nil，且不读用户名）—— 不要假设认证被强制执行。HTTP 侧仅全局 Basic 凭据（明文比对，`httpAuth` 默认 false）。无 per-repo 权限、无 TLS。目标策略与决策见 `docs/security-policy.md`（**仅记录，暂不实施**）。
+- **SSH 认证是全放行桩**（`PasswordCallback`/`PublicKeyCallback` 都返回 nil，且不读用户名）—— 不要假设认证被强制执行。HTTP 侧仅全局 Basic 凭据（明文比对，`httpAuth` 默认 false）。无 per-repo 权限、无 TLS。TLS 不实现（HTTPS 交由外层反向代理）。目标策略与决策见 `docs/security-policy.md`（**仅记录，暂不实施**）。
 - **SSH host key**：默认生成 **ed25519** 密钥（PKCS8 PEM 写盘）；旧的 RSA hostkey（PKCS1 + `PRIVATE KEY` Type）兼容解析。RSA signer 自动通告 `rsa-sha2-256/512`，现代 OpenSSH 客户端（≥8.8 默认禁用 ssh-rsa）免额外配置即可连接（历史原因见 `CHANGELOG.md`）。
 - **SSH exec 路径解析**：git 客户端 exec 参数形如 `git-upload-pack /alias.git`，alias 解析先 `TrimPrefix("/")` 再 `TrimSuffix(".git")`，与 HTTP alias 一致（不含 `/`）。
 
