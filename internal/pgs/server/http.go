@@ -13,14 +13,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/go-chi/chi"
 
 	"pgit/internal/pgs"
 	"pgit/internal/pgs/git"
@@ -60,56 +57,68 @@ func (h *HTTPHandler) acquirePack(ctx context.Context) bool {
 func (h *HTTPHandler) releasePack() { <-h.packSem }
 
 func (h *HTTPHandler) buildRouter() http.Handler {
-	r := chi.NewRouter()
+	// 探针与指标：独立 mux，只挂请求日志与请求 ID，不挂 BasicAuth。
+	probe := http.NewServeMux()
+	probe.HandleFunc("GET /healthz", h.healthz)
+	probe.HandleFunc("GET /metrics", h.metrics)
 
-	// 探针与指标：独立的 Group，只挂请求日志与请求 ID，不挂 BasicAuth
-	// （chi 要求中间件先于路由声明，故用 Group 而非在 r.Use 后注册）。
-	r.Group(func(r chi.Router) {
-		r.Use(requestIDMiddleware)
-		r.Use(requestLogger)
-		r.Get("/healthz", h.healthz)
-		r.Get("/metrics", h.metrics)
-	})
+	// 管理 API：独立 mux，随后整体套一层鉴权与日志中间件。
+	api := http.NewServeMux()
+	api.HandleFunc("GET /api/v1/{$}", h.serveAPIDocs)
+	api.HandleFunc("GET /api/v1/repos", h.listRepos)
+	api.HandleFunc("POST /api/v1/repos/{name}", h.createRepo)
+	api.HandleFunc("GET /api/v1/repos/{name}", h.getRepo)
+	api.HandleFunc("DELETE /api/v1/repos/{name}", h.deleteRepo)
+	api.HandleFunc("POST /api/v1/repos/{name}/aliases", h.addAlias)
+	api.HandleFunc("DELETE /api/v1/repos/{name}/aliases/{alias}", h.removeAlias)
+	api.HandleFunc("POST /api/v1/repos/{name}/default-branch", h.setDefaultBranch)
+	api.HandleFunc("POST /api/v1/repos/{name}/settings", h.updateSettings)
+	api.HandleFunc("GET /api/v1/repos/{name}/tree/{ref}/{path...}", h.tree)
+	api.HandleFunc("GET /api/v1/repos/{name}/blob/{ref}/{path...}", h.blob)
+	api.HandleFunc("GET /api/v1/repos/{name}/archive/{ref}", h.archive)
+	api.HandleFunc("GET /api/v1/repos/{name}/commits/{ref}", h.commits)
+	api.HandleFunc("POST /api/v1/repos/{name}/sync", h.syncRepo)
+	api.HandleFunc("GET /api/v1/repos/{name}/sync-log", h.syncLog)
+	api.HandleFunc("GET /api/v1/repos/{name}/mirror-status", h.mirrorStatus)
 
-	r.Group(func(r chi.Router) {
-		r.Use(requestIDMiddleware)
-		r.Use(requestLogger)
+	prefix := "/" + h.Settings.WebUIPrefix
+
+	// 两组中间件链：
+	//   probeChain —— 请求 ID + 请求日志（探针/抓取端无需凭据）
+	//   mainChain  —— 请求 ID + 请求日志 +（可选）Basic Auth
+	probeChain := func(next http.Handler) http.Handler {
+		return requestIDMiddleware(requestLogger(next))
+	}
+	mainChain := func(next http.Handler) http.Handler {
+		next = requestIDMiddleware(requestLogger(next))
 		if h.Settings.HttpAuth {
-			r.Use(basicAuth("pgit", h.Settings))
+			next = basicAuth("pgit", h.Settings)(next)
 		}
+		return next
+	}
 
-		prefix := "/" + h.Settings.WebUIPrefix
+	// 主 mux。路由优先级由 ServeMux 的「更具体模式优先」规则决定：
+	// 精确模式（探针/API/WebUI）压过 "/" 兜底（git 传输）。
+	root := http.NewServeMux()
+	root.Handle("/healthz", probeChain(probe))
+	root.Handle("/metrics", probeChain(probe))
+	root.Handle("/api/v1/", mainChain(api))
+	// WebUI 前缀为空时 prefix 退化为 "/"，会与下面的 "GET /{$}" 冲突；
+	// 此种情况跳过 WebUI 路由（配置校验保证运行期 prefix 非空）。
+	if prefix != "/" {
+		root.Handle("GET "+prefix, mainChain(http.HandlerFunc(h.serveWebUI)))
+		root.Handle("GET "+prefix+"/", mainChain(http.HandlerFunc(h.serveWebUI)))
+	}
+	root.Handle("GET /{$}", mainChain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, prefix+"/", http.StatusFound)
+	})))
+	root.Handle("/", mainChain(http.HandlerFunc(h.gitTransport)))
 
-		r.Route("/api/v1", func(r chi.Router) {
-			r.Get("/", h.serveAPIDocs)
-			r.Get("/repos", h.listRepos)
-			r.Post("/repos/{name}", h.createRepo)
-			r.Get("/repos/{name}", h.getRepo)
-			r.Delete("/repos/{name}", h.deleteRepo)
-			r.Post("/repos/{name}/aliases", h.addAlias)
-			r.Delete("/repos/{name}/aliases/{alias}", h.removeAlias)
-			r.Post("/repos/{name}/default-branch", h.setDefaultBranch)
-			r.Post("/repos/{name}/settings", h.updateSettings)
-			r.Get("/repos/{name}/tree/{ref}/*", h.tree)
-			r.Get("/repos/{name}/blob/{ref}/*", h.blob)
-			r.Get("/repos/{name}/archive/{ref}", h.archive)
-			r.Get("/repos/{name}/commits/{ref}", h.commits)
-			r.Post("/repos/{name}/sync", h.syncRepo)
-			r.Get("/repos/{name}/sync-log", h.syncLog)
-			r.Get("/repos/{name}/mirror-status", h.mirrorStatus)
-		})
-
-		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, prefix+"/", http.StatusFound)
-		})
-		r.Get(prefix, h.serveWebUI)
-		r.Get(prefix+"/*", h.serveWebUI)
-
-		r.NotFound(h.gitTransport)
-	})
-
-	return r
+	return root
 }
+
+// pathParam 读取路径参数（stdlib ServeMux 的 PathValue 封装）。
+func pathParam(r *http.Request, name string) string { return r.PathValue(name) }
 
 // healthz 健康检查：进程存活 + 仓库根可读 + 同步管理器就绪。
 func (h *HTTPHandler) healthz(w http.ResponseWriter, r *http.Request) {
@@ -186,7 +195,7 @@ func (h *HTTPHandler) listRepos(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) createRepo(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+	name := pathParam(r, "name")
 	description := r.FormValue("description")
 	defaultBranch := r.FormValue("defaultBranch")
 
@@ -231,7 +240,7 @@ func (h *HTTPHandler) createRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) getRepo(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+	name := pathParam(r, "name")
 	repo, err := h.Manager.GetRepository(name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
@@ -251,7 +260,7 @@ func (h *HTTPHandler) getRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) deleteRepo(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+	name := pathParam(r, "name")
 	confirm := r.FormValue("confirm")
 	if confirm != name {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("confirm mismatch, expected %s", name))
@@ -268,7 +277,7 @@ func (h *HTTPHandler) deleteRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) addAlias(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+	name := pathParam(r, "name")
 	alias := r.FormValue("alias")
 	if err := h.Manager.AddAlias(name, alias); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -279,8 +288,8 @@ func (h *HTTPHandler) addAlias(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) removeAlias(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
-	alias := chi.URLParam(r, "alias")
+	name := pathParam(r, "name")
+	alias := pathParam(r, "alias")
 	if err := h.Manager.RemoveAlias(name, alias); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -290,7 +299,7 @@ func (h *HTTPHandler) removeAlias(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) setDefaultBranch(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+	name := pathParam(r, "name")
 	branch := r.FormValue("branch")
 	if branch == "" {
 		writeError(w, http.StatusBadRequest, "branch is required")
@@ -312,11 +321,8 @@ func (h *HTTPHandler) setDefaultBranch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) tree(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
-	ref := chi.URLParam(r, "ref")
-	if unesc, err := url.QueryUnescape(ref); err == nil {
-		ref = unesc
-	}
+	name := pathParam(r, "name")
+	ref := pathParam(r, "ref")
 	repo, err := h.Manager.GetRepository(name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
@@ -329,7 +335,7 @@ func (h *HTTPHandler) tree(w http.ResponseWriter, r *http.Request) {
 			ref = "master"
 		}
 	}
-	subtree := chi.URLParam(r, "*")
+	subtree := pathParam(r, "path")
 	files, err := repo.Tree(ref, subtree)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -339,11 +345,8 @@ func (h *HTTPHandler) tree(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) blob(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
-	ref := chi.URLParam(r, "ref")
-	if unesc, err := url.QueryUnescape(ref); err == nil {
-		ref = unesc
-	}
+	name := pathParam(r, "name")
+	ref := pathParam(r, "ref")
 	repo, err := h.Manager.GetRepository(name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
@@ -356,7 +359,7 @@ func (h *HTTPHandler) blob(w http.ResponseWriter, r *http.Request) {
 			ref = "master"
 		}
 	}
-	path := chi.URLParam(r, "*")
+	path := pathParam(r, "path")
 	if path == "" {
 		writeError(w, http.StatusBadRequest, "path is empty")
 		return
@@ -372,11 +375,8 @@ func (h *HTTPHandler) blob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) archive(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
-	ref := chi.URLParam(r, "ref")
-	if unesc, err := url.QueryUnescape(ref); err == nil {
-		ref = unesc
-	}
+	name := pathParam(r, "name")
+	ref := pathParam(r, "ref")
 	repo, err := h.Manager.GetRepository(name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
@@ -401,11 +401,8 @@ func (h *HTTPHandler) archive(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) commits(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
-	ref := chi.URLParam(r, "ref")
-	if unesc, err := url.QueryUnescape(ref); err == nil {
-		ref = unesc
-	}
+	name := pathParam(r, "name")
+	ref := pathParam(r, "ref")
 	repo, err := h.Manager.GetRepository(name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
@@ -433,7 +430,7 @@ func (h *HTTPHandler) commits(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) syncRepo(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+	name := pathParam(r, "name")
 	if h.Sync == nil {
 		writeError(w, http.StatusInternalServerError, "sync manager not initialized")
 		return
@@ -459,7 +456,7 @@ func (h *HTTPHandler) syncRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) syncLog(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+	name := pathParam(r, "name")
 	repo, err := h.Manager.GetRepository(name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
@@ -487,7 +484,7 @@ func (h *HTTPHandler) syncLog(w http.ResponseWriter, r *http.Request) {
 
 // mirrorStatus 返回镜像仓库的调度/同步状态（含上次错误与下次触发时间）。
 func (h *HTTPHandler) mirrorStatus(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+	name := pathParam(r, "name")
 	if h.Sync == nil {
 		writeError(w, http.StatusInternalServerError, "sync manager not initialized")
 		return
@@ -505,7 +502,7 @@ func (h *HTTPHandler) mirrorStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+	name := pathParam(r, "name")
 	repo, err := h.Manager.GetRepository(name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())

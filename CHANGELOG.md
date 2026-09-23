@@ -5,6 +5,20 @@ pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；�
 
 ## 2026-09-24
 
+**refactor(server): 移除 chi，路由改用标准库 http.ServeMux**
+- `buildRouter` 重写：探针（`/healthz`、`/metrics`）与主路由各用一个 `http.ServeMux`，
+  中间件链拆为 `probeChain`（请求 ID + 日志，不鉴权）与 `mainChain`（+ 可选 Basic Auth）；
+  alias.git 传输以 `HandleFunc("/", h.gitTransport)` 兜底，靠 ServeMux「更具体模式优先」压过精确路由
+- 21 处 `chi.URLParam` → `r.PathValue`（`{path...}` 捕获多段 rest）；**删除 4 处 `url.QueryUnescape(ref)`**
+  —— chi 返回原始转义值需补偿，stdlib 直接返回已解码值，保留会导致二次解码
+- 行为差异（有意）：未注册方法返回 **405**（stdlib 语义），此前落 `NotFound` 兜底再 404；
+  `GET /api/v1`（无尾斜杠）走 ServeMux 隐式 307 → `/api/v1/`
+- 依赖清理：移除 `github.com/go-chi/chi v4.0.2`（2019，`+incompatible`）与**未被引用的**
+  `github.com/go-chi/docgen`（连带 `go-chi/render`）；`go.mod` 仅剩 argparse 与 `golang.org/x/crypto`
+- 新增 `internal/pgs/server/router_test.go`：全部管理路由不落兜底、405、git 兜底、根重定向、
+  多段前缀、编码 ref（`%2F`）命中、探针绕过鉴权
+
+
 **perf(server,git): 清理技术债 B/C/D**（9a7c7f7）
 - B 中间件 ResponseWriter 透传可选能力：补 `Flush`/`Hijack`/`Push`/`ReadFrom`/`Unwrap`
   （此前包装后丢失，SSE 无法即时刷新、大响应 `io.Copy` 失去快速路径）；

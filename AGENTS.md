@@ -45,7 +45,7 @@ internal/pgs/git/             纯 Go git wire protocol v0 服务端（无第三�
 
 internal/pgs/server/          网络服务层
   mux.go                      协议探测分发（peek 前缀 SSH- → SSH 否则 HTTP）+ 共享 http.Server（ReadHeaderTimeout/IdleTimeout）+ connChanListener 投递连接 + peekConn 回放缓冲 + Shutdown 优雅关闭（等活动中请求/SSH 会话，超时强断，幂等）
-  http.go                     chi 路由(/api/v1/* + /{webuiPrefix}/* + alias.git 兜底，HTTPHandler 持有 Manager/Settings/Sync) + 管理 API handler + git smart-http 传输（接入 git 包，Content-Encoding: gzip 自动解压）+ Basic Auth + 请求日志/请求 ID 中间件（responseStatusWriter 透传 Flush/Hijack/Push/ReadFrom/Unwrap）
+  http.go                     路由（标准库 http.ServeMux，Go 1.22+ 方法/通配符模式：/api/v1/* + /{webuiPrefix}/* + alias.git 走 "/" 兜底，HTTPHandler 持有 Manager/Settings/Sync）+ 管理 API handler + git smart-http 传输（接入 git 包，Content-Encoding: gzip 自动解压）+ Basic Auth + 请求日志/请求 ID 中间件（responseStatusWriter 透传 Flush/Hijack/Push/ReadFrom/Unwrap）
   ssh.go                      SSHHandler：host key 支持 ed25519（生成）/RSA（兼容旧 PKCS1）+ exec payload 解析 alias（剥离前导 `/`）→ repo（仓库路径用 repo.Path()）；env 请求明确 Reply(false) 拒绝 GIT_PROTOCOL v2，客户端确定性降级 v0
   web.go                      WebUI：embed 嵌入 web/ 资源 + ExportWebUI 导出 + serveWebUI（静态资源 + SPA fallback + 前缀注入）
   apidocs.go                  API 文档端点：GET /api/v1/ 返回 13 个管理 API 的结构化描述 JSON
@@ -139,7 +139,7 @@ WebUI（`/{webuiPrefix}/`，默认 `__webui`，受 `HttpAuth` 鉴权）：
 Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 - `GET /{alias}.git/info/refs`、`POST /{alias}.git/git-{command}`
 
-> chi v4 路由优先级：`/api/v1/*` 与 `/{webuiPrefix}/*` 显式注册先匹配；alias.git 走 `r.NotFound` 兜底，handler 内找 `.git/` 分割 alias 与子路径。`webuiPrefix` 默认 `__webui`，可配置为多段（如 `custom/ui`）。
+> 路由用标准库 `http.ServeMux`（Go 1.22+ 模式路由，无第三方依赖）：`/api/v1/` 与 `/{webuiPrefix}/` 以精确模式注册，alias.git 走 `HandleFunc("/", h.gitTransport)` 兜底；ServeMux 的「更具体模式优先」保证精确路由压过 `/` 兜底。路径参数用 `r.PathValue("name"|"ref"|"alias"|"path")`（`path...` 捕获多段 rest 路径），且**值已解码**——不要再做 `url.QueryUnescape`（旧 chi 需补偿、现已移除）。`webuiPrefix` 默认 `__webui`，可配置为多段（如 `custom/ui`）。未注册方法返回 405（stdlib 语义）。
 
 ## 配置与运行
 
@@ -161,7 +161,7 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 - `internal/pgs`：`errors.go` 哨兵错误；`hardening2_test.go`（哨兵错误/InitBare 回滚/权限位）、`log_test.go`（级别/格式解析与标准库 log 重定向）、`metrics_test.go`（文本格式/标签转义/并发采集）、`config_hotreload_test.go`（热加载生效/需重启回报/非法拒绝/并发无竞态）、`concurrency_test.go`、`repository_test.go`（InitBare 与 pgit.json/自定义默认分支、Manager 双索引与扫描恢复、alias 增删与校验、SetDefaultBranch、CreateMirrorRepository、MirrorBackwardCompat、URL 校验）、`repository_browse_test.go`（Tree/Blob/Archive/ForEachRef 端到端，构造 loose 对象）、`concurrency_test.go`（Manager 并发读写无崩溃、快照隔离、sync 注册回归、sync 与设置更新并发）、`sync_log_test.go`、`sync_manager_test.go`、`task_test.go`（约 6 秒）。
 - `internal/pgs/server`：`mux_test.go`（并发连接/关闭回收连接/Shutdown 幂等与等待进行中请求/Serve 返回）、`health_test.go`、`limit_test.go`、`ssh_test.go` 走真实 TCP + x/crypto 客户端（upload-pack clone 全量交换验证 pack 对象、receive-pack push 验证 ref+loose 落盘、mirror 仓库 push 拒绝 stderr），无需 git/ssh 二进制；`TestSSHClonePushE2E` 需 `PGIT_E2E=1` + git/ssh 二进制。
 - `internal/pgs/git`：`loose_test`/`store_test`（内存 ObjectStore 驱动浏览 API/可达性/REF_DELTA 回查）/`stream_test`（流式解码内存对比、WalkReachable 只 Stat、单遍 encodePack 等价性）/`hardening_test`（畸形输入回归 + fuzz）/`delta_test`/`pack_test`/`refs_test`/`reach_test`/`browse_test`/`protocol_test`/`fetch_test`/`e2e_test`，覆盖 delta 应用与生成 roundtrip、deltaPrecheck 预检、桶扫描限制、pack 编解码（与真实 git pack、index-pack 互验）、ofs-delta 回环、ref CAS/symref/packed-refs、可达性 BFS 与 have 差量过滤、treeIsh/tree/blob/ForEachRefs、v0 状态机 + sideband、增量 fetch（have flush/多 POST/无 done 等）、fetch 客户端（initial/incremental/up-to-date/empty/basic auth/ref 删除/ACK 响应，httptest + 自身协议当远程，无需外部 git）；e2e 集成需 `PGIT_E2E=1`。`go test ./...` 通过。
-- 无 linter/formatter/CI 配置。用 `go vet ./...` 和 `go build` 验证。
+- 无 linter/formatter/CI 配置。用 `go vet ./...` 和 `go build` 验证。路由层无第三方依赖（`http.ServeMux`）。
 - 测试中调用真实 `git` 时必须注入 `-c commit.gpgsign=false`（`internal/pgs/git/gitcmd_test.go` 的 `newGitCmd`、`internal/pgs/testmain_test.go` 调低重试次数）（见 `internal/pgs/git/gitcmd_test.go` 的 `newGitCmd`）：否则用户的全局 `commit.gpgsign=true` 会让 `git commit` 等待 GPG 口令直至超时。
 
 ## 工作流

@@ -105,10 +105,10 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
 - ~~错误分类靠字符串匹配~~ → 阶段 4 已改哨兵错误 + `errors.Is`。
 - ~~git URL 用首个 `.git/` 切分~~ → 阶段 4 已改 `LastIndex`（含 `.git/` 段的 alias 可访问）。
 - ~~`InitBare` 失败无回滚~~ → 阶段 4 已加回滚（失败时移除半成品目录）。
-- `apidocs.go` 手写静态 JSON，与 chi 路由双份维护。
+- `apidocs.go` 手写静态 JSON，与路由双份维护。
 - ~~测试零并发/零畸形输入~~ → 阶段 1/3 已补（concurrency_test、hardening_test、fuzz 目标）。
   **仍存**：无 CI/lint 门禁；e2e 需 `PGIT_E2E=1` 手工跑；测试调真实 git 需注入 `commit.gpgsign=false`（阶段 4 已加固）。
-- 依赖 `chi v4.0.2`（2019）。
+- ~~依赖 `chi v4.0.2`（2019）~~ → **已移除**：路由改用标准库 `http.ServeMux`（Go 1.22+），同时清掉未使用的 `go-chi/docgen`（及其 `go-chi/render`），`go.mod` 仅剩 argparse 与 `x/crypto`。
 
 ## 5. 分阶段改造计划
 

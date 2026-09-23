@@ -67,8 +67,9 @@
   `PGIT_E2E=1` 的端到端作业单独跑（需 git/ssh 二进制）。
 - **lint**：引入 `golangci-lint`（至少 `govet`/`staticcheck`/`errcheck`/`ineffassign`）。
   注意：测试中调用真实 git 必须注入 `-c commit.gpgsign=false`（见 AGENTS.md）。
-- **依赖**：`chi v4.0.2`（2019）。评估升级到 v5 或换用标准库 `http.ServeMux`（1.22+ 已支持方法+通配符路由，
-  可去掉 chi 依赖与手写 `NotFound` 兜底）。升级需回归路由优先级（`/api/v1/*`、`{webuiPrefix}/*`、alias 兜底）。
+- ~~**依赖**：`chi v4.0.2`（2019）。~~ → **已移除**：换用标准库 `http.ServeMux`（1.22+ 方法+通配符路由），
+  同时清掉未使用的 `go-chi/docgen`。路由优先级（`/api/v1/`、`{webuiPrefix}/`、alias 兜底）已由
+  ServeMux「更具体模式优先」覆盖并有 `router_test.go` 回归。
 
 ## E6. 其他零散项
 
