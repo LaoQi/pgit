@@ -59,7 +59,8 @@
   大仓库 `GET /repos/{name}` 的 refs 列表同理。
 - **ETag / 条件请求**：tree/blob/commits 响应加 ETag（基于 ref 指纹 + 路径），支持 `If-None-Match` 走 304。
   可复用 `ForEachRefs` 已有的 refs 指纹。
-- **`List()` 每请求全量 `filepath.Walk`**：为仓库索引加目录 mtime 快照或定期扫描，避免每次列表都 walk。
+- **`RefStore.List()` 每请求全量 `filepath.Walk`**：`ForEachRefs`/upload-pack 每次调用都 walk `refs/` 目录（`refs.go`）。
+  可按目录 mtime 快照或定期扫描避免每次全量 walk（注意：`RepositoriesManager.List()` 只遍历内存索引，不受影响）。
 
 ## E5. 工程基建（优先级：中）
 
@@ -73,7 +74,7 @@
 
 ## E6. 其他零散项
 
-- `apidocs.go` 手写静态 JSON 与 chi 路由双份维护 → 由路由表生成（需先在路由注册时收集元数据）。
+- `apidocs.go` 手写静态 JSON 与路由双份维护 → 由路由表生成（需先在路由注册时收集元数据）。
 - `DELETE /api/v1/repos/{name}` 的 `confirm` 只能走 query：`r.FormValue` 不解析 DELETE 的 body
   （net/http 仅对 POST/PUT/PATCH 解析表单）。apidocs 已正确标注 `In: "query"`，无需修改；
   但 WebUI/第三方客户端需注意勿用 body 传 `confirm`（否则 400）。

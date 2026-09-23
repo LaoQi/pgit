@@ -1,4 +1,9 @@
-# 镜像仓库功能 实施方案
+# 镜像仓库功能 实施方案（历史记录）
+
+> **历史实施记录**：本文记录镜像仓库功能（2026-07-10）的实施过程与当时的接口设计。
+> 此后经阶段 1–5 重构，以下细节已变更：`SyncManager` 改为依赖注入（`NewSyncManager(manager)`，
+> 无全局 `SyncMgr`/`InitSyncManager`）、fetch 加分层超时与重试、接入层引入优雅关闭；
+> `main.go` 的 `checkEnv` 已移除。当前架构见 `AGENTS.md`。
 
 ## 概述
 
@@ -61,7 +66,7 @@
   - doSync: 防重入 -> SyncRepository -> 构建 entry -> AppendSyncLog
   - SyncNow: 临时创建 scheduler(无 stop) -> 防重入 -> 同步 -> 返回 *SyncLogEntry(trigger=manual)
   - Stop: 遍历 close all stop，清空 map
-  - 全局单例 var SyncMgr *SyncManager + InitSyncManager()
+  - ~~全局单例 var SyncMgr *SyncManager + InitSyncManager()~~ → 后续改为依赖注入 `NewSyncManager(manager)`（阶段 2-3）
 - **验证标准**: `go build ./...` + `go vet ./...` + `go test ./internal/pgs/` 通过
 - **测试**: sync_log_test.go(3) + sync_manager_test.go(2)
 - **审计结果**: ✅ 通过。build/vet/test 全绿。syncing 防重入设计正确(per-scheduler mutex 不持锁执行同步)。SyncNow 临时 scheduler 兼容 Unregister 的 stop!=nil 检查。
@@ -71,9 +76,9 @@
 - **状态**: 已审计
 - **目标**: HTTP API 支持镜像仓库创建、手动同步、查询同步日志；启动时注册已有镜像仓库
 - **实施内容**:
-  - `http.go`: createRepo 镜像扩展(mirrorUrl 表单字段) + syncRepo handler(POST sync,错误码映射404/400/409/500) + syncLog handler(GET sync-log,limit默认50) + deleteRepo 注销 SyncMgr
+  - `http.go`: createRepo 镜像扩展(mirrorUrl 表单字段) + syncRepo handler(POST sync,错误码映射404/400/409/500) + syncLog handler(GET sync-log,limit默认50) + deleteRepo 注销同步调度（现经注入的 `*SyncManager`）
   - `apidocs.go`: createRepo 新增 5 个 mirror 参数 + sync 端点 + sync-log 端点文档
-  - `main.go`: 移除 checkEnv + InitSyncManager + 遍历注册镜像仓库 + 信号处理 Stop
+  - `main.go`: ~~移除 checkEnv + InitSyncManager~~ + 遍历注册镜像仓库 + 信号处理 Stop（后经阶段 4 改为 `Shutdown(30s)` + `SyncMgr.Stop()` 优雅关闭）
 - **验证标准**: `go build ./...` + `go vet ./...` + `go test ./...` 全部通过
 - **审计结果**: ✅ 通过。build/vet/test 全绿。API 错误码映射完整，apidocs 同步更新，main.go 启动流程正确。
 
@@ -84,4 +89,4 @@
 | 2026-07-10 | 阶段 3 | 实施完成 | sync_log.go + sync_manager.go，5 新测试通过 |
 | 2026-07-10 | 阶段 4 | 实施完成 | http.go + apidocs.go + main.go |
 | 2026-07-10 | 阶段 4 | 审计通过 | build/vet/test 全绿 |
-| 2026-07-10 | 最终 | 全部完成 | 4 阶段全部审计通过，83 测试通过，AGENTS.md 已更新 |
+| 2026-07-10 | 最终 | 全部完成 | 4 阶段全部审计通过，当时 83 测试通过，AGENTS.md 已更新（现测试数 218，架构见 AGENTS.md） |

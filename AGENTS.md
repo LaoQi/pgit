@@ -90,7 +90,7 @@ type MirrorConfig struct {
 - 协议 v0 only（不广告 v2，客户端自动降级）；启用 sideband-64k（pack 走 ch1，进度走 ch2）
 - upload-pack 广告 caps 不含 `multi_ack_detailed`（基本模式 v0 多轮 negotiation）：wants+flush → haves 分批（每批 flush 处回 NAK，不带 flush pkt）→ done → NAK+PACK+flush。HTTP stateless_rpc 下每个 POST 是一次 `ServeUploadPack` 调用：have 批 flush 后请求体 EOF 即 `return`（仅已发 NAK），含 done 的 POST 才发 NAK+PACK+flush；SSH 流式下 have flush 后 continue。
 - upload-pack 支持 have 过滤增量 fetch：`CollectReachable` 接收 `haveOids` 可变参数，从 have 出发 BFS 标记排除集，want 可达但 have 也可达的对象不发送；want 全部被 have 覆盖时仅发 NAK+flush 不发 PACK
-- push 安全仅 old-oid CAS，不限制 force-push，无大小上限；receive-pack 日志中通过 `isFastForward` BFS 检测非快进推送并标记 `[force-push]`（仅审计日志，不拒绝）
+- push 安全仅 old-oid CAS，不限制 force-push；请求体受 `maxPushBytes` 上限（默认 2GiB）与 `maxConcurrentPacks`（默认 4）约束；receive-pack 日志中通过 `isFastForward` BFS 检测非快进推送并标记 `[force-push]`（仅审计日志，不拒绝）
 - **mirror 仓库禁止 push**：HTTP `gitTransport`（`http.go`）与 SSH `handleSession`（`ssh.go`）在协议入口最外层拦截 `git-receive-pack`（HTTP 同时拦截 `info/refs?service=git-receive-pack` 广告阶段），`repo.IsMirror()` 为真时返回 403 / SSH stderr `fatal: mirror repository: push disabled` + exit 1。upload-pack（clone/fetch）不受影响
 - receive-pack 空命令列表请求（body 仅 flush-pkt，无 ref 更新、无 packfile）容忍并返回空 report-status（unpack ok + flush-pkt）
 - 对象完整性逐对象 SHA1 重算校验，不做可达性检查

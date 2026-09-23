@@ -34,15 +34,18 @@
 
 ### 2.3 SSH 鉴权
 
-- `sshAuthType` 配置项语义明确化（当前该字段存在但**未生效**）：
+- `sshAuthType` 配置项语义明确化（当前该字段存在但**未生效**——`ssh.go` 的
+  `PasswordCallback`/`PublicKeyCallback` 一律放行，不读该配置；其默认值为 `password`，
+  见 `config.go` `init()`，与 `none` 行为相同，仅因未强制而等价）：
   - `none`：全放行（等价当前行为，仅建议在纯内网/测试使用）
   - `password`：校验用户表口令
   - `publickey`：校验 `authorizedKeys`
 - **决策 A（已定）**：SSH **忽略用户名，只认密钥**（`~git` 惯用做法）。
   服务端由密钥反查所属用户。好处：现有 `ssh://coco@host:port/alias.git` 形式的 URL **无需修改**，
   只需登记公钥。
-- 决策 B（已定）：`sshAuthType` 默认值保持 `none`（即延续当前全放行行为），
-  需要鉴权必须显式配置——避免升级后意外中断既有 clone。
+- 决策 B（已定）：**默认行为保持全放行**，需要鉴权必须显式配置——避免升级后意外中断既有 clone。
+  （注：`config.go` 当前默认写的是 `password`，但因该字段未强制，`password` 与 `none` 行为相同；
+  实施时应统一为 `none` 或让 `password` 真正生效，两者取其一。）
 
 ### 2.4 传输加密（决策 C：不做，交由外层处理）
 
