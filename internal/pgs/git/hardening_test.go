@@ -170,9 +170,11 @@ func FuzzReadOfsDelta(f *testing.F) {
 	f.Add(encodeOfsDelta(12345))
 
 	f.Fuzz(func(t *testing.T, b []byte) {
-		off, n, err := readOfsDelta(b, 0)
-		if err == nil && (n <= 0 || n > len(b) || off < 0) {
-			t.Fatalf("inconsistent result: off=%d n=%d len=%d", off, n, len(b))
+		d := NewPackDecoder(bytes.NewReader(b))
+		off, err := d.readOfsDelta()
+		// offset 是「相对当前对象起始」的回退距离，其上界由调用方校验
+		if err == nil && (off < 0 || d.stream.pos > int64(len(b))) {
+			t.Fatalf("inconsistent result: off=%d pos=%d len=%d", off, d.stream.pos, len(b))
 		}
 	})
 }

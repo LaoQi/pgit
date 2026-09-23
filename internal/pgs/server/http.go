@@ -2,6 +2,7 @@ package server
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,13 +26,33 @@ type HTTPHandler struct {
 	Settings *pgs.Setting
 	Sync     *pgs.SyncManager
 	router   http.Handler
+
+	// packSem 限制并发的 pack 传输（clone/push），避免并发大仓库请求耗尽内存/fd。
+	packSem chan struct{}
 }
 
 func NewHTTPHandler(manager *pgs.RepositoriesManager, settings *pgs.Setting, syncMgr *pgs.SyncManager) *HTTPHandler {
-	h := &HTTPHandler{Manager: manager, Settings: settings, Sync: syncMgr}
+	h := &HTTPHandler{
+		Manager:  manager,
+		Settings: settings,
+		Sync:     syncMgr,
+		packSem:  make(chan struct{}, settings.LimitConcurrentPacks()),
+	}
 	h.router = h.buildRouter()
 	return h
 }
+
+// acquirePack 获取一个 pack 传输名额；ctx 结束时放弃等待。
+func (h *HTTPHandler) acquirePack(ctx context.Context) bool {
+	select {
+	case h.packSem <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (h *HTTPHandler) releasePack() { <-h.packSem }
 
 func (h *HTTPHandler) buildRouter() http.Handler {
 	r := chi.NewRouter()
@@ -77,8 +98,8 @@ func (h *HTTPHandler) HandleConn(conn net.Conn) {
 }
 
 type singleConnListener struct {
-	conn    net.Conn
-	served  bool
+	conn   net.Conn
+	served bool
 }
 
 func (l *singleConnListener) Accept() (net.Conn, error) {
@@ -536,6 +557,18 @@ func (h *HTTPHandler) infoRefs(w http.ResponseWriter, r *http.Request, repoPath 
 }
 
 func (h *HTTPHandler) gitCommand(w http.ResponseWriter, r *http.Request, repoPath string, command string) {
+	// receive-pack 请求体上限（含 packfile）；upload-pack 请求体小，无需限制。
+	if command == "receive-pack" && h.Settings.LimitPushBytes() > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, h.Settings.LimitPushBytes())
+	}
+
+	// 并发 pack 传输限流：超限时排队，客户端断开即放弃。
+	if !h.acquirePack(r.Context()) {
+		http.Error(w, "server busy", http.StatusServiceUnavailable)
+		return
+	}
+	defer h.releasePack()
+
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-git-%s-result", command))
 	w.WriteHeader(http.StatusOK)
 

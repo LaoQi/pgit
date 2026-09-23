@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -22,6 +23,23 @@ const (
 // logLevel 是进程级日志级别（pgs.Reload 经 SetLogLevel 注入）。
 // 用 atomic 保存：配置注入与并发请求（ServeUploadPack/ReceivePack）可能同时发生。
 var logLevel atomic.Int32
+
+// maxReceivePackBytes 是单次 receive-pack 可接受的 pack 上限（安全兜底）。
+// 由 pgs 配置（maxPushBytes）经 SetMaxReceivePackBytes 注入。
+var maxReceivePackBytes atomic.Int64
+
+func init() { maxReceivePackBytes.Store(defaultMaxReceivePackBytes) }
+
+// defaultMaxReceivePackBytes 是未配置时的兜底上限（4 GiB）。
+const defaultMaxReceivePackBytes int64 = 4 << 30
+
+// SetMaxReceivePackBytes 设置单次 receive-pack 的 pack 大小上限（<=0 表示用默认值）。
+func SetMaxReceivePackBytes(v int64) {
+	if v <= 0 {
+		v = defaultMaxReceivePackBytes
+	}
+	maxReceivePackBytes.Store(v)
+}
 
 // SetLogLevel 设置 git 包日志级别（pgs.Reload 调用），并发安全。
 func SetLogLevel(l LogLevel) { logLevel.Store(int32(l)) }
@@ -327,7 +345,12 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 // out: report-status（sideband ch1 或直接 pkt-line）。
 // push 仅 CAS（old-oid 校验），不做可达性检查，逐对象 SHA1 校验。
 func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
-	pr := NewPktReader(in)
+	// bufio 包装：既能给 PktReader 精确读帧，又可在 ref 更新结束后 peek 是否还有 pack。
+	br, ok := in.(*bufio.Reader)
+	if !ok {
+		br = bufio.NewReader(in)
+	}
+	pr := NewPktReader(br)
 	pw := NewPktWriter(out)
 
 	// 1. 读首行 ref update + caps
@@ -365,33 +388,27 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 		}
 	}
 
-	// 3. 读 packfile（剩余 in 全部）
-	remaining, err := io.ReadAll(in)
-	if err != nil {
-		return fmt.Errorf("receive-pack: read pack: %w", err)
-	}
-	var objs []*RawObject
+	// 3+4. 流式读 packfile 并逐对象落盘：对象内容不入内存（峰值 ≈ 单个最大对象 +
+	//      其 delta base），SHA1 在写入前逐对象重算校验。total 上限由 maxReceivePackBytes 兜底。
 	store := NewObjectStore(repoRoot)
-	if len(remaining) > 0 {
-		dec := NewPackDecoder(bytes.NewReader(remaining), store)
-		objs, err = dec.Decode()
-		if err != nil {
-			return fmt.Errorf("receive-pack: decode pack: %w", err)
-		}
+	received := 0
+	packErr := error(nil)
+	if _, err := br.Peek(1); err == nil {
+		dec := NewPackDecoder(io.LimitReader(br, maxReceivePackBytes.Load()))
+		received, packErr = dec.DecodeTo(store)
 	}
-
-	// 4. 逐对象 SHA1 重算校验 + LooseStore.Write
-	for _, obj := range objs {
-		oid := obj.Oid()
-		if !oid.Valid() {
-			return fmt.Errorf("receive-pack: invalid oid for %s size %d", obj.Type, obj.Size)
+	if packErr != nil {
+		// pack 不可用（超限/损坏）：不更新任何 ref，但必须回 report-status 让客户端
+		// 立刻得到明确拒绝，而不是等待连接关闭。
+		log.Printf("receive-pack: pack rejected: %v", packErr)
+		rejected := make([]RefUpdateResult, 0, len(updates))
+		for _, u := range updates {
+			rejected = append(rejected, RefUpdateResult{Name: u.Name})
 		}
-		if _, err := store.Write(obj); err != nil {
-			return fmt.Errorf("receive-pack: write %s: %w", oid, err)
-		}
+		return writeReportStatus(out, clientCaps, rejected, packErr)
 	}
-	if len(objs) > 0 {
-		log.Printf("receive-pack: received %d objects", len(objs))
+	if received > 0 {
+		log.Printf("receive-pack: received %d objects", received)
 	}
 
 	// 5. RefStore.Update（per-ref 原子 CAS）
@@ -417,6 +434,14 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 	}
 
 	// 6. 回 report-status
+	return writeReportStatus(out, clientCaps, results, nil)
+}
+
+// writeReportStatus 输出 report-status（unpack 行 + 每 ref 结果 + flush）。
+// sideband 客户端下 pkt-line 经 ch1 封装，并在最后额外发一个外层 flush。
+// unpackErr 非 nil 时所有 ref 记为 ng（如 pack 超限/损坏）。
+func writeReportStatus(out io.Writer, clientCaps string, results []RefUpdateResult, unpackErr error) error {
+	pw := NewPktWriter(out)
 	useSideband := strings.Contains(clientCaps, "side-band-64k")
 	var statusPw *PktWriter
 	if useSideband {
@@ -427,14 +452,21 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 	} else {
 		statusPw = pw
 	}
-	if err := statusPw.WritePktString("unpack ok\n"); err != nil {
+	unpackLine := "unpack ok\n"
+	if unpackErr != nil {
+		unpackLine = fmt.Sprintf("unpack error: %v\n", unpackErr)
+	}
+	if err := statusPw.WritePktString(unpackLine); err != nil {
 		return fmt.Errorf("receive-pack: write unpack status: %w", err)
 	}
 	for _, r := range results {
 		var line string
-		if r.Ok {
+		switch {
+		case unpackErr != nil:
+			line = fmt.Sprintf("ng %s unpacker error\n", r.Name)
+		case r.Ok:
 			line = fmt.Sprintf("ok %s\n", r.Name)
-		} else {
+		default:
 			line = fmt.Sprintf("ng %s %s\n", r.Name, r.Reason)
 		}
 		if err := statusPw.WritePktString(line); err != nil {

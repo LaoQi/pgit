@@ -1,7 +1,9 @@
 package git
 
 import (
+	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -21,12 +23,12 @@ type FetchAuth struct {
 
 // FetchResult fetch 操作结果
 type FetchResult struct {
-	ObjectsWritten int  // 写入 loose store 的对象数
-	RefsUpdated    int  // 创建/更新的 ref 数
-	RefsDeleted    int  // 删除的 ref 数(本地有但远程无)
-	UpToDate       bool // true = 无新对象(want 全被 have 覆盖)
-	Wants          int  // want oid 数
-	Haves          int  // have oid 数
+	ObjectsWritten int   // 写入 loose store 的对象数
+	RefsUpdated    int   // 创建/更新的 ref 数
+	RefsDeleted    int   // 删除的 ref 数(本地有但远程无)
+	UpToDate       bool  // true = 无新对象(want 全被 have 覆盖)
+	Wants          int   // want oid 数
+	Haves          int   // have oid 数
 	PackSize       int64 // pack 数据字节数
 }
 
@@ -159,64 +161,68 @@ func FetchRemote(remoteURL, repoRoot string, auth *FetchAuth) (*FetchResult, err
 		return nil, fmt.Errorf("fetch: expected NAK or ACK, got %q", firstPayload)
 	}
 
-	var packBuf bytes.Buffer
-	if useSideband {
-		for {
-			payload, isFlush, err := pr.ReadPkt()
-			if err != nil {
-				return nil, fmt.Errorf("fetch: read sideband: %w", err)
-			}
-			if isFlush {
-				break
-			}
-			if len(payload) < 1 {
-				continue
-			}
-			switch payload[0] {
-			case SidebandPack:
-				packBuf.Write(payload[1:])
-			case SidebandProgress:
-				log.Printf("remote: %s", string(payload[1:]))
-			case SidebandError:
-				return nil, fmt.Errorf("fetch: remote error: %s", string(payload[1:]))
-			}
-		}
-	} else {
-		remaining, err := io.ReadAll(postResp.Body)
-		if err != nil {
-			return nil, fmt.Errorf("fetch: read pack: %w", err)
-		}
-		if len(remaining) >= 4 && string(remaining[len(remaining)-4:]) == PktFlush {
-			remaining = remaining[:len(remaining)-4]
-		}
-		packBuf.Write(remaining)
-	}
-
-	if packBuf.Len() == 0 {
-		log.Printf("fetch: wants=%d haves=%d objects=0 (up-to-date)", len(wantOids), len(haveOids))
-		return &FetchResult{UpToDate: true, Wants: len(wantOids), Haves: len(haveOids)}, nil
-	}
-
-	log.Printf("fetch: pack received, size=%d bytes", packBuf.Len())
-
+	// 流式解码：sideband 下用 io.Pipe 把 ch1 数据流喂给解码器（不缓存整个 pack）；
+	// 非 sideband 下直接把响应体交给解码器（尾部 flush-pkt 由解码器容忍）。
 	store := NewObjectStore(repoRoot)
-	dec := NewPackDecoder(bytes.NewReader(packBuf.Bytes()), store)
-	objs, err := dec.Decode()
+	var packSrc io.Reader
+	if useSideband {
+		pr2, pw := io.Pipe()
+		go func() {
+			defer pw.Close()
+			for {
+				payload, isFlush, err := pr.ReadPkt()
+				if err != nil {
+					pw.CloseWithError(fmt.Errorf("read sideband: %w", err))
+					return
+				}
+				if isFlush {
+					return
+				}
+				if len(payload) < 1 {
+					continue
+				}
+				switch payload[0] {
+				case SidebandPack:
+					if _, err := pw.Write(payload[1:]); err != nil {
+						return
+					}
+				case SidebandProgress:
+					log.Printf("remote: %s", string(payload[1:]))
+				case SidebandError:
+					pw.CloseWithError(fmt.Errorf("remote error: %s", string(payload[1:])))
+					return
+				}
+			}
+		}()
+		packSrc = pr2
+	} else {
+		// 非 sideband：响应体可能只是 flush-pkt（无可发送对象）或直接是 pack
+		peek := bufio.NewReader(postResp.Body)
+		if head, err := peek.Peek(4); err == nil && string(head) == PktFlush {
+			log.Printf("fetch: wants=%d haves=%d objects=0 (up-to-date)", len(wantOids), len(haveOids))
+			return &FetchResult{UpToDate: true, Wants: len(wantOids), Haves: len(haveOids)}, nil
+		}
+		packSrc = peek
+	}
+
+	counter := &countingReader{}
+	dec := NewPackDecoder(io.TeeReader(packSrc, counter), store)
+	objectsWritten, err := dec.DecodeTo(store)
 	if err != nil {
+		if isUpToDate(err) {
+			log.Printf("fetch: wants=%d haves=%d objects=0 (up-to-date)", len(wantOids), len(haveOids))
+			return &FetchResult{UpToDate: true, Wants: len(wantOids), Haves: len(haveOids)}, nil
+		}
 		log.Printf("fetch: decode pack failed: %v", err)
 		return nil, fmt.Errorf("fetch: decode pack: %w", err)
 	}
-
-	objectsWritten := 0
-	for _, obj := range objs {
-		oid := obj.Oid()
-		if !oid.Valid() {
-			return nil, fmt.Errorf("fetch: invalid oid for %s size %d", obj.Type, obj.Size)
-		}
-		if _, err := store.Write(obj); err != nil {
-			return nil, fmt.Errorf("fetch: write %s: %w", oid, err)
-		}
-		objectsWritten++
+	if objectsWritten == 0 {
+		log.Printf("fetch: wants=%d haves=%d objects=0 (up-to-date)", len(wantOids), len(haveOids))
+		return &FetchResult{UpToDate: true, Wants: len(wantOids), Haves: len(haveOids)}, nil
+	}
+	packSize := counter.n
+	if packSize == 0 {
+		packSize = int64(objectsWritten)
 	}
 
 	var updates []RefUpdate
@@ -278,7 +284,7 @@ func FetchRemote(remoteURL, repoRoot string, auth *FetchAuth) (*FetchResult, err
 
 	duration := time.Since(fetchStart).Milliseconds()
 	log.Printf("fetch: wants=%d haves=%d objects=%d packSize=%d duration=%dms",
-		len(wantOids), len(haveOids), objectsWritten, packBuf.Len(), duration)
+		len(wantOids), len(haveOids), objectsWritten, packSize, duration)
 
 	return &FetchResult{
 		ObjectsWritten: objectsWritten,
@@ -287,7 +293,7 @@ func FetchRemote(remoteURL, repoRoot string, auth *FetchAuth) (*FetchResult, err
 		UpToDate:       false,
 		Wants:          len(wantOids),
 		Haves:          len(haveOids),
-		PackSize:       int64(packBuf.Len()),
+		PackSize:       packSize,
 	}, nil
 }
 
@@ -362,4 +368,17 @@ func fetchInfoRefs(client *http.Client, remoteURL string, auth *FetchAuth) (map[
 		}
 	}
 	return remoteRefs, serverCaps, nil
+}
+
+// countingReader 作为 io.Writer 统计（Tee 过来的）pack 字节数。
+type countingReader struct{ n int64 }
+
+func (c *countingReader) Write(p []byte) (int, error) {
+	c.n += int64(len(p))
+	return len(p), nil
+}
+
+// isUpToDate 判断解码失败是否属于「无 pack 数据」（服务端仅回 NAK+flush）。
+func isUpToDate(err error) bool {
+	return strings.Contains(err.Error(), "too short") || strings.Contains(err.Error(), "read header") || errors.Is(err, io.EOF)
 }

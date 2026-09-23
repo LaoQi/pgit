@@ -25,6 +25,32 @@ type Setting struct {
 	WebUIPrefix  string            `json:"webuiPrefix"`
 	WebUIAssets  string            `json:"webuiAssets"`
 	LogLevel     string            `json:"logLevel"`
+	// MaxPushBytes 单次 push 请求体上限（字节），0 = 默认 2GiB。
+	MaxPushBytes int64 `json:"maxPushBytes"`
+	// MaxConcurrentPacks 同时进行的 pack 传输（clone/push/fetch 同步）上限，0 = 默认 4。
+	MaxConcurrentPacks int `json:"maxConcurrentPacks"`
+}
+
+// 传输上限默认值。
+const (
+	DefaultMaxPushBytes       int64 = 2 << 30 // 2 GiB
+	DefaultMaxConcurrentPacks       = 4
+)
+
+// LimitPushBytes 返回生效的单次 push 上限。
+func (s *Setting) LimitPushBytes() int64 {
+	if s == nil || s.MaxPushBytes <= 0 {
+		return DefaultMaxPushBytes
+	}
+	return s.MaxPushBytes
+}
+
+// LimitConcurrentPacks 返回生效的并发 pack 传输上限。
+func (s *Setting) LimitConcurrentPacks() int {
+	if s == nil || s.MaxConcurrentPacks <= 0 {
+		return DefaultMaxConcurrentPacks
+	}
+	return s.MaxConcurrentPacks
 }
 
 func (s *Setting) SetConfigPath(path string) {
@@ -61,6 +87,15 @@ func (s *Setting) Reload() error {
 			return fmt.Errorf("webuiAssets dir not accessible: %s", s.WebUIAssets)
 		}
 	}
+	if s.MaxPushBytes < 0 {
+		return fmt.Errorf("maxPushBytes must be >= 0")
+	}
+	if s.MaxConcurrentPacks < 0 {
+		return fmt.Errorf("maxConcurrentPacks must be >= 0")
+	}
+	// 传输上限注入 git 包（pgs → git 单向，避免循环依赖）
+	git.SetMaxReceivePackBytes(s.LimitPushBytes())
+
 	// 日志级别注入 git 包（pgs → git 单向，避免循环依赖）
 	switch s.LogLevel {
 	case "", "off":
