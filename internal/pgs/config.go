@@ -7,11 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"pgit/internal/pgs/git"
 )
 
 type Setting struct {
+	// mu 保护字段读写：配置可经 SIGHUP 热加载（HotReload），而 handler/中间件会并发读。
+	// 直接读字段的旧代码仍可用，但热加载只保证通过方法访问的路径安全。
+	mu   sync.RWMutex
 	path string `json:"-"`
 
 	Listen       string            `json:"listen"`
@@ -40,22 +44,139 @@ const (
 
 // LimitPushBytes 返回生效的单次 push 上限。
 func (s *Setting) LimitPushBytes() int64 {
-	if s == nil || s.MaxPushBytes <= 0 {
+	if s == nil {
 		return DefaultMaxPushBytes
 	}
-	return s.MaxPushBytes
+	s.mu.RLock()
+	v := s.MaxPushBytes
+	s.mu.RUnlock()
+	if v <= 0 {
+		return DefaultMaxPushBytes
+	}
+	return v
 }
 
 // LimitConcurrentPacks 返回生效的并发 pack 传输上限。
 func (s *Setting) LimitConcurrentPacks() int {
-	if s == nil || s.MaxConcurrentPacks <= 0 {
+	if s == nil {
 		return DefaultMaxConcurrentPacks
 	}
-	return s.MaxConcurrentPacks
+	s.mu.RLock()
+	v := s.MaxConcurrentPacks
+	s.mu.RUnlock()
+	if v <= 0 {
+		return DefaultMaxConcurrentPacks
+	}
+	return v
 }
 
 func (s *Setting) SetConfigPath(path string) {
 	s.path = path
+}
+
+// Snapshot 返回配置的深拷贝视图（不含内部锁，供只读消费）。
+func (s *Setting) Snapshot() *SettingView {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v := &SettingView{
+		Listen:             s.Listen,
+		EnableSSH:          s.EnableSSH,
+		SSHHostKey:         s.SSHHostKey,
+		SSHPublicKey:       s.SSHPublicKey,
+		GitRoot:            s.GitRoot,
+		HttpAuth:           s.HttpAuth,
+		SSHAuthType:        s.SSHAuthType,
+		WebUIPrefix:        s.WebUIPrefix,
+		WebUIAssets:        s.WebUIAssets,
+		LogLevel:           s.LogLevel,
+		LogFormat:          s.LogFormat,
+		MaxPushBytes:       s.MaxPushBytes,
+		MaxConcurrentPacks: s.MaxConcurrentPacks,
+	}
+	if s.Credentials != nil {
+		v.Credentials = make(map[string]string, len(s.Credentials))
+		for k, val := range s.Credentials {
+			v.Credentials[k] = val
+		}
+	}
+	return v
+}
+
+// SettingView 是 Setting 的无锁只读快照。
+type SettingView struct {
+	Listen             string
+	EnableSSH          bool
+	SSHHostKey         string
+	SSHPublicKey       string
+	GitRoot            string
+	HttpAuth           bool
+	SSHAuthType        string
+	Credentials        map[string]string
+	WebUIPrefix        string
+	WebUIAssets        string
+	LogLevel           string
+	LogFormat          string
+	MaxPushBytes       int64
+	MaxConcurrentPacks int
+}
+
+// CredentialsCopy 返回凭据表的副本（鉴权中间件每请求调用，避免与热加载竞态）。
+func (s *Setting) CredentialsCopy() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.Credentials == nil {
+		return nil
+	}
+	cp := make(map[string]string, len(s.Credentials))
+	for k, v := range s.Credentials {
+		cp[k] = v
+	}
+	return cp
+}
+
+// WebUI 配置读取（热加载安全）。
+func (s *Setting) WebUIConf() (prefix, assets string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.WebUIPrefix, s.WebUIAssets
+}
+
+// hotReloadFrom 把可热加载字段从 src 应用到 s（须持有写锁）。
+// 返回被忽略的「需重启」字段名列表。
+func (s *Setting) hotReloadFrom(src *Setting) []string {
+	var restartNeeded []string
+	if s.Listen != src.Listen {
+		restartNeeded = append(restartNeeded, "listen")
+	}
+	if s.EnableSSH != src.EnableSSH {
+		restartNeeded = append(restartNeeded, "enableSSH")
+	}
+	if s.GitRoot != src.GitRoot {
+		restartNeeded = append(restartNeeded, "gitRoot")
+	}
+	if s.HttpAuth != src.HttpAuth {
+		restartNeeded = append(restartNeeded, "httpAuth")
+	}
+	if s.SSHAuthType != src.SSHAuthType {
+		restartNeeded = append(restartNeeded, "sshAuthType")
+	}
+	if s.SSHHostKey != src.SSHHostKey || s.SSHPublicKey != src.SSHPublicKey {
+		restartNeeded = append(restartNeeded, "sshHostKey/sshPublicKey")
+	}
+	if s.WebUIPrefix != src.WebUIPrefix {
+		restartNeeded = append(restartNeeded, "webuiPrefix")
+	}
+	if s.WebUIAssets != src.WebUIAssets {
+		restartNeeded = append(restartNeeded, "webuiAssets")
+	}
+
+	// 可热加载字段
+	s.LogLevel = src.LogLevel
+	s.LogFormat = src.LogFormat
+	s.MaxPushBytes = src.MaxPushBytes
+	s.MaxConcurrentPacks = src.MaxConcurrentPacks
+	s.Credentials = src.Credentials
+	return restartNeeded
 }
 
 func (s *Setting) Output() string {
@@ -67,11 +188,32 @@ func (s *Setting) Output() string {
 }
 
 func (s *Setting) Reload() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reloadLocked()
+}
+
+// HotReload 重新读取配置文件，应用可热加载字段（日志级别/格式、传输上限、凭据），
+// 并返回需要重启才能生效的字段名列表。
+func (s *Setting) HotReload() ([]string, error) {
+	fresh := &Setting{}
+	fresh.path = s.path
+	if err := fresh.reloadLocked(); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hotReloadFrom(fresh), nil
+}
+
+// reloadLocked 读取并校验配置（调用方须持有写锁）。
+func (s *Setting) reloadLocked() error {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(data, &s); err != nil {
+	if err := json.Unmarshal(data, s); err != nil {
 		return err
 	}
 	if s.GitRoot == "" {
@@ -95,7 +237,12 @@ func (s *Setting) Reload() error {
 		return fmt.Errorf("maxConcurrentPacks must be >= 0")
 	}
 	// 传输上限注入 git 包（pgs → git 单向，避免循环依赖）
-	git.SetMaxReceivePackBytes(s.LimitPushBytes())
+	// 注意：此处持有写锁，不能调用会取读锁的 LimitPushBytes（自死锁），直接读字段。
+	pushLimit := s.MaxPushBytes
+	if pushLimit <= 0 {
+		pushLimit = DefaultMaxPushBytes
+	}
+	git.SetMaxReceivePackBytes(pushLimit)
 
 	// 日志：初始化 slog（text/json）+ 把标准库 log 重定向到同一 handler
 	debug, err := SetupLogging(s.LogFormat, s.LogLevel)

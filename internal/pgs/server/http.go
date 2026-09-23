@@ -73,7 +73,7 @@ func (h *HTTPHandler) buildRouter() http.Handler {
 		r.Use(requestIDMiddleware)
 		r.Use(requestLogger)
 		if h.Settings.HttpAuth {
-			r.Use(basicAuth("pgit", h.Settings.Credentials))
+			r.Use(basicAuth("pgit", h.Settings))
 		}
 
 		prefix := "/" + h.Settings.WebUIPrefix
@@ -94,6 +94,7 @@ func (h *HTTPHandler) buildRouter() http.Handler {
 			r.Get("/repos/{name}/commits/{ref}", h.commits)
 			r.Post("/repos/{name}/sync", h.syncRepo)
 			r.Get("/repos/{name}/sync-log", h.syncLog)
+			r.Get("/repos/{name}/mirror-status", h.mirrorStatus)
 		})
 
 		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
@@ -501,6 +502,25 @@ func (h *HTTPHandler) syncLog(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// mirrorStatus 返回镜像仓库的调度/同步状态（含上次错误与下次触发时间）。
+func (h *HTTPHandler) mirrorStatus(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if h.Sync == nil {
+		writeError(w, http.StatusInternalServerError, "sync manager not initialized")
+		return
+	}
+	st, err := h.Sync.Status(name)
+	if err != nil {
+		if strings.Contains(err.Error(), "not exist") {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
 func (h *HTTPHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	repo, err := h.Manager.GetRepository(name)
@@ -673,7 +693,9 @@ func (h *HTTPHandler) gitCommand(w http.ResponseWriter, r *http.Request, repoPat
 
 // --- Basic Auth middleware ---
 
-func basicAuth(realm string, credentials map[string]string) func(http.Handler) http.Handler {
+// basicAuth 校验 HTTP Basic 凭据。凭据表每请求从 Setting 取副本，
+// 因此 SIGHUP 热加载更新凭据后立即生效，且与并发读无竞态。
+func basicAuth(realm string, settings *pgs.Setting) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			user, pass, ok := r.BasicAuth()
@@ -681,7 +703,7 @@ func basicAuth(realm string, credentials map[string]string) func(http.Handler) h
 				unauthorized(w, realm)
 				return
 			}
-			valid, found := credentials[user]
+			valid, found := settings.CredentialsCopy()[user]
 			if !found || valid != pass {
 				unauthorized(w, realm)
 				return

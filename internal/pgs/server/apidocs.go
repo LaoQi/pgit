@@ -22,7 +22,7 @@ type apiDocEndpoint struct {
 }
 
 type apiDocData struct {
-	Title     string          `json:"title"`
+	Title     string           `json:"title"`
 	Endpoints []apiDocEndpoint `json:"endpoints"`
 }
 
@@ -32,7 +32,7 @@ var apiDocs = apiDocData{
 		{
 			Method:  "GET",
 			Path:    "/api/v1/repos",
-			Summary:  "List all repositories",
+			Summary: "List all repositories",
 			ResponseExample: `{
   "total": 1,
   "repositories": [
@@ -53,18 +53,18 @@ var apiDocs = apiDocData{
 		{
 			Method:  "POST",
 			Path:    "/api/v1/repos/{name}",
-			Summary:  "Create a new bare repository",
- 			Params: []apiDocParam{
+			Summary: "Create a new bare repository",
+			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name, cannot contain /, .., or start with ."},
 				{Name: "description", In: "form", Required: false, Example: "A demo repo", Desc: "Form field, NOT JSON body"},
-			{Name: "defaultBranch", In: "form", Required: false, Example: "main", Desc: "Default branch name (initial HEAD), defaults to master"},
-			{Name: "mirrorUrl", In: "form", Required: false, Example: "https://github.com/user/repo.git", Desc: "If present, creates a mirror repository that syncs from this remote URL (HTTP/HTTPS only)"},
-			{Name: "mirrorInterval", In: "form", Required: false, Example: "300", Desc: "Sync interval in seconds (0=manual only, default 0). Only used when mirrorUrl is set"},
-			{Name: "mirrorAuthType", In: "form", Required: false, Example: "basic", Desc: "Auth type: 'none' (default) or 'basic'. Only used when mirrorUrl is set"},
-			{Name: "mirrorUsername", In: "form", Required: false, Example: "user", Desc: "Username for basic auth. Only used when mirrorAuthType=basic"},
-			{Name: "mirrorPassword", In: "form", Required: false, Example: "token", Desc: "Password/token for basic auth. Only used when mirrorAuthType=basic"},
-			{Name: "mirrorProxy", In: "form", Required: false, Example: "http://user:pass@127.0.0.1:7890", Desc: "HTTP proxy URL for mirror sync (http(s)://[user:pass@]host:port). Only used when mirrorUrl is set"},
-		},
+				{Name: "defaultBranch", In: "form", Required: false, Example: "main", Desc: "Default branch name (initial HEAD), defaults to master"},
+				{Name: "mirrorUrl", In: "form", Required: false, Example: "https://github.com/user/repo.git", Desc: "If present, creates a mirror repository that syncs from this remote URL (HTTP/HTTPS only)"},
+				{Name: "mirrorInterval", In: "form", Required: false, Example: "300", Desc: "Sync interval in seconds (0=manual only, default 0). Only used when mirrorUrl is set"},
+				{Name: "mirrorAuthType", In: "form", Required: false, Example: "basic", Desc: "Auth type: 'none' (default) or 'basic'. Only used when mirrorUrl is set"},
+				{Name: "mirrorUsername", In: "form", Required: false, Example: "user", Desc: "Username for basic auth. Only used when mirrorAuthType=basic"},
+				{Name: "mirrorPassword", In: "form", Required: false, Example: "token", Desc: "Password/token for basic auth. Only used when mirrorAuthType=basic"},
+				{Name: "mirrorProxy", In: "form", Required: false, Example: "http://user:pass@127.0.0.1:7890", Desc: "HTTP proxy URL for mirror sync (http(s)://[user:pass@]host:port). Only used when mirrorUrl is set"},
+			},
 			RequestExample: `POST /api/v1/repos/my-repo HTTP/1.1
 Content-Type: application/x-www-form-urlencoded
 
@@ -75,7 +75,7 @@ description=A%20demo%20repo&defaultBranch=main`,
   "aliases": ["my-repo"],
   "createdAt": "2026-06-24T10:00:00Z"
 }`,
- 			Curl: `curl -X POST http://localhost:3000/api/v1/repos/my-repo \
+			Curl: `curl -X POST http://localhost:3000/api/v1/repos/my-repo \
   -d "description=A demo repo" \
   -d "defaultBranch=main"`,
 			Notes: []string{
@@ -93,7 +93,7 @@ description=A%20demo%20repo&defaultBranch=main`,
 		{
 			Method:  "GET",
 			Path:    "/api/v1/repos/{name}",
-			Summary:  "Get repository metadata and refs (branches/tags)",
+			Summary: "Get repository metadata and refs (branches/tags)",
 			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name"},
 			},
@@ -126,13 +126,13 @@ description=A%20demo%20repo&defaultBranch=main`,
 		{
 			Method:  "DELETE",
 			Path:    "/api/v1/repos/{name}",
-			Summary:  "Delete a repository permanently",
+			Summary: "Delete a repository permanently",
 			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name"},
 				{Name: "confirm", In: "query", Required: true, Example: "my-repo", Desc: "Must equal the repository name"},
 			},
 			RequestExample: `DELETE /api/v1/repos/my-repo?confirm=my-repo HTTP/1.1`,
-			Curl: `curl -X DELETE "http://localhost:3000/api/v1/repos/my-repo?confirm=my-repo"`,
+			Curl:           `curl -X DELETE "http://localhost:3000/api/v1/repos/my-repo?confirm=my-repo"`,
 			Notes: []string{
 				"confirm query parameter must match the repository name exactly.",
 				"Returns empty body with 200 on success.",
@@ -142,7 +142,7 @@ description=A%20demo%20repo&defaultBranch=main`,
 		{
 			Method:  "POST",
 			Path:    "/api/v1/repos/{name}/aliases",
-			Summary:  "Add a new alias to a repository",
+			Summary: "Add a new alias to a repository",
 			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name"},
 				{Name: "alias", In: "form", Required: true, Example: "group/repo", Desc: "Form field, can contain slashes"},
@@ -169,7 +169,7 @@ alias=group%2Frepo`,
 		{
 			Method:  "DELETE",
 			Path:    "/api/v1/repos/{name}/aliases/{alias}",
-			Summary:  "Remove an alias from a repository",
+			Summary: "Remove an alias from a repository",
 			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name"},
 				{Name: "alias", In: "path", Required: true, Example: "group/repo", Desc: "Alias to remove (single segment only)"},
@@ -185,38 +185,38 @@ alias=group%2Frepo`,
 				"The default alias (same as repo name) cannot be removed.",
 				"Route {alias} is a single path segment - aliases containing slashes cannot be deleted via this endpoint.",
 				"Returns the updated full Repository object on success.",
- 			},
- 		},
- 		{
- 			Method:  "POST",
- 			Path:    "/api/v1/repos/{name}/default-branch",
- 			Summary:  "Set repository default branch (HEAD symref)",
- 			Params: []apiDocParam{
- 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name"},
- 				{Name: "branch", In: "form", Required: true, Example: "main", Desc: "Short branch name (e.g. 'main'), must already exist in refs/heads/"},
- 			},
- 			RequestExample: `POST /api/v1/repos/my-repo/default-branch HTTP/1.1
+			},
+		},
+		{
+			Method:  "POST",
+			Path:    "/api/v1/repos/{name}/default-branch",
+			Summary: "Set repository default branch (HEAD symref)",
+			Params: []apiDocParam{
+				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name"},
+				{Name: "branch", In: "form", Required: true, Example: "main", Desc: "Short branch name (e.g. 'main'), must already exist in refs/heads/"},
+			},
+			RequestExample: `POST /api/v1/repos/my-repo/default-branch HTTP/1.1
 Content-Type: application/x-www-form-urlencoded
 
 branch=main`,
- 			ResponseExample: `{
+			ResponseExample: `{
    "ok": true,
    "defaultBranch": "main"
 }`,
- 			Curl: `curl -X POST http://localhost:3000/api/v1/repos/my-repo/default-branch \
+			Curl: `curl -X POST http://localhost:3000/api/v1/repos/my-repo/default-branch \
   -d "branch=main"`,
- 			Notes: []string{
- 				"Requires the branch to already exist (refs/heads/<branch> must have an oid).",
- 				"Changes the HEAD symref atomically (lock+rename).",
- 				"Browsing API (tree/blob/archive) without ref uses this default.",
- 				"Does not modify git data, only changes which branch is checked out on clone.",
- 			},
- 		},
+			Notes: []string{
+				"Requires the branch to already exist (refs/heads/<branch> must have an oid).",
+				"Changes the HEAD symref atomically (lock+rename).",
+				"Browsing API (tree/blob/archive) without ref uses this default.",
+				"Does not modify git data, only changes which branch is checked out on clone.",
+			},
+		},
 		{
 			Method:  "GET",
 			Path:    "/api/v1/repos/{name}/tree/{ref}/*",
-			Summary:  "Browse repository tree (directory listing)",
- 			Params: []apiDocParam{
+			Summary: "Browse repository tree (directory listing)",
+			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name"},
 				{Name: "ref", In: "path", Required: false, Example: "master", Desc: "Branch name, tag name, or commit OID. Defaults to repository default branch"},
 				{Name: "*", In: "path", Required: false, Example: "src/pkg", Desc: "Subdirectory path within the tree"},
@@ -239,8 +239,8 @@ branch=main`,
 		{
 			Method:  "GET",
 			Path:    "/api/v1/repos/{name}/blob/{ref}/*",
-			Summary:  "Read file content (blob)",
- 			Params: []apiDocParam{
+			Summary: "Read file content (blob)",
+			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name"},
 				{Name: "ref", In: "path", Required: false, Example: "master", Desc: "Branch name, tag name, or commit OID. Defaults to repository default branch"},
 				{Name: "*", In: "path", Required: true, Example: "src/main.go", Desc: "File path within the repository"},
@@ -263,8 +263,8 @@ func main() {
 		{
 			Method:  "GET",
 			Path:    "/api/v1/repos/{name}/archive/{ref}",
-			Summary:  "Download repository archive (ZIP)",
- 			Params: []apiDocParam{
+			Summary: "Download repository archive (ZIP)",
+			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name"},
 				{Name: "ref", In: "path", Required: false, Example: "master", Desc: "Branch name, tag name, or commit OID. Defaults to repository default branch"},
 			},
@@ -280,7 +280,7 @@ func main() {
 		{
 			Method:  "GET",
 			Path:    "/api/v1/repos/{name}/commits/{ref}",
-			Summary:  "List recent commits on a ref",
+			Summary: "List recent commits on a ref",
 			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-repo", Desc: "Repository name"},
 				{Name: "ref", In: "path", Required: false, Example: "master", Desc: "Branch name, tag name, or commit OID. Defaults to repository default branch"},
@@ -307,7 +307,7 @@ func main() {
 		{
 			Method:  "POST",
 			Path:    "/api/v1/repos/{name}/sync",
-			Summary:  "Trigger manual sync for a mirror repository",
+			Summary: "Trigger manual sync for a mirror repository",
 			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-mirror", Desc: "Repository name (must be a mirror repo)"},
 			},
@@ -338,7 +338,7 @@ func main() {
 		{
 			Method:  "POST",
 			Path:    "/api/v1/repos/{name}/settings",
-			Summary:  "Update repository description and mirror configuration",
+			Summary: "Update repository description and mirror configuration",
 			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-mirror", Desc: "Repository name"},
 				{Name: "description", In: "form", Required: true, Example: "Updated desc", Desc: "New description (empty string clears it)"},
@@ -367,7 +367,7 @@ description=Updated&mirrorRemoteUrl=https://github.com/user/repo.git&mirrorInter
 		{
 			Method:  "GET",
 			Path:    "/api/v1/repos/{name}/sync-log",
-			Summary:  "List sync log entries for a mirror repository",
+			Summary: "List sync log entries for a mirror repository",
 			Params: []apiDocParam{
 				{Name: "name", In: "path", Required: true, Example: "my-mirror", Desc: "Repository name (must be a mirror repo)"},
 				{Name: "limit", In: "query", Required: false, Example: "20", Desc: "Max entries to return (default 50), newest first"},
@@ -405,6 +405,30 @@ description=Updated&mirrorRemoteUrl=https://github.com/user/repo.git&mirrorInter
 				"Entries are returned newest-first.",
 				"Never-synced mirror repos return empty array.",
 				"Sync logs are stored in <repo>.git/pgit-sync.jsonl.",
+			},
+		},
+		{
+			Method:  "GET",
+			Path:    "/api/v1/repos/{name}/mirror-status",
+			Summary: "Get mirror scheduling/sync status",
+			Params: []apiDocParam{
+				{Name: "name", In: "path", Required: true, Example: "my-mirror", Desc: "Repository name (must be a mirror repo)"},
+			},
+			ResponseExample: `{
+  "repo": "my-mirror",
+  "scheduled": true,
+  "intervalSec": 600,
+  "syncing": false,
+  "lastSync": "2026-09-23T12:05:00Z",
+  "lastError": "",
+  "nextScheduled": "2026-09-23T12:15:00Z"
+}`,
+			Curl: `curl http://localhost:3000/api/v1/repos/my-mirror/mirror-status`,
+			Notes: []string{
+				"scheduled=true means an active timer; intervalSec=0 means manual-only.",
+				"lastError is the most recent failure message (empty on success).",
+				"nextScheduled is approximate (interval from now).",
+				"Non-mirror repos return 400; unknown repos return 404.",
 			},
 		},
 	},

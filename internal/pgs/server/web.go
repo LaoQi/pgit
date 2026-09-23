@@ -45,15 +45,16 @@ func ExportWebUI(dir string) error {
 }
 
 func (h *HTTPHandler) webFileSystem() http.FileSystem {
-	if h.Settings.WebUIAssets != "" {
-		return http.Dir(h.Settings.WebUIAssets)
+	if _, assets := h.Settings.WebUIConf(); assets != "" {
+		return http.Dir(assets)
 	}
 	sub, _ := fs.Sub(webFS, "web")
 	return http.FS(sub)
 }
 
 func (h *HTTPHandler) serveWebUI(w http.ResponseWriter, r *http.Request) {
-	prefix := "/" + h.Settings.WebUIPrefix
+	webPrefix, _ := h.Settings.WebUIConf()
+	prefix := "/" + webPrefix
 	p := strings.TrimPrefix(r.URL.Path, prefix)
 	p = strings.TrimPrefix(p, "/")
 
@@ -74,9 +75,10 @@ func (h *HTTPHandler) serveWebUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) serveIndexHTML(w http.ResponseWriter, r *http.Request) {
+	webPrefix, assets := h.Settings.WebUIConf()
 	var htmlData []byte
-	if h.Settings.WebUIAssets != "" {
-		data, err := os.ReadFile(filepath.Join(h.Settings.WebUIAssets, "index.html"))
+	if assets != "" {
+		data, err := os.ReadFile(filepath.Join(assets, "index.html"))
 		if err == nil {
 			htmlData = data
 		}
@@ -86,6 +88,6 @@ func (h *HTTPHandler) serveIndexHTML(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	htmlData = bytes.Replace(htmlData, []byte("__WEBUI_PREFIX__"), []byte(h.Settings.WebUIPrefix), -1)
+	htmlData = bytes.Replace(htmlData, []byte("__WEBUI_PREFIX__"), []byte(webPrefix), -1)
 	_, _ = w.Write(htmlData)
 }

@@ -110,6 +110,24 @@ func main() {
 		os.Exit(NoError)
 	}()
 
+	// SIGHUP 热加载：日志级别/格式、传输上限、HTTP 凭据即时生效；
+	// 监听地址/SSH/gitRoot/webui 等需重启的字段会被忽略并提示。
+	go func() {
+		hupCh := make(chan os.Signal, 1)
+		signal.Notify(hupCh, syscall.SIGHUP)
+		for range hupCh {
+			restartNeeded, err := pgs.Settings.HotReload()
+			if err != nil {
+				slog.Error("config reload failed", "path", *config, "error", err)
+				continue
+			}
+			slog.Info("config reloaded", "path", *config)
+			if len(restartNeeded) > 0 {
+				slog.Warn("config fields require restart to take effect", "fields", restartNeeded)
+			}
+		}
+	}()
+
 	if err := mux.Serve(); err != nil {
 		slog.Info("server stopped", "error", err)
 	}
