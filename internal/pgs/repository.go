@@ -39,6 +39,23 @@ func (repo *Repository) IsMirror() bool {
 	return repo.Mirror != nil
 }
 
+// Snapshot 返回仓库元数据的深拷贝。调用方拿到的是与内部状态解耦的不可变值，
+// 可安全读取、序列化或跨 goroutine 传递。
+func (repo *Repository) Snapshot() *Repository {
+	if repo == nil {
+		return nil
+	}
+	c := *repo
+	if repo.Aliases != nil {
+		c.Aliases = append([]string(nil), repo.Aliases...)
+	}
+	if repo.Mirror != nil {
+		m := *repo.Mirror
+		c.Mirror = &m
+	}
+	return &c
+}
+
 func (repo *Repository) Path() string {
 	return filepath.Join(GitRoot, fmt.Sprintf("%s.git", repo.Name))
 }

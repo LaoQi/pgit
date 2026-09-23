@@ -21,10 +21,9 @@ import (
 )
 
 type HTTPHandler struct {
-	Manager   *pgs.RepositoriesManager
-	Settings  *pgs.Setting
-	server    *http.Server
-	router    http.Handler
+	Manager  *pgs.RepositoriesManager
+	Settings *pgs.Setting
+	router   http.Handler
 }
 
 func NewHTTPHandler(manager *pgs.RepositoriesManager, settings *pgs.Setting) *HTTPHandler {
@@ -72,8 +71,8 @@ func (h *HTTPHandler) buildRouter() http.Handler {
 }
 
 func (h *HTTPHandler) HandleConn(conn net.Conn) {
-	h.server = &http.Server{Handler: h.router}
-	h.server.Serve(&singleConnListener{conn: conn})
+	srv := &http.Server{Handler: h.router}
+	_ = srv.Serve(&singleConnListener{conn: conn})
 }
 
 type singleConnListener struct {
@@ -424,9 +423,7 @@ func (h *HTTPHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	description := r.FormValue("description")
 
 	var mirrorUpdates *pgs.MirrorConfig
-	oldInterval := 0
 	if repo.IsMirror() {
-		oldInterval = repo.Mirror.SyncInterval
 		interval := 0
 		if s := r.FormValue("mirrorInterval"); s != "" {
 			if v, err := strconv.Atoi(s); err == nil && v >= 0 {
@@ -450,20 +447,22 @@ func (h *HTTPHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.Manager.UpdateRepositorySettings(name, description, mirrorUpdates); err != nil {
+	oldInterval, err := h.Manager.UpdateRepositorySettings(name, description, mirrorUpdates)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
+	updated, _ := h.Manager.GetRepository(name)
+
 	// syncInterval 变化时重新注册定时调度（0<->N、N->M 均重建）
-	if pgs.SyncMgr != nil && repo.IsMirror() {
-		if oldInterval != repo.Mirror.SyncInterval {
+	if pgs.SyncMgr != nil && updated != nil && updated.IsMirror() {
+		if oldInterval != updated.Mirror.SyncInterval {
 			pgs.SyncMgr.Unregister(name)
-			pgs.SyncMgr.Register(repo)
+			pgs.SyncMgr.Register(updated)
 		}
 	}
 
-	updated, _ := h.Manager.GetRepository(name)
 	writeJSON(w, http.StatusOK, updated)
 }
 

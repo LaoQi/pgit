@@ -354,7 +354,7 @@ func TestUpdateRepositorySettings_Description(t *testing.T) {
 	if err := ReposManager.CreateRepository("r1", "old desc", "master"); err != nil {
 		t.Fatal(err)
 	}
-	if err := ReposManager.UpdateRepositorySettings("r1", "new desc", nil); err != nil {
+	if _, err := ReposManager.UpdateRepositorySettings("r1", "new desc", nil); err != nil {
 		t.Fatalf("UpdateRepositorySettings: %v", err)
 	}
 	repo, _ := ReposManager.GetRepository("r1")
@@ -392,7 +392,7 @@ func TestUpdateRepositorySettings_Mirror(t *testing.T) {
 		Password:     "", // 留空 -> 保留原密码（原为空，仍为空）
 		Proxy:        "http://127.0.0.1:7890",
 	}
-	if err := ReposManager.UpdateRepositorySettings("mr1", "updated desc", updated); err != nil {
+	if _, err := ReposManager.UpdateRepositorySettings("mr1", "updated desc", updated); err != nil {
 		t.Fatalf("UpdateRepositorySettings: %v", err)
 	}
 	repo, _ := ReposManager.GetRepository("mr1")
@@ -438,7 +438,7 @@ func TestUpdateRepositorySettings_PasswordKept(t *testing.T) {
 		Username:     "u2",
 		Password:     "",
 	}
-	if err := ReposManager.UpdateRepositorySettings("mr2", "d", updated); err != nil {
+	if _, err := ReposManager.UpdateRepositorySettings("mr2", "d", updated); err != nil {
 		t.Fatalf("UpdateRepositorySettings: %v", err)
 	}
 	repo, _ := ReposManager.GetRepository("mr2")
@@ -458,27 +458,27 @@ func TestUpdateRepositorySettings_Validation(t *testing.T) {
 	defer func() { ReposManager = nil }()
 
 	// 不存在的仓库
-	if err := ReposManager.UpdateRepositorySettings("nope", "d", nil); err == nil {
+	if _, err := ReposManager.UpdateRepositorySettings("nope", "d", nil); err == nil {
 		t.Fatal("non-existent repo should fail")
 	}
 
 	// 普通仓库传 mirror 应失败
 	ReposManager.CreateRepository("r1", "", "master")
-	if err := ReposManager.UpdateRepositorySettings("r1", "d", &MirrorConfig{RemoteURL: "https://e.com/r.git"}); err == nil {
+	if _, err := ReposManager.UpdateRepositorySettings("r1", "d", &MirrorConfig{RemoteURL: "https://e.com/r.git"}); err == nil {
 		t.Fatal("mirror update on non-mirror repo should fail")
 	}
 
 	// 镜像仓库非法 remoteUrl
 	ReposManager.CreateMirrorRepository("m1", "", &MirrorConfig{RemoteURL: "https://e.com/r.git"})
-	if err := ReposManager.UpdateRepositorySettings("m1", "d", &MirrorConfig{RemoteURL: "ssh://e.com/r.git"}); err == nil {
+	if _, err := ReposManager.UpdateRepositorySettings("m1", "d", &MirrorConfig{RemoteURL: "ssh://e.com/r.git"}); err == nil {
 		t.Fatal("non-HTTP remote URL should fail")
 	}
 	// 非法 proxy
-	if err := ReposManager.UpdateRepositorySettings("m1", "d", &MirrorConfig{RemoteURL: "https://e.com/r.git", Proxy: "socks5://h:1"}); err == nil {
+	if _, err := ReposManager.UpdateRepositorySettings("m1", "d", &MirrorConfig{RemoteURL: "https://e.com/r.git", Proxy: "socks5://h:1"}); err == nil {
 		t.Fatal("non-HTTP proxy should fail")
 	}
 	// 负 interval
-	if err := ReposManager.UpdateRepositorySettings("m1", "d", &MirrorConfig{RemoteURL: "https://e.com/r.git", SyncInterval: -1}); err == nil {
+	if _, err := ReposManager.UpdateRepositorySettings("m1", "d", &MirrorConfig{RemoteURL: "https://e.com/r.git", SyncInterval: -1}); err == nil {
 		t.Fatal("negative interval should fail")
 	}
 }
