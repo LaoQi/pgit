@@ -79,7 +79,7 @@ func (repo *Repository) SaveMetadata() error {
 	}
 	path := filepath.Join(repo.Path(), "pgit.json")
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, os.ModePerm); err != nil {
+	if err := os.WriteFile(tmp, data, 0o640); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -110,12 +110,12 @@ type TreeNode struct {
 }
 
 type Commit struct {
-	Hash      string `json:"hash"`
+	Hash      string   `json:"hash"`
 	Parents   []string `json:"parents"`
-	Author    string `json:"author"`
-	Email     string `json:"email"`
-	Timestamp uint64 `json:"timestamp"`
-	Subject   string `json:"subject"`
+	Author    string   `json:"author"`
+	Email     string   `json:"email"`
+	Timestamp uint64   `json:"timestamp"`
+	Subject   string   `json:"subject"`
 }
 
 type RepoConfigSection struct {
@@ -168,27 +168,37 @@ func InitBare(gitRoot string, name string, description string, defaultBranch str
 	root := repo.Path()
 	config := NewBareRepoConfig().toString()
 
-	err := os.Mkdir(root, os.ModePerm)
-	if err != nil {
+	// 创建失败（任一步骤出错）时回滚已建目录，避免残留半成品仓库被扫描静默跳过。
+	rollback := func() { _ = os.RemoveAll(root) }
+
+	if err := os.Mkdir(root, 0o750); err != nil {
 		return nil, err
 	}
-
 	for _, sub := range []string{
 		"branches", "hooks", "info", "objects/info", "objects/pack", "refs/heads", "refs/tags",
 	} {
 		paths := append([]string{root}, strings.Split(sub, "/")...)
-		err := os.MkdirAll(filepath.Join(paths...), os.ModePerm)
-		if err != nil {
+		if err := os.MkdirAll(filepath.Join(paths...), 0o750); err != nil {
+			rollback()
 			return nil, err
 		}
 	}
 
-	_ = os.WriteFile(filepath.Join(root, "description"), []byte(desc), os.ModePerm)
-	_ = os.WriteFile(filepath.Join(root, "config"), []byte(config), os.ModePerm)
-	_ = os.WriteFile(filepath.Join(root, "HEAD"), []byte(fmt.Sprintf("ref: refs/heads/%s\n", defaultBranch)), os.ModePerm)
-	_ = os.WriteFile(filepath.Join(root, "info", "exclude"), []byte("# Auto generated\n# Lines that start with '#' are comments.\n"), os.ModePerm)
+	files := map[string]string{
+		"description":                    desc,
+		"config":                         config,
+		"HEAD":                           fmt.Sprintf("ref: refs/heads/%s\n", defaultBranch),
+		filepath.Join("info", "exclude"): "# Auto generated\n# Lines that start with '#' are comments.\n",
+	}
+	for rel, content := range files {
+		if err := os.WriteFile(filepath.Join(root, rel), []byte(content), 0o640); err != nil {
+			rollback()
+			return nil, err
+		}
+	}
 
 	if err := repo.SaveMetadata(); err != nil {
+		rollback()
 		return nil, err
 	}
 	return repo, nil

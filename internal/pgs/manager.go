@@ -173,7 +173,7 @@ func (r *RepositoriesManager) RepositoryExist(name string) bool {
 func (r *RepositoriesManager) getByNameLocked(name string) (*Repository, error) {
 	repo, ok := r.byName[name]
 	if !ok {
-		return nil, fmt.Errorf("repository %s not exist", name)
+		return nil, fmt.Errorf("%w: %s", ErrRepoNotFound, name)
 	}
 	return repo, nil
 }
@@ -182,7 +182,7 @@ func (r *RepositoriesManager) getByNameLocked(name string) (*Repository, error) 
 func (r *RepositoriesManager) getByAliasLocked(alias string) (*Repository, error) {
 	repo, ok := r.byAlias[alias]
 	if !ok {
-		return nil, fmt.Errorf("repository alias %s not exist", alias)
+		return nil, fmt.Errorf("%w: %s", ErrAliasNotFound, alias)
 	}
 	return repo, nil
 }
@@ -207,11 +207,11 @@ func (r *RepositoriesManager) CreateRepository(name string, description string, 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.repoExistsLocked(name) {
-		return fmt.Errorf("repository %s already exist", name)
+		return fmt.Errorf("%w: %s", ErrRepoExist, name)
 	}
 	repo, err := InitBare(r.root(), name, description, defaultBranch)
 	if err != nil {
-		return err
+		return err // InitBare 内部已回滚半成品目录
 	}
 	r.addRepository(repo)
 	slog.Info("created repository", "repo", name, "defaultBranch", defaultBranch)
@@ -233,7 +233,7 @@ func (r *RepositoriesManager) CreateMirrorRepository(name string, description st
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.repoExistsLocked(name) {
-		return fmt.Errorf("repository %s already exist", name)
+		return fmt.Errorf("%w: %s", ErrRepoExist, name)
 	}
 	repo, err := InitBare(r.root(), name, description, "master")
 	if err != nil {
@@ -304,7 +304,7 @@ func (r *RepositoriesManager) UpdateRepositorySettings(name string, description 
 	}
 	if updates != nil {
 		if !repo.IsMirror() {
-			return 0, fmt.Errorf("repository %s is not a mirror", name)
+			return 0, fmt.Errorf("%w: %s", ErrNotMirror, name)
 		}
 		m := *updates
 		if m.Password == "" {
@@ -328,7 +328,7 @@ func (r *RepositoriesManager) SyncRepository(name string) (*git.FetchResult, err
 	}
 	if !repo.IsMirror() {
 		r.mu.RUnlock()
-		return nil, fmt.Errorf("repository %s is not a mirror", name)
+		return nil, fmt.Errorf("%w: %s", ErrNotMirror, name)
 	}
 	m := *repo.Mirror
 	repoPath := repo.Path()

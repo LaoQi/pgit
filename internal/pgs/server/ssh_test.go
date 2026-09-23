@@ -410,7 +410,7 @@ func TestSSHClonePushE2E(t *testing.T) {
 	url := fmt.Sprintf("ssh://git@%s/test.git", host)
 
 	cloneDir := filepath.Join(t.TempDir(), "clone")
-	cmd := exec.Command("git", "clone", url, cloneDir)
+	cmd := exec.Command("git", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "clone", url, cloneDir)
 	cmd.Env = env
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git clone (ssh): %v\n%s", err, out)
@@ -427,13 +427,13 @@ func TestSSHClonePushE2E(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cloneDir, "a.txt"), []byte("hello ssh v2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd = exec.Command("git", "commit", "-am", "ssh push v2")
+	cmd = exec.Command("git", "-c", "commit.gpgsign=false", "commit", "-am", "ssh push v2")
 	cmd.Dir = cloneDir
 	cmd.Env = env
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git commit: %v\n%s", err, out)
 	}
-	cmd = exec.Command("git", "push", "origin", "master")
+	cmd = exec.Command("git", "-c", "commit.gpgsign=false", "push", "origin", "master")
 	cmd.Dir = cloneDir
 	cmd.Env = env
 	if out, err := cmd.CombinedOutput(); err != nil {

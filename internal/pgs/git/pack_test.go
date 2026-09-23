@@ -400,7 +400,7 @@ func TestPackDecodeRealGitPack(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	runGit := func(args ...string) ([]byte, error) {
-		return exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
+		return newGitCmdIn(dir, args...).Output()
 	}
 	if _, err := runGit("init", "-q"); err != nil {
 		t.Fatalf("init: %v", err)
@@ -451,7 +451,7 @@ func TestPackDecodeRealGitPack(t *testing.T) {
 	}
 
 	// 生成 pack：rev-list 输出喂给 pack-objects --stdout
-	poCmd := exec.Command("git", "-C", dir, "pack-objects", "--stdout")
+	poCmd := newGitCmdIn(dir, "pack-objects", "--stdout")
 	poCmd.Stdin = bytes.NewReader(revOut)
 	var poOut, poErr bytes.Buffer
 	poCmd.Stdout = &poOut

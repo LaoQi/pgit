@@ -97,7 +97,7 @@ func TestGitClonePushE2E(t *testing.T) {
 
 	// 用本地 git clone 验证
 	cloneDir := filepath.Join(workdir, "clone")
-	cmd := exec.Command("git", "clone", gitRoot, cloneDir)
+	cmd := newGitCmd("clone", gitRoot, cloneDir)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git clone failed: %v\n%s", err, out)
@@ -138,13 +138,13 @@ func TestGitPushE2E(t *testing.T) {
 
 	// 用本地 git init + commit + push
 	srcDir := filepath.Join(workdir, "src")
-	cmd := exec.Command("git", "init", srcDir)
+	cmd := newGitCmd("init", srcDir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
 
 	runGit := func(args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := newGitCmd(args...)
 		cmd.Dir = srcDir
 		cmd.Env = append(os.Environ(),
 			"GIT_AUTHOR_EMAIL=test@test.com",
@@ -168,7 +168,7 @@ func TestGitPushE2E(t *testing.T) {
 	runGit("remote", "add", "origin", gitRoot)
 
 	// push
-	cmd = exec.Command("git", "push", "-u", "origin", "master")
+	cmd = newGitCmd("push", "-u", "origin", "master")
 	cmd.Dir = srcDir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -227,7 +227,7 @@ func TestGitFetchIncrementalE2E(t *testing.T) {
 	}
 
 	runGit := func(dir string, args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := newGitCmd(args...)
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(),
 			"GIT_AUTHOR_EMAIL=test@test.com",

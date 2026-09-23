@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -159,30 +160,9 @@ func (h *HTTPHandler) metrics(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(pgs.DefaultRegistry().Render())
 }
 
-func (h *HTTPHandler) HandleConn(conn net.Conn) {
-	srv := &http.Server{Handler: h.router}
-	_ = srv.Serve(&singleConnListener{conn: conn})
-}
-
-type singleConnListener struct {
-	conn   net.Conn
-	served bool
-}
-
-func (l *singleConnListener) Accept() (net.Conn, error) {
-	if l.served {
-		return nil, io.EOF
-	}
-	l.served = true
-	return l.conn, nil
-}
-func (l *singleConnListener) Close() error   { return nil }
-func (l *singleConnListener) Addr() net.Addr { return dummyAddr{} }
-
-type dummyAddr struct{}
-
-func (dummyAddr) Network() string { return "tcp" }
-func (dummyAddr) String() string  { return "pgit-mux" }
+// Router 返回 HTTP 路由处理器；连接由 MuxServer 统一交付给共享的 http.Server
+// （见 mux.go），handler 本身不再自行创建 server。
+func (h *HTTPHandler) Router() http.Handler { return h.router }
 
 // --- Management API handlers ---
 
@@ -458,13 +438,14 @@ func (h *HTTPHandler) syncRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	entry, err := h.Sync.SyncNow(name)
 	if err != nil {
-		if strings.Contains(err.Error(), "not exist") {
+		switch {
+		case errors.Is(err, pgs.ErrRepoNotFound), errors.Is(err, pgs.ErrAliasNotFound):
 			writeError(w, http.StatusNotFound, err.Error())
-		} else if strings.Contains(err.Error(), "not a mirror") {
+		case errors.Is(err, pgs.ErrNotMirror):
 			writeError(w, http.StatusBadRequest, err.Error())
-		} else if strings.Contains(err.Error(), "already in progress") {
+		case errors.Is(err, pgs.ErrSyncInProgress):
 			writeError(w, http.StatusConflict, err.Error())
-		} else {
+		default:
 			writeError(w, http.StatusInternalServerError, err.Error())
 		}
 		return
@@ -511,7 +492,7 @@ func (h *HTTPHandler) mirrorStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := h.Sync.Status(name)
 	if err != nil {
-		if strings.Contains(err.Error(), "not exist") {
+		if errors.Is(err, pgs.ErrRepoNotFound) || errors.Is(err, pgs.ErrAliasNotFound) {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
@@ -581,7 +562,8 @@ var gitTransportRe = regexp.MustCompile(`^/(.+?)/git/(info/refs|git-.+)$`)
 func (h *HTTPHandler) gitTransport(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	// split alias and git subpath; alias is everything before ".git"
-	idx := strings.Index(path, ".git/")
+	// 用最后出现的 ".git/" 切分：alias 自身可能包含 ".git/"
+	idx := strings.LastIndex(path, ".git/")
 	if idx <= 0 {
 		http.NotFound(w, r)
 		return

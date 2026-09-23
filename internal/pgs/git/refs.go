@@ -12,7 +12,7 @@ import (
 
 // Ref 表示一个引用
 type Ref struct {
-	Name   string  // 完整名如 "refs/heads/master"，或 "HEAD"
+	Name   string // 完整名如 "refs/heads/master"，或 "HEAD"
 	Oid    Oid
 	Symref *string // 非 nil 表示符号引用（指向另一个 ref 名）
 }
@@ -229,12 +229,12 @@ func (s *RefStore) updateOne(u RefUpdate) RefUpdateResult {
 	lockPath := path + ".lock"
 
 	// 父目录可能不存在（ref 名含斜杠如 refs/heads/feature/x）
-	if err := os.MkdirAll(filepath.Dir(path), 0o777); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return RefUpdateResult{Name: u.Name, Reason: "mkdir: " + err.Error()}
 	}
 
 	// 创建 lock 文件（O_EXCL 防并发竞争）
-	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o666)
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640)
 	if err != nil {
 		return RefUpdateResult{Name: u.Name, Reason: "lock: " + err.Error()}
 	}
@@ -294,7 +294,7 @@ func (s *RefStore) SetHead(target string) error {
 	path := filepath.Join(s.Root, "HEAD")
 	lockPath := path + ".lock"
 
-	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o666)
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640)
 	if err != nil {
 		return err
 	}

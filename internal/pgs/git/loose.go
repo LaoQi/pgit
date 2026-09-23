@@ -142,7 +142,7 @@ func (s *LooseStore) Write(obj *RawObject) (Oid, error) {
 		return "", fmt.Errorf("loose write %s: zlib close: %w", oid, err)
 	}
 	path := s.Path(oid)
-	if err := os.MkdirAll(filepath.Dir(path), 0o777); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return "", fmt.Errorf("loose write %s: mkdir: %w", oid, err)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")

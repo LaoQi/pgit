@@ -132,10 +132,10 @@ func (sm *SyncManager) SyncNow(name string) (*SyncLogEntry, error) {
 		return nil, err
 	}
 	if !repo.IsMirror() {
-		return nil, fmt.Errorf("repository %s is not a mirror", name)
+		return nil, fmt.Errorf("%w: %s", ErrNotMirror, name)
 	}
 	if !sm.tryAcquire(name) {
-		return nil, fmt.Errorf("sync already in progress for %s", name)
+		return nil, fmt.Errorf("%w: %s", ErrSyncInProgress, name)
 	}
 	defer sm.release(name)
 	return sm.runSync(name, "manual")
@@ -193,7 +193,7 @@ func (sm *SyncManager) Status(name string) (*MirrorStatus, error) {
 		return nil, err
 	}
 	if !repo.IsMirror() {
-		return nil, fmt.Errorf("repository %s is not a mirror", name)
+		return nil, fmt.Errorf("%w: %s", ErrNotMirror, name)
 	}
 
 	sm.mu.Lock()

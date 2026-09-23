@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/akamensky/argparse"
 
@@ -15,6 +17,9 @@ import (
 )
 
 const Version = "1.0.0"
+
+// shutdownGrace 是优雅关闭的最长等待时间（超过则强制断开残留连接）。
+const shutdownGrace = 30 * time.Second
 
 const (
 	NoError = iota
@@ -105,8 +110,16 @@ func main() {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		slog.Info("shutting down")
+
+		// 优雅关闭：停止接受新连接，等待活动请求/SSH 会话结束（最多 shutdownGrace），
+		// 再停止定时同步，最后退出。避免硬切进行中的 push/clone。
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		defer cancel()
+		if err := mux.Shutdown(ctx); err != nil {
+			slog.Warn("graceful shutdown incomplete", "error", err)
+		}
 		syncMgr.Stop()
-		_ = ln.Close()
+		slog.Info("shutdown complete")
 		os.Exit(NoError)
 	}()
 
