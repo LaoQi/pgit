@@ -5,6 +5,18 @@ pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；�
 
 ## 2026-09-23
 
+**refactor(arch): 阶段 2 存储抽象与依赖注入**（0f25c29）
+- 2-1 存储接口化：新增 `git.ObjectStore`（`Read/Exists/Write`）与 `git.NewObjectStore(repoRoot)`；
+  `CollectReachable`/`TreeAt`/`BlobAt`/`CommitLog`/`derefToTree`/`isFastForward` 签名收敛到接口；
+  `PackDecoder` 的 `ObjectReader` 收编为 `ObjectStore`。新增 `git/store_test.go`（内存 ObjectStore
+  驱动浏览 API/可达性遍历/REF_DELTA 回查），证明协议与浏览层已与松散对象文件存储解耦
+- 2-2 `Repository` 自包含：新增 `root` 字段（`json:"-"`），`Root()`/`Path()` 不再依赖全局 `GitRoot`；
+  `InitBare` 显式接收 `gitRoot`；manager 统一走 `Config.GitRoot` 并注入 `root`；`SSHHandler` 去掉自带
+  `GitRoot`，改用 `repo.Path()`
+- 2-3 依赖注入：去掉包级 `pgs.SyncMgr`/`InitSyncManager`，改为 `NewSyncManager(manager)`，
+  `HTTPHandler` 持有 `Sync` 实例；`git.logLevel` 改为 `atomic.Int32`
+
+
 **refactor(concurrency): 阶段 1 并发地基**（8769cb0）
 - `RepositoriesManager` 引入 `RWMutex`，对外方法返回 `Repository` 快照（`Snapshot()`），元数据落盘统一在锁内
   - 修复：并发 map 读写导致的 `fatal error: concurrent map read and map write`（进程级退出，recover 拦不住）

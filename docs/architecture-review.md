@@ -65,9 +65,9 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
 
 ## 3. P1：架构级限制（扩展主要阻力）
 
-1. **存储层无接口**：`*git.LooseStore`/`*git.RefStore` 具体类型散落业务层
-   （`repository.go:211,232,246,290`、`protocol.go:248,369`、`browse.go:99,264`、`fetch.go:61,203`）。
-   加 packfile、对象缓存、gc、配额都需大范围改动 → 优先抽 `ObjectStore` 接口。
+1. ~~**存储层无接口**：`*git.LooseStore` 具体类型散落业务层。~~ → **阶段 2 已修**：新增 `git.ObjectStore`
+   接口与 `git.NewObjectStore(repoRoot)`，协议层/浏览层的对象读写全部走接口（`git/store_test.go` 用内存实现验证）。
+   加 packfile、对象缓存、gc、配额现在只需新增一个 `ObjectStore` 实现。
 2. **全 loose、无 pack/gc/缓存**：每对象一次 open+zlib；clone 需遍历解压全仓；删除仓库才回收。
 3. **协议能力与实现不符**：`uploadPackCaps` 声明 `thin-pack include-tag`（`protocol.go:28`）但无实现；
    出向 delta 无条件发 OFS_DELTA，`clientCaps` 仅用于 sideband 判断（`protocol.go:277`）；
@@ -78,8 +78,10 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
    `repo.Mirror.SyncInterval`（与改设置并发 → race + ticker 旧值）。
 5. **fetch 客户端整体 5 分钟超时**（`fetch.go:38`，`http.Client.Timeout` 覆盖 body）→ 大仓库镜像必失败；
    无重试/退避；仅 HTTP(S)。
-6. **全局单例与包级可变状态**：`Settings`、`GitRoot`、`ReposManager`、`SyncMgr`、`git.logLevel`(`protocol.go:22`)。
-   `repo.Path()` 读全局 `GitRoot` → 配置改 `gitRoot` 不生效；测试只能串行。
+6. **全局单例与包级可变状态**：~~`Settings`、`GitRoot`、`ReposManager`、`SyncMgr`、`git.logLevel`~~
+   → **阶段 2 部分修复**：`SyncMgr` 已改为注入（`NewSyncManager(manager)`）；`Repository` 自包含 root，
+   `Path()` 不再读全局；`git.logLevel` 改 `atomic.Int32`。仍存：`pgs.GitRoot`（仅作兼容兜底）、
+   `pgs.Settings`、`pgs.ReposManager` 全局（阶段 4/5 处理配置热加载与多实例）。
 7. **接入层生命周期缺失**：`h.server` 每连接并发赋值（`http.go:74-77`，自身即 race）；每连接新建 `http.Server`；
    `singleConnListener.Close()` 不关底层连接（`http.go:91`）；无 `ReadHeaderTimeout/IdleTimeout`；
    `requestLogger` 包装的 ResponseWriter 无 `Flusher/ReaderFrom`；退出用 `os.Exit`（`main.go:111`）无优雅关闭。
@@ -120,11 +122,16 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
 - 验收：新增测试在 `-race` 下通过；`fatal error: concurrent map read and map write` 不再可复现（附录 A-1 场景）。
   `go build ./... && go vet ./... && go test -race ./...` 全绿。
 
-### 阶段 2：存储抽象与去全局化
+### 阶段 2：存储抽象与去全局化（已完成，0f25c29）
 
-- 抽 `ObjectStore`（`Read/Write/Exists/Walk`）与 refs 视图接口，`LooseStore` 作为首个实现；
-- 把 `GitRoot`/`Settings` 从包级全局移到显式依赖（manager/handler 字段）；
-- 为后续 packfile/缓存/gc 预留落点，不改行为。
+- 2-1 抽 `ObjectStore`（`Read/Exists/Write`）+ `NewObjectStore(repoRoot)`，`LooseStore` 为首个实现，
+  `PackDecoder` 复用同一接口；附内存实现测试证明解耦。
+- 2-2 `Repository` 自包含 root（`Root()/Path()` 去全局），`InitBare` 显式接收 `gitRoot`，
+  `SSHHandler` 去掉重复的 `GitRoot`。
+- 2-3 `SyncManager` 依赖注入（`NewSyncManager(manager)`），`HTTPHandler` 持有实例；
+  `git.logLevel` 改 `atomic.Int32`。
+- 验收：`go build/vet` + `go test -race ./...` 全绿；真实实例端到端验证 HTTP clone/push、
+  SSH clone、mirror 同步、mirror 拒绝 push、WebUI/tree/commits 均正常。
 
 ### 阶段 3：流式化与资源边界
 

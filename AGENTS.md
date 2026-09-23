@@ -7,7 +7,7 @@ Go 编写的个人 git 服务器。模块名 `pgit`，`go 1.26.4`。单端口多
 ## 构建状态
 
 - `go build ./...`、`go vet ./...`、`go test ./...` 全部通过。
-- **不依赖 `git` 二进制**：git 传输（HTTP smart-http + SSH exec 的 upload-pack/receive-pack）与浏览 API（Tree/Blob/Archive/ForEachRef）均由 `internal/pgs/git` 纯 Go 实现；浏览 API 基于 `browse.go`（`ResolveTreeIsh`/`TreeAt`/`BlobAt`/`ForEachRefs`）+ 标准库 `archive/zip`，对象经 `LooseStore` 读取。运行时无需 `git` 在 `PATH`。
+- **不依赖 `git` 二进制**：git 传输（HTTP smart-http + SSH exec 的 upload-pack/receive-pack）与浏览 API（Tree/Blob/Archive/ForEachRef）均由 `internal/pgs/git` 纯 Go 实现；浏览 API 基于 `browse.go`（`ResolveTreeIsh`/`TreeAt`/`BlobAt`/`ForEachRefs`）+ 标准库 `archive/zip`，对象经 `git.ObjectStore` 接口读取（当前唯一实现 `LooseStore`）。运行时无需 `git` 在 `PATH`。
 - `pgs.InitBare` 手工创建裸仓库目录结构 + config + HEAD + pgit.json，支持指定默认分支（`defaultBranch` 参数，空值默认 `master`）。默认分支可经 `POST /api/v1/repos/{name}/default-branch` 切换（要求分支已存在）；`DefaultBranch()` 读 HEAD symref；浏览 API 空 ref 时用仓库默认分支。
 - **对象仅 loose 存储**：仓库对象来自 pgit 自身 receive-pack（HTTP/SSH push，pack 自动解包为 loose）。不支持外部 `git` 导入的含 packfile 仓库直读（`LooseStore` 只读 loose）。
 - **镜像仓库**：纯 Go fetch 客户端（`fetch.go`）从远程 HTTP/HTTPS smart-http 仓库全量镜像所有 refs；定时自动同步（`SyncManager` per-repo goroutine）+ 手动同步（API）；同步日志 JSONL（`pgit-sync.jsonl`）。
@@ -19,22 +19,22 @@ cmd/pgit/main.go              入口：flag 解析（-c/-v/-d/-w）+ 配置加�
 
 internal/pgs/                 业务核心包
   config.go                   Setting 结构体（含 webuiPrefix/webuiAssets）+ 默认值 + Reload/Output；全局 Settings 单例
-  repository.go               Repository/Ref/TreeNode/MirrorConfig 模型 + 浏览 API（Tree/Blob/Archive/ForEachRef，接入 git 包）+ InitBare（支持指定默认分支）+ SaveMetadata（原子写 tmp+rename）+ DefaultBranch/SetDefaultBranch + IsMirror
-  manager.go                  RepositoriesManager：RWMutex 保护的 byName/byAlias 双索引（对外方法返回 Repository 快照）+ 扫描迁移 + CRUD（支持指定默认分支）+ alias 增删 + CreateMirrorRepository + SyncRepository（锁内取快照→fetch→锁内回写状态）
+  repository.go               Repository/Ref/TreeNode/MirrorConfig 模型（Repository 自包含 root，Path()/Root() 不依赖全局）+ 浏览 API（Tree/Blob/Archive/ForEachRef，接入 git 包）+ InitBare(gitRoot,...)（支持指定默认分支）+ SaveMetadata（原子写 tmp+rename）+ Snapshot（并发安全快照）+ DefaultBranch/SetDefaultBranch + IsMirror
+  manager.go                  RepositoriesManager：RWMutex 保护的 byName/byAlias 双索引（对外方法返回 Repository 快照）+ root()（Config.GitRoot）+ 扫描迁移 + CRUD（支持指定默认分支）+ alias 增删 + CreateMirrorRepository + SyncRepository（锁内取快照→fetch→锁内回写状态）
   sync_log.go                 SyncLogEntry + AppendSyncLog（JSONL 追加写）+ ReadSyncLog（最新 N 条倒序）
-  sync_manager.go             SyncManager：per-repo goroutine 定时调度（1-10s 错峰+initial+ticker scheduled）+ inflight 判重（定时与手动互斥）+ SyncNow（手动同步返回 SyncLogEntry）+ Stop（WaitGroup 等待，可重复调用）
+  sync_manager.go             SyncManager（NewSyncManager(manager) 注入）：per-repo goroutine 定时调度（1-10s 错峰+initial+ticker scheduled）+ inflight 判重（定时与手动互斥）+ SyncNow（手动同步返回 SyncLogEntry）+ Stop（WaitGroup 等待，可重复调用）
   task.go / task_manager.go   任务系统：状态机（Status 经 GetStatus/SetStatus 并发安全）+ cron 调度 + 回调（有测试）
   util.go                     FileExist
 
 internal/pgs/git/             纯 Go git wire protocol v0 服务端（无第三方依赖）
   oid.go object.go            ObjectID（SHA1 hex/bytes 互转）+ Object 类型常量 + RawObject.Oid() lazy 缓存
-  loose.go                    松散对象读写：zlib 压缩落盘 + 逐对象 SHA1 重算校验
+  loose.go                    ObjectStore 接口（Read/Exists/Write）+ NewObjectStore(repoRoot)；LooseStore 松散对象读写：zlib 压缩落盘 + 逐对象 SHA1 重算校验
   parse.go                    松散对象内容解析（header + body）
   refs.go                     RefStore：loose + packed-refs 合并视图；per-ref lock+rename 原子写；CAS/symref；SetHead（原子写 HEAD symref）
   pktline.go                  pkt-line 读写器（含 flush/delim）
   delta.go                    delta 应用（ApplyDelta）+ 生成（EncodeDelta，固定窗口滚动hash，桶扫描限制≤64 position + 死亡桶淘汰）+ 收益预检（deltaPrecheck 采样命中）+ varintLE
   pack_encode.go              packfile 编码：full 对象 + 出向 OFS_DELTA（偏移追踪）；zlib BestSpeed 压缩
-  pack_decode.go              packfile 解码 + 逐对象校验；REF_DELTA base 不在 pack 内时回查 LooseStore
+  pack_decode.go              packfile 解码 + 逐对象校验；REF_DELTA base 不在 pack 内时回查 ObjectStore
   reach.go                    可达性遍历（BFS 去重，跳过 gitlink）
   browse.go                   浏览 API 高层：ResolveTreeIsh/TreeAt/BlobAt/ForEachRefs/CommitLog（基于 LooseStore+RefStore）
   protocol.go                 v0 状态机：negotiation + pack 交换（出向 delta 配对 + 预检跳过）+ sideband-64k + report-status + 操作日志（logLevel=detail 逐条 want/have/object/delta）+ 阶段计时（negotiate/reach/plan/encode）+ force-push 审计标记（isFastForward BFS，仅日志不拒绝）；LogLevel/SetLogLevel 由 pgs 配置注入（避免 pgs/git → pgs 循环依赖）
@@ -43,8 +43,8 @@ internal/pgs/git/             纯 Go git wire protocol v0 服务端（无第三�
 
 internal/pgs/server/          网络服务层
   mux.go                      协议探测分发：peek 前缀 SSH- → SSH 否则 HTTP；peekConn 回放缓冲
-  http.go                     chi 路由(/api/v1/* + /{webuiPrefix}/* + alias.git 兜底) + 管理 API handler + git smart-http 传输（接入 git 包，Content-Encoding: gzip 自动解压）+ Basic Auth + 请求日志中间件（方法/路径/状态码/耗时/用户/远程地址）
-  ssh.go                      SSHHandler：host key 支持 ed25519（生成）/RSA（兼容旧 PKCS1）+ exec payload 解析 alias（剥离前导 `/`）→ repo（接入 git 包）；env 请求明确 Reply(false) 拒绝 GIT_PROTOCOL v2，客户端确定性降级 v0
+  http.go                     chi 路由(/api/v1/* + /{webuiPrefix}/* + alias.git 兜底，HTTPHandler 持有 Manager/Settings/Sync) + 管理 API handler + git smart-http 传输（接入 git 包，Content-Encoding: gzip 自动解压）+ Basic Auth + 请求日志中间件（方法/路径/状态码/耗时/用户/远程地址）
+  ssh.go                      SSHHandler：host key 支持 ed25519（生成）/RSA（兼容旧 PKCS1）+ exec payload 解析 alias（剥离前导 `/`）→ repo（仓库路径用 repo.Path()）；env 请求明确 Reply(false) 拒绝 GIT_PROTOCOL v2，客户端确定性降级 v0
   web.go                      WebUI：embed 嵌入 web/ 资源 + ExportWebUI 导出 + serveWebUI（静态资源 + SPA fallback + 前缀注入）
   apidocs.go                  API 文档端点：GET /api/v1/ 返回 13 个管理 API 的结构化描述 JSON
   web/                        embed 源：index.html（含 __WEBUI_PREFIX__ 占位符）+ assets/（app.js/style.css/favicon.svg）
@@ -150,7 +150,7 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 
 - `internal/pgs`：`repository_test.go`（InitBare 与 pgit.json/自定义默认分支、Manager 双索引与扫描恢复、alias 增删与校验、SetDefaultBranch、CreateMirrorRepository、MirrorBackwardCompat、URL 校验）、`repository_browse_test.go`（Tree/Blob/Archive/ForEachRef 端到端，构造 loose 对象）、`concurrency_test.go`（Manager 并发读写无崩溃、快照隔离、sync 注册回归、sync 与设置更新并发）、`sync_log_test.go`、`sync_manager_test.go`、`task_test.go`（约 6 秒）。
 - `internal/pgs/server`：`ssh_test.go` 走真实 TCP + x/crypto 客户端（upload-pack clone 全量交换验证 pack 对象、receive-pack push 验证 ref+loose 落盘、mirror 仓库 push 拒绝 stderr），无需 git/ssh 二进制；`TestSSHClonePushE2E` 需 `PGIT_E2E=1` + git/ssh 二进制。
-- `internal/pgs/git`：`loose_test`/`delta_test`/`pack_test`/`refs_test`/`reach_test`/`browse_test`/`protocol_test`/`fetch_test`/`e2e_test`，覆盖 delta 应用与生成 roundtrip、deltaPrecheck 预检、桶扫描限制、pack 编解码（与真实 git pack、index-pack 互验）、ofs-delta 回环、ref CAS/symref/packed-refs、可达性 BFS 与 have 差量过滤、treeIsh/tree/blob/ForEachRefs、v0 状态机 + sideband、增量 fetch（have flush/多 POST/无 done 等）、fetch 客户端（initial/incremental/up-to-date/empty/basic auth/ref 删除/ACK 响应，httptest + 自身协议当远程，无需外部 git）；e2e 集成需 `PGIT_E2E=1`。`go test ./...` 通过。
+- `internal/pgs/git`：`loose_test`/`store_test`（内存 ObjectStore 驱动浏览 API/可达性/REF_DELTA 回查）/`delta_test`/`pack_test`/`refs_test`/`reach_test`/`browse_test`/`protocol_test`/`fetch_test`/`e2e_test`，覆盖 delta 应用与生成 roundtrip、deltaPrecheck 预检、桶扫描限制、pack 编解码（与真实 git pack、index-pack 互验）、ofs-delta 回环、ref CAS/symref/packed-refs、可达性 BFS 与 have 差量过滤、treeIsh/tree/blob/ForEachRefs、v0 状态机 + sideband、增量 fetch（have flush/多 POST/无 done 等）、fetch 客户端（initial/incremental/up-to-date/empty/basic auth/ref 删除/ACK 响应，httptest + 自身协议当远程，无需外部 git）；e2e 集成需 `PGIT_E2E=1`。`go test ./...` 通过。
 - 无 linter/formatter/CI 配置。用 `go vet ./...` 和 `go build` 验证。
 
 ## 工作流
