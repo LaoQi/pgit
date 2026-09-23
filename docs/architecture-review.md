@@ -82,7 +82,7 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
    另有：`Stop()` 无 WaitGroup 等待（`:185-194`）；`doSync` 与 `SyncNow` 约 60 行重复；goroutine 直读
    `repo.Mirror.SyncInterval`（与改设置并发 → race + ticker 旧值）。
 5. **fetch 客户端整体 5 分钟超时**（`fetch.go:38`，`http.Client.Timeout` 覆盖 body）→ 大仓库镜像必失败；
-   无重试/退避；仅 HTTP(S)。
+   无重试/退避；仅 HTTP(S)。（阶段 5 未处理，留待后续）
 6. **全局单例与包级可变状态**：~~`Settings`、`GitRoot`、`ReposManager`、`SyncMgr`、`git.logLevel`~~
    → **阶段 2 部分修复**：`SyncMgr` 已改为注入（`NewSyncManager(manager)`）；`Repository` 自包含 root，
    `Path()` 不再读全局；`git.logLevel` 改 `atomic.Int32`。仍存：`pgs.GitRoot`（仅作兼容兜底）、
@@ -90,8 +90,9 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
 7. **接入层生命周期缺失**：`h.server` 每连接并发赋值（`http.go:74-77`，自身即 race）；每连接新建 `http.Server`；
    `singleConnListener.Close()` 不关底层连接（`http.go:91`）；无 `ReadHeaderTimeout/IdleTimeout`；
    `requestLogger` 包装的 ResponseWriter 无 `Flusher/ReaderFrom`；退出用 `os.Exit`（`main.go:111`）无优雅关闭。
-8. **可观测性空白**：无 `/healthz`、无 metrics、日志为 `log.Printf` 拼串；`logLevel=detail` 逐对象打日志
-   （`protocol.go:255`）；ROADMAP 的 mirror webhook 未实现。
+8. ~~**可观测性空白**~~ → **阶段 5 已修**：`/healthz` + `/metrics`（Prometheus 文本格式，无第三方依赖）、
+   `slog` 结构化日志（text/json、`X-Request-Id`、级别分层，逐对象日志降 DEBUG）；
+   配置经 SIGHUP 热加载。**仍存**：ROADMAP 的 mirror webhook 未实现（阶段 6）。
 
 ## 4. P2：技术债清单
 
@@ -156,10 +157,14 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
   - 优雅关闭：`http.Server.Shutdown` + 等待进行中的 pack 传输与同步，替换 `os.Exit`；
   - P2 收尾：git URL 用 `LastIndex(".git/")` 切分、错误分类改哨兵错误、`InitBare` 失败回滚。
 
-### 阶段 5：运维与可观测性
+### 阶段 5：运维与可观测性（已完成，6647da7 / 16d7f50 / 875c80d）
 
-- `/healthz` + Prometheus 指标；`slog` 结构化日志（含请求 ID），detail 级日志降噪；
-- 配置热加载（含 `gitRoot` 变更语义明确化）；补齐 P2 中 SyncManager 相关收尾。
+- 5-1（6647da7）结构化日志：slog text/json、`logFormat` 配置、`X-Request-Id`、级别分层、
+  标准库 log 重定向；死代码清理。
+- 5-2（16d7f50）`/healthz` + `/metrics`（自研 Prometheus 文本格式）；采集 HTTP/git/pack/镜像/仓库指标。
+- 5-3/5-4（875c80d）SIGHUP 热加载（可热加载 vs 需重启字段分类、非法配置不半应用）；
+  `SyncManager.Status/Statuses` + `/mirror-status` 端点 + 间隔变更重建调度器。
+- 未做：fetch 客户端超时/重试（见 P1-5）、mirror webhook（阶段 6）。
 
 ### 阶段 6：功能扩展
 

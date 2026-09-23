@@ -5,6 +5,32 @@ pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；�
 
 ## 2026-09-23
 
+**feat(ops): 阶段 5-3/5-4 配置热加载与镜像状态**（875c80d）
+- SIGHUP 热加载：`logLevel`/`logFormat`/`maxPushBytes`/`maxConcurrentPacks`/`credentials` 即时生效；
+  `listen`/`enableSSH`/`gitRoot`/`httpAuth`/`sshAuthType`/`sshHostKey`/`webuiPrefix`/`webuiAssets`
+  需重启（改动被忽略并记录告警）；配置非法时拒绝且不半应用
+- `Setting` 加 `RWMutex` + `SettingView` 只读快照 + `CredentialsCopy`/`WebUIConf`；
+  `basicAuth` 每请求取凭据副本 → 热加载后新凭据立即生效
+- 修复 `reloadLocked` 内调用取读锁方法导致的 RWMutex 自死锁
+- `SyncManager` 新增 `Status`/`Statuses`（调度状态/间隔/同步中/最近错误/下次触发）；
+  `Register` 间隔变更时重建调度器（不再沿用旧 ticker）；新增
+  `GET /api/v1/repos/{name}/mirror-status`
+
+**feat(metrics): 阶段 5-2 健康检查与 Prometheus 指标**（16d7f50）
+- 新增 `/healthz`（gitRoot/syncManager/仓库数，异常 503 + degraded）与 `/metrics`
+  （Prometheus 文本格式，无第三方依赖）；两者不挂 BasicAuth
+- 采集：HTTP 请求（方法/状态/结果 + 累计耗时）、git 操作结果、pack 字节与进行中数、
+  镜像同步（次数/对象/耗时/最近成功时间戳）、仓库总数
+- `buildRouter` 拆为两个 chi Group（探针组无鉴权），满足 chi 中间件声明顺序约束
+
+**feat(log): 阶段 5-1 结构化日志**（6647da7）
+- `SetupLogging` 初始化 slog（text/json）并把标准库 log 重定向到同一 handler，
+  既有 `log.Printf` 无需逐个改造即结构化
+- 级别 `debug`(兼容旧 `detail`)/`info`/`warn`/`error`；新增 `logFormat`；旧值空与 `off` 视为 `info`
+- HTTP `X-Request-Id` 透传/生成（上下文 + 响应头）；git 逐对象日志降为 DEBUG
+- 清理死代码 `planPackEntries`/`packEntry`
+
+
 **docs: 安全策略单独记录（暂不实施）**（b2fd288、后续调整 b2fd288+）
 - 决策 C 调整为：**pgit 不实现 TLS**（不引入 `tlsCert`/`tlsKey`/ACME），HTTPS 交由外层反向代理终止；
   该条已从实施顺序移入「明确不做」

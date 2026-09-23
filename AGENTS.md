@@ -19,13 +19,14 @@ Go 编写的个人 git 服务器。模块名 `pgit`，`go 1.26.4`。单端口多
 cmd/pgit/main.go              入口：flag 解析（-c/-v/-d/-w）+ 配置加载 + InitReposManager + 启动单端口 mux
 
 internal/pgs/                 业务核心包
-  config.go                   Setting 结构体（含 webuiPrefix/webuiAssets）+ 默认值 + Reload/Output；全局 Settings 单例
+  config.go                   Setting 结构体（含 webuiPrefix/webuiAssets/logLevel/logFormat/传输上限）+ RWMutex + 默认值 + Reload（初始化）/HotReload（SIGHUP 热加载）+ Snapshot/SettingView + LimitPushBytes/LimitConcurrentPacks；全局 Settings 单例
   repository.go               Repository/Ref/TreeNode/MirrorConfig 模型（Repository 自包含 root，Path()/Root() 不依赖全局）+ 浏览 API（Tree/Blob/Archive/ForEachRef，接入 git 包）+ InitBare(gitRoot,...)（支持指定默认分支）+ SaveMetadata（原子写 tmp+rename）+ Snapshot（并发安全快照）+ DefaultBranch/SetDefaultBranch + IsMirror
   manager.go                  RepositoriesManager：RWMutex 保护的 byName/byAlias 双索引（对外方法返回 Repository 快照）+ root()（Config.GitRoot）+ 扫描迁移 + CRUD（支持指定默认分支）+ alias 增删 + CreateMirrorRepository + SyncRepository（锁内取快照→fetch→锁内回写状态）
   sync_log.go                 SyncLogEntry + AppendSyncLog（JSONL 追加写）+ ReadSyncLog（最新 N 条倒序）
-  sync_manager.go             SyncManager（NewSyncManager(manager) 注入）：per-repo goroutine 定时调度（1-10s 错峰+initial+ticker scheduled）+ inflight 判重（定时与手动互斥）+ SyncNow（手动同步返回 SyncLogEntry）+ Stop（WaitGroup 等待，可重复调用）
-  task.go / task_manager.go   任务系统：状态机（Status 经 GetStatus/SetStatus 并发安全）+ cron 调度 + 回调（有测试）
-  util.go                     FileExist
+  sync_manager.go             SyncManager（NewSyncManager(manager) 注入）：per-repo goroutine 定时调度（1-10s 错峰+initial+ticker scheduled）+ inflight 判重（定时与手动互斥）+ SyncNow（手动同步返回 SyncLogEntry）+ Status/Statuses（调度状态视图）+ 间隔变更重建调度器 + Stop（WaitGroup 等待，可重复调用）
+  log.go                      SetupLogging：slog（text/json）初始化 + 标准库 log 重定向（既有 log.Printf 自动结构化）；级别 debug(兼容 detail)/info/warn/error
+  metrics.go                  自研指标表（counter/gauge + Prometheus 文本格式，无第三方依赖）+ 采集辅助（HTTP/git/pack/镜像/仓库）
+  task.go / task_manager.go
 
 internal/pgs/git/             纯 Go git wire protocol v0 服务端（无第三方依赖）
   oid.go object.go            ObjectID（SHA1 hex/bytes 互转）+ Object 类型常量 + RawObject.Oid() lazy 缓存
@@ -121,6 +122,11 @@ type MirrorConfig struct {
 - `GET /api/v1/repos/{name}/commits/{ref}`（列出最近 commits，支持 `?limit=N`，默认 20）
 - `POST /api/v1/repos/{name}/sync`（手动同步镜像仓库，返回 SyncLogEntry）
 - `GET /api/v1/repos/{name}/sync-log`（查询同步日志，`?limit=N` 默认 50，最新在前）
+- `GET /api/v1/repos/{name}/mirror-status`（镜像调度/同步状态：scheduled/intervalSec/syncing/lastSync/lastError/nextScheduled）
+
+运维端点（**不挂 BasicAuth**，供探针/抓取）：
+- `GET /healthz`（gitRoot 可读性 + syncManager 就绪 + 仓库数；异常 503 且 status=degraded）
+- `GET /metrics`（Prometheus 文本格式 version=0.0.4）
 
 WebUI（`/{webuiPrefix}/`，默认 `__webui`，受 `HttpAuth` 鉴权）：
 - `GET /` → 302 重定向至 `/{webuiPrefix}/`
@@ -136,6 +142,7 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 ## 配置与运行
 
 - 生成默认配置：`pgit -d > config.json`；运行：`pgit -c config.json`。无配置以 `ConfigError` 退出。
+- 热加载：向进程发 `SIGHUP` 重读配置文件。可热加载字段：`logLevel`/`logFormat`/`maxPushBytes`/`maxConcurrentPacks`/`credentials`；需重启字段：`listen`/`enableSSH`/`gitRoot`/`httpAuth`/`sshAuthType`/`sshHostKey`/`webuiPrefix`/`webuiAssets`（改动被忽略并记 WARN）。配置非法时拒绝且不半应用。
 - 导出 WebUI 资源：`pgit -w ./webui`（将 embed 的 web/ 写到磁盘，可自定义修改后通过 `webuiAssets` 加载）。
 - 配置字段：`listen`（单一监听地址，默认 `0.0.0.0:3000`）、`enableSSH`、`gitRoot`、`httpAuth`、`credentials`、`sshHostKey`/`sshPublicKey`、`sshAuthType`、`webuiPrefix`（默认 `__webui`）、`webuiAssets`（默认空=用 embed，非空=从磁盘目录读）、`logLevel`（默认空=`off` 仅汇总行；`detail` 逐条 want/have/object/delta）、`maxPushBytes`（默认 0=2GiB）、`maxConcurrentPacks`（默认 0=4）。`logLevel`/`maxPushBytes` 由 `Reload` 注入 git 包。无分离端口字段。
 - `webuiPrefix` 校验：非空、不为 `api`、不含 `..`；可含多段斜杠（如 `custom/ui`）。
@@ -149,7 +156,7 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 
 ## 测试与质量
 
-- `internal/pgs`：`repository_test.go`（InitBare 与 pgit.json/自定义默认分支、Manager 双索引与扫描恢复、alias 增删与校验、SetDefaultBranch、CreateMirrorRepository、MirrorBackwardCompat、URL 校验）、`repository_browse_test.go`（Tree/Blob/Archive/ForEachRef 端到端，构造 loose 对象）、`concurrency_test.go`（Manager 并发读写无崩溃、快照隔离、sync 注册回归、sync 与设置更新并发）、`sync_log_test.go`、`sync_manager_test.go`、`task_test.go`（约 6 秒）。
+- `internal/pgs`：`log_test.go`（级别/格式解析与标准库 log 重定向）、`metrics_test.go`（文本格式/标签转义/并发采集）、`config_hotreload_test.go`（热加载生效/需重启回报/非法拒绝/并发无竞态）、`concurrency_test.go`、`repository_test.go`（InitBare 与 pgit.json/自定义默认分支、Manager 双索引与扫描恢复、alias 增删与校验、SetDefaultBranch、CreateMirrorRepository、MirrorBackwardCompat、URL 校验）、`repository_browse_test.go`（Tree/Blob/Archive/ForEachRef 端到端，构造 loose 对象）、`concurrency_test.go`（Manager 并发读写无崩溃、快照隔离、sync 注册回归、sync 与设置更新并发）、`sync_log_test.go`、`sync_manager_test.go`、`task_test.go`（约 6 秒）。
 - `internal/pgs/server`：`ssh_test.go` 走真实 TCP + x/crypto 客户端（upload-pack clone 全量交换验证 pack 对象、receive-pack push 验证 ref+loose 落盘、mirror 仓库 push 拒绝 stderr），无需 git/ssh 二进制；`TestSSHClonePushE2E` 需 `PGIT_E2E=1` + git/ssh 二进制。
 - `internal/pgs/git`：`loose_test`/`store_test`（内存 ObjectStore 驱动浏览 API/可达性/REF_DELTA 回查）/`stream_test`（流式解码内存对比、WalkReachable 只 Stat、单遍 encodePack 等价性）/`hardening_test`（畸形输入回归 + fuzz）/`delta_test`/`pack_test`/`refs_test`/`reach_test`/`browse_test`/`protocol_test`/`fetch_test`/`e2e_test`，覆盖 delta 应用与生成 roundtrip、deltaPrecheck 预检、桶扫描限制、pack 编解码（与真实 git pack、index-pack 互验）、ofs-delta 回环、ref CAS/symref/packed-refs、可达性 BFS 与 have 差量过滤、treeIsh/tree/blob/ForEachRefs、v0 状态机 + sideband、增量 fetch（have flush/多 POST/无 done 等）、fetch 客户端（initial/incremental/up-to-date/empty/basic auth/ref 删除/ACK 响应，httptest + 自身协议当远程，无需外部 git）；e2e 集成需 `PGIT_E2E=1`。`go test ./...` 通过。
 - 无 linter/formatter/CI 配置。用 `go vet ./...` 和 `go build` 验证。
