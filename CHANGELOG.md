@@ -5,6 +5,12 @@ pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；�
 
 ## 2026-09-23
 
+**docs: 安全策略单独记录（暂不实施）**（b2fd288）
+- 新增 `docs/security-policy.md`：现状、目标策略、三条已定决策（SSH 忽略用户名只认密钥 /
+  `sshAuthType` 默认 none / TLS 仅自带证书）、实施顺序与 URL 兼容性说明
+- 阶段 4 范围收敛为接入层生命周期，安全项仅记录
+
+
 **perf(git): 阶段 3-3 clone 流式化**（40ba493）
 - `ObjectStore` 新增 `Stat(oid)`（只解压头部取 type/size），新增 `WalkReachable`：可达性遍历只 `Stat`，
   内存与仓库体积无关，blob 不再被解压
