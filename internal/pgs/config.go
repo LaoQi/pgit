@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"pgit/internal/pgs/git"
 )
@@ -34,6 +35,14 @@ type Setting struct {
 	MaxPushBytes int64 `json:"maxPushBytes"`
 	// MaxConcurrentPacks 同时进行的 pack 传输（clone/push/fetch 同步）上限，0 = 默认 4。
 	MaxConcurrentPacks int `json:"maxConcurrentPacks"`
+
+	// MirrorStallTimeoutSec 镜像同步「传输停滞」上限（秒）：连续无数据超过该时长即判定失败。
+	// 0 = 默认 120 秒。用于取代整体超时，避免大仓库传输被中途掐断。
+	MirrorStallTimeoutSec int `json:"mirrorStallTimeoutSec"`
+	// MirrorRetryAttempts 镜像同步失败重试次数（含首次），0 = 默认 3。
+	MirrorRetryAttempts int `json:"mirrorRetryAttempts"`
+	// MirrorRetryBaseDelaySec 重试退避基数（秒），0 = 默认 1。
+	MirrorRetryBaseDelaySec int `json:"mirrorRetryBaseDelaySec"`
 }
 
 // 传输上限默认值。
@@ -54,6 +63,27 @@ func (s *Setting) LimitPushBytes() int64 {
 		return DefaultMaxPushBytes
 	}
 	return v
+}
+
+// MirrorFetchOptions 返回镜像同步的 fetch 超时/重试选项（从配置映射）。
+func (s *Setting) MirrorFetchOptions() git.FetchOptions {
+	if s == nil {
+		return git.FetchOptions{}
+	}
+	s.mu.RLock()
+	stall, attempts, base := s.MirrorStallTimeoutSec, s.MirrorRetryAttempts, s.MirrorRetryBaseDelaySec
+	s.mu.RUnlock()
+	o := git.FetchOptions{}
+	if stall > 0 {
+		o.StallTimeout = time.Duration(stall) * time.Second
+	}
+	if attempts > 0 {
+		o.MaxAttempts = attempts
+	}
+	if base > 0 {
+		o.RetryBaseDelay = time.Duration(base) * time.Second
+	}
+	return o
 }
 
 // LimitConcurrentPacks 返回生效的并发 pack 传输上限。
@@ -235,6 +265,15 @@ func (s *Setting) reloadLocked() error {
 	}
 	if s.MaxConcurrentPacks < 0 {
 		return fmt.Errorf("maxConcurrentPacks must be >= 0")
+	}
+	if s.MirrorStallTimeoutSec < 0 {
+		return fmt.Errorf("mirrorStallTimeoutSec must be >= 0")
+	}
+	if s.MirrorRetryAttempts < 0 {
+		return fmt.Errorf("mirrorRetryAttempts must be >= 0")
+	}
+	if s.MirrorRetryBaseDelaySec < 0 {
+		return fmt.Errorf("mirrorRetryBaseDelaySec must be >= 0")
 	}
 	// 传输上限注入 git 包（pgs → git 单向，避免循环依赖）
 	// 注意：此处持有写锁，不能调用会取读锁的 LimitPushBytes（自死锁），直接读字段。

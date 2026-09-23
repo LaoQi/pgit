@@ -344,7 +344,8 @@ func (r *RepositoriesManager) SyncRepository(name string) (*git.FetchResult, err
 		}
 	}
 
-	result, fetchErr := git.FetchRemote(m.RemoteURL, repoPath, auth)
+	// 超时/重试策略来自全局配置（可经 SIGHUP 热加载）
+	result, fetchErr := git.FetchRemoteWithOptions(m.RemoteURL, repoPath, auth, Settings.MirrorFetchOptions())
 
 	r.mu.Lock()
 	if repo, err := r.getByNameLocked(name); err == nil && repo.IsMirror() {
