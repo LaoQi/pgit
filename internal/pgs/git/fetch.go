@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -50,12 +50,12 @@ func FetchRemote(remoteURL, repoRoot string, auth *FetchAuth) (*FetchResult, err
 
 	remoteRefs, serverCaps, err := fetchInfoRefs(client, remoteURL, auth)
 	if err != nil {
-		log.Printf("fetch: info/refs failed: %v", err)
+		slog.Warn("fetch info/refs failed", "url", remoteURL, "error", err)
 		return nil, err
 	}
 
 	if len(remoteRefs) == 0 {
-		log.Printf("fetch: empty remote (no refs)")
+		slog.Info("fetch empty remote", "url", remoteURL)
 		return &FetchResult{UpToDate: true}, nil
 	}
 
@@ -94,7 +94,7 @@ func FetchRemote(remoteURL, repoRoot string, auth *FetchAuth) (*FetchResult, err
 		}
 	}
 	if allLocal {
-		log.Printf("fetch: wants=%d haves=%d objects=0 (up-to-date)", len(wantOids), len(localOidSet))
+		slog.Info("fetch up-to-date", "wants", len(wantOids), "haves", len(localOidSet))
 		return &FetchResult{UpToDate: true, Wants: len(wantOids), Haves: len(localOidSet)}, nil
 	}
 
@@ -139,12 +139,12 @@ func FetchRemote(remoteURL, repoRoot string, auth *FetchAuth) (*FetchResult, err
 	}
 	postResp, err := client.Do(postReq)
 	if err != nil {
-		log.Printf("fetch: upload-pack request failed: %v", err)
+		slog.Warn("fetch upload-pack request failed", "error", err)
 		return nil, fmt.Errorf("fetch: upload-pack request: %w", err)
 	}
 	defer postResp.Body.Close()
 	if postResp.StatusCode != http.StatusOK {
-		log.Printf("fetch: upload-pack status %d", postResp.StatusCode)
+		slog.Warn("fetch upload-pack non-200", "status", postResp.StatusCode)
 		return nil, fmt.Errorf("fetch: upload-pack status %d", postResp.StatusCode)
 	}
 
@@ -187,7 +187,7 @@ func FetchRemote(remoteURL, repoRoot string, auth *FetchAuth) (*FetchResult, err
 						return
 					}
 				case SidebandProgress:
-					log.Printf("remote: %s", string(payload[1:]))
+					slog.Debug("remote progress", "message", strings.TrimSpace(string(payload[1:])))
 				case SidebandError:
 					pw.CloseWithError(fmt.Errorf("remote error: %s", string(payload[1:])))
 					return
@@ -199,7 +199,7 @@ func FetchRemote(remoteURL, repoRoot string, auth *FetchAuth) (*FetchResult, err
 		// 非 sideband：响应体可能只是 flush-pkt（无可发送对象）或直接是 pack
 		peek := bufio.NewReader(postResp.Body)
 		if head, err := peek.Peek(4); err == nil && string(head) == PktFlush {
-			log.Printf("fetch: wants=%d haves=%d objects=0 (up-to-date)", len(wantOids), len(haveOids))
+			slog.Info("fetch up-to-date", "wants", len(wantOids), "haves", len(haveOids))
 			return &FetchResult{UpToDate: true, Wants: len(wantOids), Haves: len(haveOids)}, nil
 		}
 		packSrc = peek
@@ -210,14 +210,14 @@ func FetchRemote(remoteURL, repoRoot string, auth *FetchAuth) (*FetchResult, err
 	objectsWritten, err := dec.DecodeTo(store)
 	if err != nil {
 		if isUpToDate(err) {
-			log.Printf("fetch: wants=%d haves=%d objects=0 (up-to-date)", len(wantOids), len(haveOids))
+			slog.Info("fetch up-to-date", "wants", len(wantOids), "haves", len(haveOids))
 			return &FetchResult{UpToDate: true, Wants: len(wantOids), Haves: len(haveOids)}, nil
 		}
-		log.Printf("fetch: decode pack failed: %v", err)
+		slog.Warn("fetch decode pack failed", "error", err)
 		return nil, fmt.Errorf("fetch: decode pack: %w", err)
 	}
 	if objectsWritten == 0 {
-		log.Printf("fetch: wants=%d haves=%d objects=0 (up-to-date)", len(wantOids), len(haveOids))
+		slog.Info("fetch up-to-date", "wants", len(wantOids), "haves", len(haveOids))
 		return &FetchResult{UpToDate: true, Wants: len(wantOids), Haves: len(haveOids)}, nil
 	}
 	packSize := counter.n
@@ -256,7 +256,7 @@ func FetchRemote(remoteURL, repoRoot string, auth *FetchAuth) (*FetchResult, err
 				refsUpdated++
 			}
 		} else if i < len(results) {
-			log.Printf("fetch: ref %s update failed: %s", u.Name, results[i].Reason)
+			slog.Warn("fetch ref update failed", "ref", u.Name, "reason", results[i].Reason)
 		}
 	}
 
@@ -283,8 +283,9 @@ func FetchRemote(remoteURL, repoRoot string, auth *FetchAuth) (*FetchResult, err
 	}
 
 	duration := time.Since(fetchStart).Milliseconds()
-	log.Printf("fetch: wants=%d haves=%d objects=%d packSize=%d duration=%dms",
-		len(wantOids), len(haveOids), objectsWritten, packSize, duration)
+	slog.Info("fetch done",
+		"wants", len(wantOids), "haves", len(haveOids), "objects", objectsWritten,
+		"packSize", packSize, "durationMs", duration)
 
 	return &FetchResult{
 		ObjectsWritten: objectsWritten,

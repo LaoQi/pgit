@@ -7,7 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -45,7 +45,7 @@ func (s *SSHHandler) LoadPrivateKey(path string) error {
 		return nil
 	}
 
-	log.Printf("SSH: host key not found, generating ed25519 key")
+	slog.Info("ssh host key not found, generating ed25519 key", "path", path)
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return err
@@ -93,13 +93,13 @@ func (s *SSHHandler) HandleConn(conn net.Conn) {
 	sConn, chans, reqs, err := ssh.NewServerConn(conn, config)
 	if err != nil {
 		if err == io.EOF {
-			log.Printf("SSH: handshaking terminated: %v", err)
+			slog.Debug("ssh handshake terminated", "error", err)
 		} else {
-			log.Printf("SSH: handshaking error: %v", err)
+			slog.Warn("ssh handshake error", "error", err)
 		}
 		return
 	}
-	log.Printf("SSH: connection from %s (%s)", sConn.RemoteAddr(), sConn.ClientVersion())
+	slog.Info("ssh connection", "remote", sConn.RemoteAddr().String(), "client", sConn.ClientVersion())
 	go ssh.DiscardRequests(reqs)
 	s.handleChannels(chans)
 }
@@ -112,7 +112,7 @@ func (s *SSHHandler) handleChannels(chans <-chan ssh.NewChannel) {
 		}
 		ch, reqs, err := newChan.Accept()
 		if err != nil {
-			log.Printf("SSH: accept channel: %v", err)
+			slog.Warn("ssh accept channel failed", "error", err)
 			continue
 		}
 		go s.handleSession(ch, reqs)
@@ -125,16 +125,16 @@ func (s *SSHHandler) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 		switch req.Type {
 		case "env":
 			// 明确拒绝 GIT_PROTOCOL（version=2），让客户端确定性降级 v0
-			log.Printf("SSH: env: %#v", string(req.Payload))
+			slog.Debug("ssh env request rejected", "payload", string(req.Payload))
 			req.Reply(false, nil)
 		case "exec":
 			if len(req.Payload) < 5 {
-				log.Printf("SSH: payload too short")
+				slog.Warn("ssh exec payload too short")
 				return
 			}
 			payload := strings.SplitN(string(req.Payload[4:]), " ", 2)
 			if len(payload) < 2 {
-				log.Printf("SSH: invalid exec payload: %#v", payload)
+				slog.Warn("ssh invalid exec payload", "payload", payload)
 				return
 			}
 			cmdName := payload[0]
@@ -143,15 +143,15 @@ func (s *SSHHandler) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 
 			repo, err := s.Manager.GetByAlias(alias)
 			if err != nil {
-				log.Printf("SSH: unknown repo alias %q: %v", alias, err)
+				slog.Warn("ssh unknown repo alias", "alias", alias, "error", err)
 				return
 			}
 			repoPath := repo.Path()
-			log.Printf("SSH: exec %s %s", cmdName, repoPath)
+			slog.Info("ssh exec", "command", cmdName, "repo", repo.Name, "alias", alias)
 
 			// mirror 仓库禁止 push：拒绝 git-receive-pack。
 			if cmdName == "git-receive-pack" && repo.IsMirror() {
-				log.Printf("SSH: receive-pack denied: mirror repo %q (alias %q)", repo.Name, alias)
+				slog.Warn("ssh receive-pack denied for mirror repository", "repo", repo.Name, "alias", alias)
 				req.Reply(true, nil)
 				_, _ = io.WriteString(ch.Stderr(), "fatal: mirror repository: push disabled\n")
 				ch.SendRequest("exit-status", false, []byte{0, 0, 0, 1})
@@ -160,9 +160,7 @@ func (s *SSHHandler) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 
 			req.Reply(true, nil)
 			if err := git.HandleSSHSession(cmdName, repoPath, ch); err != nil {
-				log.Printf("SSH: %s %s failed: %v", cmdName, alias, err)
-			} else {
-				log.Printf("SSH: %s %s ok", cmdName, alias)
+				slog.Error("ssh session failed", "command", cmdName, "alias", alias, "error", err)
 			}
 			ch.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
 			return

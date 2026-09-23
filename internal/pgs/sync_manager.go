@@ -2,7 +2,7 @@ package pgs
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"math/rand"
 	"sync"
 	"time"
@@ -140,9 +140,9 @@ func (sm *SyncManager) runSync(name string, trigger string) (*SyncLogEntry, erro
 	}
 	if err != nil {
 		entry.Error = err.Error()
-		log.Printf("sync %s [%s] failed: %v", name, trigger, err)
+		slog.Warn("mirror sync failed", "repo", name, "trigger", trigger, "error", err)
 	} else {
-		log.Printf("sync %s [%s] ok: duration=%dms", name, trigger, entry.Duration)
+		slog.Info("mirror sync ok", "repo", name, "trigger", trigger, "durationMs", entry.Duration)
 	}
 	if result != nil {
 		entry.ObjectsFetch = result.ObjectsWritten
@@ -155,7 +155,7 @@ func (sm *SyncManager) runSync(name string, trigger string) (*SyncLogEntry, erro
 	}
 	if repo, err := sm.manager.GetRepository(name); err == nil {
 		if logErr := AppendSyncLog(repo.Path(), *entry); logErr != nil {
-			log.Printf("append sync log for %s failed: %v", name, logErr)
+			slog.Warn("append sync log failed", "repo", name, "error", logErr)
 		}
 	}
 	return entry, err

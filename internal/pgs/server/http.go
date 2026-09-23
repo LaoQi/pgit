@@ -3,10 +3,12 @@ package server
 import (
 	"compress/gzip"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -56,6 +58,7 @@ func (h *HTTPHandler) releasePack() { <-h.packSem }
 
 func (h *HTTPHandler) buildRouter() http.Handler {
 	r := chi.NewRouter()
+	r.Use(requestIDMiddleware)
 	r.Use(requestLogger)
 
 	if h.Settings.HttpAuth {
@@ -523,7 +526,7 @@ func (h *HTTPHandler) gitTransport(w http.ResponseWriter, r *http.Request) {
 			service = "git-" + strings.TrimPrefix(sub, "git-")
 		}
 		if service == "git-receive-pack" {
-			log.Printf("receive-pack denied: mirror repo %q (alias %q)", repo.Name, alias)
+			slog.Warn("receive-pack denied for mirror repository", "requestId", requestID(r.Context()), "repo", repo.Name, "alias", alias)
 			http.Error(w, "mirror repository: push disabled", http.StatusForbidden)
 			return
 		}
@@ -548,12 +551,12 @@ func (h *HTTPHandler) infoRefs(w http.ResponseWriter, r *http.Request, repoPath 
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-advertisement", service))
 	out, err := git.ServeInfoRefs(repoPath, service)
 	if err != nil {
-		log.Printf("info-refs %s: %v", service, err)
+		slog.Error("info-refs failed", "requestId", requestID(r.Context()), "service", service, "error", err)
 		http.Error(w, "internal server error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	_, _ = w.Write(out)
-	log.Printf("info-refs %s ok", service)
+	slog.Info("info-refs ok", "requestId", requestID(r.Context()), "service", service)
 }
 
 func (h *HTTPHandler) gitCommand(w http.ResponseWriter, r *http.Request, repoPath string, command string) {
@@ -576,7 +579,7 @@ func (h *HTTPHandler) gitCommand(w http.ResponseWriter, r *http.Request, repoPat
 	if r.Header.Get("Content-Encoding") == "gzip" {
 		gz, err := gzip.NewReader(r.Body)
 		if err != nil {
-			log.Printf("%s: gzip decode: %v", command, err)
+			slog.Error("gzip decode failed", "requestId", requestID(r.Context()), "command", command, "error", err)
 			return
 		}
 		defer gz.Close()
@@ -586,15 +589,11 @@ func (h *HTTPHandler) gitCommand(w http.ResponseWriter, r *http.Request, repoPat
 	switch command {
 	case "upload-pack":
 		if err := git.HandleUploadPack(repoPath, body, w); err != nil {
-			log.Printf("upload-pack: %v", err)
-		} else {
-			log.Printf("upload-pack ok")
+			slog.Error("upload-pack failed", "requestId", requestID(r.Context()), "error", err)
 		}
 	case "receive-pack":
 		if err := git.HandleReceivePack(repoPath, body, w); err != nil {
-			log.Printf("receive-pack: %v", err)
-		} else {
-			log.Printf("receive-pack ok")
+			slog.Error("receive-pack failed", "requestId", requestID(r.Context()), "error", err)
 		}
 	default:
 		http.Error(w, "unknown command", http.StatusBadRequest)
@@ -637,21 +636,72 @@ func (w *responseStatusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+// requestIDHeader 是请求 ID 的入口/出口头名（透传客户端提供的值，否则服务端生成）。
+const requestIDHeader = "X-Request-Id"
+
+type ctxKey int
+
+const requestIDKey ctxKey = iota
+
+// requestID 从上下文取请求 ID（中间件注入）。
+func requestID(ctx context.Context) string {
+	if v, ok := ctx.Value(requestIDKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// newRequestID 生成随机请求 ID（16 字节 hex）。
+func newRequestID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// requestIDMiddleware 为每个请求分配/透传请求 ID，写入上下文与响应头，
+// 供请求日志与下游 handler 关联同一请求的多条日志。
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(r.Header.Get(requestIDHeader))
+		if id == "" {
+			id = newRequestID()
+		}
+		w.Header().Set(requestIDHeader, id)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDKey, id)))
+	})
+}
+
 func requestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &responseStatusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
+
 		user, _, hasAuth := r.BasicAuth()
 		remote, _, _ := net.SplitHostPort(r.RemoteAddr)
 		if remote == "" {
 			remote = r.RemoteAddr
 		}
-		authInfo := "-"
-		if hasAuth {
-			authInfo = user
+		attrs := []any{
+			"requestId", requestID(r.Context()),
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", sw.status,
+			"durationMs", time.Since(start).Milliseconds(),
+			"remote", remote,
 		}
-		log.Printf("HTTP %s %s %d %s %s %s",
-			r.Method, r.URL.Path, sw.status, time.Since(start).Round(time.Millisecond), authInfo, remote)
+		if hasAuth {
+			attrs = append(attrs, "user", user)
+		}
+		switch {
+		case sw.status >= 500:
+			slog.Error("http request", attrs...)
+		case sw.status >= 400:
+			slog.Warn("http request", attrs...)
+		default:
+			slog.Info("http request", attrs...)
+		}
 	})
 }

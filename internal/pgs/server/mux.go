@@ -3,7 +3,7 @@ package server
 import (
 	"bufio"
 	"bytes"
-	"log"
+	"log/slog"
 	"net"
 	"time"
 )
@@ -31,10 +31,10 @@ func (c *peekConn) SetWriteDeadline(t time.Time) error { return c.nc.SetWriteDea
 // Each accepted connection is fed into a channel; HTTP and SSH handlers consume
 // from it after protocol detection.
 type MuxServer struct {
-	ln       net.Listener
+	ln        net.Listener
 	enableSSH bool
-	ssh      *SSHHandler
-	http     *HTTPHandler
+	ssh       *SSHHandler
+	http      *HTTPHandler
 }
 
 func NewMuxServer(ln net.Listener, enableSSH bool, ssh *SSHHandler, http *HTTPHandler) *MuxServer {
@@ -54,7 +54,7 @@ func (m *MuxServer) Serve() error {
 func (m *MuxServer) handleConn(conn net.Conn) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("mux: handleConn panic: %v", r)
+			slog.Error("mux handleConn panic", "panic", r)
 			conn.Close()
 		}
 	}()

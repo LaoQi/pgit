@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -84,32 +84,33 @@ func main() {
 
 	ln, err := net.Listen("tcp", pgs.Settings.Listen)
 	if err != nil {
-		log.Panicf("listen %s failed: %v", pgs.Settings.Listen, err)
+		slog.Error("listen failed", "listen", pgs.Settings.Listen, "error", err)
+		os.Exit(Failed)
 	}
 
 	var sshHandler *server.SSHHandler
 	if pgs.Settings.EnableSSH {
 		sshHandler, err = server.NewSSHHandler(pgs.Settings.SSHHostKey, pgs.ReposManager)
 		if err != nil {
-			log.Printf("SSH handler init failed: %v", err)
+			slog.Error("ssh handler init failed", "error", err)
 		}
 	}
 	httpHandler := server.NewHTTPHandler(pgs.ReposManager, pgs.Settings, syncMgr)
 
 	mux := server.NewMuxServer(ln, pgs.Settings.EnableSSH, sshHandler, httpHandler)
-	log.Printf("pgit listening on %s (SSH: %v)", pgs.Settings.Listen, pgs.Settings.EnableSSH)
+	slog.Info("pgit listening", "listen", pgs.Settings.Listen, "ssh", pgs.Settings.EnableSSH, "version", Version)
 
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
-		log.Printf("shutting down...")
+		slog.Info("shutting down")
 		syncMgr.Stop()
 		_ = ln.Close()
 		os.Exit(NoError)
 	}()
 
 	if err := mux.Serve(); err != nil {
-		log.Printf("server stopped: %v", err)
+		slog.Info("server stopped", "error", err)
 	}
 }

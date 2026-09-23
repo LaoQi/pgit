@@ -3,7 +3,7 @@ package pgs
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -66,7 +66,7 @@ func (r *RepositoriesManager) CheckRepositories() {
 		}
 		repo, err := r.loadRepo(file.Name())
 		if err != nil {
-			log.Printf("load repository %s failed: %v", file.Name(), err)
+			slog.Error("load repository failed", "dir", file.Name(), "error", err)
 			continue
 		}
 		r.addRepository(repo)
@@ -115,9 +115,9 @@ func (r *RepositoriesManager) migrateLegacyRepo(dirName string) (*Repository, er
 		root:        r.root(),
 	}
 	if err := repo.SaveMetadata(); err != nil {
-		log.Printf("migrate: write pgit.json for %s failed: %v", name, err)
+		slog.Error("migrate write metadata failed", "repo", name, "error", err)
 	}
-	log.Printf("migrated legacy repository %s, generated pgit.json", name)
+	slog.Info("migrated legacy repository", "repo", name)
 	return repo, nil
 }
 
@@ -214,7 +214,7 @@ func (r *RepositoriesManager) CreateRepository(name string, description string, 
 		return err
 	}
 	r.addRepository(repo)
-	log.Printf("created repository %s (default branch: %s)", name, defaultBranch)
+	slog.Info("created repository", "repo", name, "defaultBranch", defaultBranch)
 	return nil
 }
 
@@ -244,7 +244,7 @@ func (r *RepositoriesManager) CreateMirrorRepository(name string, description st
 		return err
 	}
 	r.addRepository(repo)
-	log.Printf("created mirror repository %s (remote: %s)", name, m.RemoteURL)
+	slog.Info("created mirror repository", "repo", name, "remote", m.RemoteURL)
 	return nil
 }
 
@@ -355,7 +355,7 @@ func (r *RepositoriesManager) SyncRepository(name string) (*git.FetchResult, err
 			repo.Mirror.LastError = ""
 		}
 		if err := repo.SaveMetadata(); err != nil {
-			log.Printf("sync: save metadata for %s failed: %v", name, err)
+			slog.Error("sync save metadata failed", "repo", name, "error", err)
 		}
 	}
 	r.mu.Unlock()
@@ -376,7 +376,7 @@ func (r *RepositoriesManager) DeleteRepository(name string) error {
 	for _, alias := range repo.Aliases {
 		delete(r.byAlias, alias)
 	}
-	log.Printf("deleted repository %s", name)
+	slog.Info("deleted repository", "repo", name)
 	return nil
 }
 

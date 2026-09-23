@@ -2,7 +2,7 @@ package pgs
 
 import (
 	"container/list"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -37,7 +37,7 @@ func (tm *TaskManager) Run() {
 				if task.Ready() {
 					// 启动前置为 Running，避免下一轮把同一任务重复派发
 					task.SetStatus(TSRunning)
-					log.Printf("Task %s start", task.Id)
+					slog.Debug("task start", "task", task.Id)
 					go func() {
 						if err := task.Process(); err != nil {
 							task.SetStatus(TSFailed)
@@ -50,13 +50,13 @@ func (tm *TaskManager) Run() {
 				if task.OnFailed != nil {
 					task.OnFailed(task, nil)
 				}
-				log.Printf("Task %s has failed, remove", task.Id)
+				slog.Warn("task failed, removed", "task", task.Id)
 				tm.TaskList.Remove(e)
 			case TSFinished:
 				if task.OnFinished != nil {
 					task.OnFinished(task, nil)
 				}
-				log.Printf("Task %s has finished, remove", task.Id)
+				slog.Debug("task finished, removed", "task", task.Id)
 				tm.TaskList.Remove(e)
 			}
 			e = next

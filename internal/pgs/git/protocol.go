@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -46,6 +46,13 @@ func SetLogLevel(l LogLevel) { logLevel.Store(int32(l)) }
 
 // currentLogLevel 读取当前日志级别。
 func currentLogLevel() LogLevel { return LogLevel(logLevel.Load()) }
+
+// debugf 输出 debug 级结构化日志（仅 detail/debug 配置下生效）。
+func debugf(msg string, args ...any) {
+	if currentLogLevel() >= LogDetail {
+		slog.Debug(msg, args...)
+	}
+}
 
 // upload-pack v0 capabilities
 const uploadPackCaps = "thin-pack side-band-64k ofs-delta no-progress include-tag"
@@ -192,7 +199,7 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	}
 	wantOids := []Oid{firstOid}
 	if currentLogLevel() >= LogDetail {
-		log.Printf("upload-pack: want %s ref=%s", firstOid, refName(firstOid))
+		debugf("upload-pack want", "oid", string(firstOid), "ref", refName(firstOid))
 	}
 
 	// 2. 继续读 want 行直到 flush
@@ -208,7 +215,7 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		if ok {
 			wantOids = append(wantOids, oid)
 			if currentLogLevel() >= LogDetail {
-				log.Printf("upload-pack: want %s ref=%s", oid, refName(oid))
+				debugf("upload-pack want", "oid", string(oid), "ref", refName(oid))
 			}
 		}
 	}
@@ -248,7 +255,7 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 				ho := Oid(fields[1])
 				haveOids = append(haveOids, ho)
 				if currentLogLevel() >= LogDetail {
-					log.Printf("upload-pack: have %s", ho)
+					debugf("upload-pack have", "oid", string(ho))
 				}
 			}
 		}
@@ -277,13 +284,13 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	tAfterReach := time.Now()
 	if currentLogLevel() >= LogDetail {
 		for _, m := range metas {
-			log.Printf("upload-pack: object %s type=%s size=%d", m.Oid, m.Type, m.Size)
+			debugf("upload-pack object", "oid", string(m.Oid), "type", string(m.Type), "size", m.Size)
 		}
 	}
 
 	// 6. want 全部已被 have 覆盖 → 仅发 NAK + flush，不发 PACK
 	if len(metas) == 0 {
-		log.Printf("upload-pack: wants=%d haves=%d objects=0 (up-to-date)", len(wantOids), len(haveOids))
+		slog.Info("upload-pack up-to-date", "wants", len(wantOids), "haves", len(haveOids))
 		if err := pw.WriteFlush(); err != nil {
 			return fmt.Errorf("upload-pack: flush (no pack): %w", err)
 		}
@@ -309,12 +316,12 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	if err := pw.WriteFlush(); err != nil {
 		return fmt.Errorf("upload-pack: flush: %w", err)
 	}
-	log.Printf("upload-pack: wants=%d haves=%d objects=%d", len(wantOids), len(haveOids), len(metas))
-	log.Printf("upload-pack timing: negotiate=%s reach=%s encode=%s total=%s",
-		tAfterNegotiation.Sub(tStart).Round(time.Millisecond),
-		tAfterReach.Sub(tAfterNegotiation).Round(time.Millisecond),
-		tAfterEncode.Sub(tAfterReach).Round(time.Millisecond),
-		time.Since(tStart).Round(time.Millisecond))
+	slog.Info("upload-pack done",
+		"wants", len(wantOids), "haves", len(haveOids), "objects", len(metas),
+		"negotiateMs", tAfterNegotiation.Sub(tStart).Milliseconds(),
+		"reachMs", tAfterReach.Sub(tAfterNegotiation).Milliseconds(),
+		"encodeMs", tAfterEncode.Sub(tAfterReach).Milliseconds(),
+		"totalMs", time.Since(tStart).Milliseconds())
 	return nil
 }
 
@@ -339,7 +346,7 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 	// 首帧为 flush：空命令列表请求（body 仅含 flush-pkt，无 ref 更新、无 packfile）。
 	// 与 cgit 一致，返回空 report-status（unpack ok + flush-pkt）而非错误。
 	if isFlush {
-		log.Printf("receive-pack: empty command list")
+		slog.Info("receive-pack empty command list")
 		if err := pw.WritePktString("unpack ok\n"); err != nil {
 			return fmt.Errorf("receive-pack: write unpack status: %w", err)
 		}
@@ -378,7 +385,7 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 	if packErr != nil {
 		// pack 不可用（超限/损坏）：不更新任何 ref，但必须回 report-status 让客户端
 		// 立刻得到明确拒绝，而不是等待连接关闭。
-		log.Printf("receive-pack: pack rejected: %v", packErr)
+		slog.Error("receive-pack pack rejected", "error", packErr)
 		rejected := make([]RefUpdateResult, 0, len(updates))
 		for _, u := range updates {
 			rejected = append(rejected, RefUpdateResult{Name: u.Name})
@@ -386,7 +393,7 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 		return writeReportStatus(out, clientCaps, rejected, packErr)
 	}
 	if received > 0 {
-		log.Printf("receive-pack: received %d objects", received)
+		slog.Info("receive-pack received objects", "objects", received)
 	}
 
 	// 5. RefStore.Update（per-ref 原子 CAS）
@@ -405,9 +412,9 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 					tag = " [force-push]"
 				}
 			}
-			log.Printf("receive-pack: %s %s → %s%s", u.Name, oidShort(u.OldOid), oidShort(u.NewOid), tag)
+			slog.Info("receive-pack ref updated", "ref", u.Name, "old", oidShort(u.OldOid), "new", oidShort(u.NewOid), "forcePush", tag != "")
 		} else if i < len(results) {
-			log.Printf("receive-pack: %s rejected: %s", u.Name, results[i].Reason)
+			slog.Warn("receive-pack ref rejected", "ref", u.Name, "reason", results[i].Reason)
 		}
 	}
 
@@ -518,81 +525,6 @@ func parseUpdateLine(line string) (u RefUpdate, caps string, ok bool) {
 	}
 	caps = capPart
 	return
-}
-
-// packEntry 描述一个对象在 pack 中的写入方式
-type packEntry struct {
-	obj     *RawObject
-	isDelta bool
-	baseOid Oid    // isDelta=true：base 的 oid（须已作为 full 写入）
-	delta   []byte // isDelta=true：EncodeDelta 输出
-}
-
-// planPackEntries 规划 pack 写入计划：仅 blob 做 delta，单层（base 必 full），OFS_DELTA。
-// 策略：blob 按 size 降序相邻两两配对（base=大者 full，target=小者 delta）；
-//   - size 比值过滤：max/min > 2 不配对（差异过大 delta 收益低）；
-//   - 负收益回退：deltaLen*2 >= tgt.Size 时 target 退化为 full；
-//   - 非 blob 全 full；落单 blob 全 full。
-//
-// entries 保持 objs 原 BFS 顺序，仅标记 isDelta；ServeUploadPack 两段写入（full 先于 delta）。
-func planPackEntries(objs []*RawObject) ([]packEntry, error) {
-	entries := make([]packEntry, len(objs))
-	blobIdx := map[*RawObject]int{}
-	var blobs []*RawObject
-	for i, o := range objs {
-		entries[i].obj = o
-		if o.Type == ObjBlob {
-			blobs = append(blobs, o)
-			blobIdx[o] = i
-		}
-	}
-	// blob 按 size 降序拷贝（不影响 entries 原序）
-	sorted := make([]*RawObject, len(blobs))
-	copy(sorted, blobs)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Size > sorted[j].Size })
-	// 相邻两两配对：i 为 base（更大），i+1 为 target
-	for i := 0; i+1 < len(sorted); i += 2 {
-		base, tgt := sorted[i], sorted[i+1]
-		// size 比值过滤：max/min > 2 跳过
-		hi, lo := base.Size, tgt.Size
-		if hi < lo {
-			hi, lo = lo, hi
-		}
-		if hi > 2*lo {
-			if currentLogLevel() >= LogDetail {
-				log.Printf("upload-pack: delta skip (size ratio) base=%s target=%s hi=%d lo=%d", base.Oid(), tgt.Oid(), hi, lo)
-			}
-			continue
-		}
-		// 收益预检：随机/低相似数据（采样命中率低）直接跳过 delta，target 走 full，
-		// 避免 EncodeDelta 在无收益输入上白算（大 blob 的 O(n) 索引构建 + O(n²) 匹配扫描）。
-		if !deltaPrecheck(base.Content, tgt.Content) {
-			if currentLogLevel() >= LogDetail {
-				log.Printf("upload-pack: delta skip (precheck) base=%s target=%s hi=%d lo=%d", base.Oid(), tgt.Oid(), hi, lo)
-			}
-			continue
-		}
-		delta, err := EncodeDelta(base.Content, tgt.Content)
-		if err != nil {
-			return nil, fmt.Errorf("encode delta base=%s tgt=%s: %w", base.Oid(), tgt.Oid(), err)
-		}
-		// 负收益回退：delta 字节数 >= target 原始字节数一半 → 退化为 full
-		if len(delta)*2 >= tgt.Size {
-			if currentLogLevel() >= LogDetail {
-				log.Printf("upload-pack: delta fallback (negative) base=%s target=%s deltaLen=%d tgtSize=%d", base.Oid(), tgt.Oid(), len(delta), tgt.Size)
-			}
-			continue
-		}
-		// 标记 target 为 delta（base 保持 full）
-		j := blobIdx[tgt]
-		entries[j].isDelta = true
-		entries[j].baseOid = base.Oid()
-		entries[j].delta = delta
-		if currentLogLevel() >= LogDetail {
-			log.Printf("upload-pack: delta base=%s target=%s baseSize=%d tgtSize=%d deltaLen=%d", base.Oid(), tgt.Oid(), base.Size, tgt.Size, len(delta))
-		}
-	}
-	return entries, nil
 }
 
 func oidShort(o Oid) string {
@@ -711,10 +643,10 @@ func encodePack(store ObjectStore, metas []ObjectMeta, w io.Writer) error {
 				useDelta = true
 				delta = d
 			} else if currentLogLevel() >= LogDetail {
-				log.Printf("upload-pack: delta fallback (negative) base=%s target=%s deltaLen=%d tgtSize=%d", base.Oid, tgt.Oid, len(d), tgt.Size)
+				debugf("upload-pack delta fallback (negative)", "base", string(base.Oid), "target", string(tgt.Oid), "deltaLen", len(d), "tgtSize", tgt.Size)
 			}
 		} else if currentLogLevel() >= LogDetail {
-			log.Printf("upload-pack: delta skip base=%s target=%s hi=%d lo=%d", base.Oid, tgt.Oid, hi, lo)
+			debugf("upload-pack delta skip", "base", string(base.Oid), "target", string(tgt.Oid), "hi", hi, "lo", lo)
 		}
 
 		if err := enc.WriteObject(baseObj); err != nil {
@@ -725,7 +657,7 @@ func encodePack(store ObjectStore, metas []ObjectMeta, w io.Writer) error {
 				return fmt.Errorf("pack delta %s: %w", tgt.Oid, err)
 			}
 			if currentLogLevel() >= LogDetail {
-				log.Printf("upload-pack: delta base=%s target=%s baseSize=%d tgtSize=%d deltaLen=%d", base.Oid, tgt.Oid, base.Size, tgt.Size, len(delta))
+				debugf("upload-pack delta", "base", string(base.Oid), "target", string(tgt.Oid), "baseSize", base.Size, "tgtSize", tgt.Size, "deltaLen", len(delta))
 			}
 		} else {
 			if err := enc.WriteObject(tgtObj); err != nil {

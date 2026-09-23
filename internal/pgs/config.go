@@ -25,6 +25,7 @@ type Setting struct {
 	WebUIPrefix  string            `json:"webuiPrefix"`
 	WebUIAssets  string            `json:"webuiAssets"`
 	LogLevel     string            `json:"logLevel"`
+	LogFormat    string            `json:"logFormat"`
 	// MaxPushBytes 单次 push 请求体上限（字节），0 = 默认 2GiB。
 	MaxPushBytes int64 `json:"maxPushBytes"`
 	// MaxConcurrentPacks 同时进行的 pack 传输（clone/push/fetch 同步）上限，0 = 默认 4。
@@ -96,14 +97,16 @@ func (s *Setting) Reload() error {
 	// 传输上限注入 git 包（pgs → git 单向，避免循环依赖）
 	git.SetMaxReceivePackBytes(s.LimitPushBytes())
 
-	// 日志级别注入 git 包（pgs → git 单向，避免循环依赖）
-	switch s.LogLevel {
-	case "", "off":
-		git.SetLogLevel(git.LogOff)
-	case "detail":
+	// 日志：初始化 slog（text/json）+ 把标准库 log 重定向到同一 handler
+	debug, err := SetupLogging(s.LogFormat, s.LogLevel)
+	if err != nil {
+		return err
+	}
+	// git 包的逐对象 detail 日志跟随 debug 级（pgs → git 单向注入）
+	if debug {
 		git.SetLogLevel(git.LogDetail)
-	default:
-		return fmt.Errorf("invalid logLevel: %q (want off|detail)", s.LogLevel)
+	} else {
+		git.SetLogLevel(git.LogOff)
 	}
 	return nil
 }
@@ -128,5 +131,6 @@ func init() {
 		},
 		WebUIPrefix: "__webui",
 		WebUIAssets: "",
+		LogFormat:   FormatText,
 	}
 }
