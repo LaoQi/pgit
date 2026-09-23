@@ -267,21 +267,22 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("upload-pack: write NAK: %w", err)
 	}
 
-	// 5. CollectReachable（排除 have 可达对象）
+	// 5. 只读对象头部（Stat）遍历发送集合：内容不入内存，
+	//    内存占用与仓库体积无关（blob 无需解压即可获知 type/size）。
 	store := NewObjectStore(repoRoot)
-	objs, err := CollectReachable(store, wantOids, haveOids...)
+	metas, err := WalkReachable(store, wantOids, haveOids, nil)
 	if err != nil {
-		return fmt.Errorf("upload-pack: collect reachable: %w", err)
+		return fmt.Errorf("upload-pack: walk reachable: %w", err)
 	}
 	tAfterReach := time.Now()
 	if currentLogLevel() >= LogDetail {
-		for _, o := range objs {
-			log.Printf("upload-pack: object %s type=%s size=%d", o.Oid(), o.Type, o.Size)
+		for _, m := range metas {
+			log.Printf("upload-pack: object %s type=%s size=%d", m.Oid, m.Type, m.Size)
 		}
 	}
 
 	// 6. want 全部已被 have 覆盖 → 仅发 NAK + flush，不发 PACK
-	if len(objs) == 0 {
+	if len(metas) == 0 {
 		log.Printf("upload-pack: wants=%d haves=%d objects=0 (up-to-date)", len(wantOids), len(haveOids))
 		if err := pw.WriteFlush(); err != nil {
 			return fmt.Errorf("upload-pack: flush (no pack): %w", err)
@@ -289,14 +290,9 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		return nil
 	}
 
-	// 6. 规划 delta 配对（仅 blob，单层，OFS_DELTA）
-	entries, err := planPackEntries(objs)
-	if err != nil {
-		return fmt.Errorf("upload-pack: plan deltas: %w", err)
-	}
-	tAfterPlan := time.Now()
-
-	// 7. 编码 pack（可能走 sideband）
+	// 6+7. 单遍编码：非 blob 按 BFS 顺序先写；blob 按 size 降序遍历两两配对
+	//      （base=大者），保证 OFS_DELTA 的 base 先于 delta 出现。每个对象只读一次，
+	//      内存峰值 ≈ 同时持有的一对 blob + 已算出的 delta。
 	useSideband := strings.Contains(clientCaps, "side-band-64k")
 	var packSink io.Writer
 	if useSideband {
@@ -304,38 +300,20 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	} else {
 		packSink = out
 	}
-	enc := NewPackEncoder(packSink)
-	if err := enc.WriteHeader(len(entries)); err != nil {
-		return fmt.Errorf("upload-pack: pack header: %w", err)
+	if err := encodePack(store, metas, packSink); err != nil {
+		return fmt.Errorf("upload-pack: encode pack: %w", err)
 	}
-	for _, e := range entries {
-		if !e.isDelta {
-			if err := enc.WriteObject(e.obj); err != nil {
-				return fmt.Errorf("upload-pack: pack obj %s: %w", e.obj.Oid(), err)
-			}
-		}
-	}
-	for _, e := range entries {
-		if e.isDelta {
-			if err := enc.WriteOfsDelta(e.baseOid, e.delta); err != nil {
-				return fmt.Errorf("upload-pack: pack delta %s: %w", e.obj.Oid(), err)
-			}
-		}
-	}
-	if err := enc.WriteTrailer(); err != nil {
-		return fmt.Errorf("upload-pack: pack trailer: %w", err)
-	}
+	tAfterEncode := time.Now()
 
 	// 8. flush 结束
 	if err := pw.WriteFlush(); err != nil {
 		return fmt.Errorf("upload-pack: flush: %w", err)
 	}
-	log.Printf("upload-pack: wants=%d haves=%d objects=%d", len(wantOids), len(haveOids), len(objs))
-	log.Printf("upload-pack timing: negotiate=%s reach=%s plan=%s encode=%s total=%s",
+	log.Printf("upload-pack: wants=%d haves=%d objects=%d", len(wantOids), len(haveOids), len(metas))
+	log.Printf("upload-pack timing: negotiate=%s reach=%s encode=%s total=%s",
 		tAfterNegotiation.Sub(tStart).Round(time.Millisecond),
 		tAfterReach.Sub(tAfterNegotiation).Round(time.Millisecond),
-		tAfterPlan.Sub(tAfterReach).Round(time.Millisecond),
-		time.Since(tAfterPlan).Round(time.Millisecond),
+		tAfterEncode.Sub(tAfterReach).Round(time.Millisecond),
 		time.Since(tStart).Round(time.Millisecond))
 	return nil
 }
@@ -658,4 +636,106 @@ func isFastForward(store ObjectStore, ancestor, descendant Oid) bool {
 		}
 	}
 	return false
+}
+
+// encodePack 单遍把 metas 中的对象编码为 pack 写入 w，返回写入对象数。
+//
+// 顺序：非 blob 保持 BFS 顺序；blob 按 size 降序两两配对（base=较大者）。
+// base 总在 delta 之前写出 → OFS_DELTA 合法。每对只读取一次对象内容，
+// 因此每个对象仅解压一次，内存峰值 ≈ 一对 blob + delta 字节。
+func encodePack(store ObjectStore, metas []ObjectMeta, w io.Writer) error {
+	others := make([]ObjectMeta, 0, len(metas))
+	blobs := make([]ObjectMeta, 0, len(metas))
+	for _, m := range metas {
+		if m.Type == ObjBlob {
+			blobs = append(blobs, m)
+		} else {
+			others = append(others, m)
+		}
+	}
+	sort.Slice(blobs, func(i, j int) bool { return blobs[i].Size > blobs[j].Size })
+
+	enc := NewPackEncoder(w)
+	if err := enc.WriteHeader(len(metas)); err != nil {
+		return fmt.Errorf("pack header: %w", err)
+	}
+
+	writeFull := func(oid Oid) error {
+		obj, err := store.Read(oid)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", oid, err)
+		}
+		if err := enc.WriteObject(obj); err != nil {
+			return fmt.Errorf("pack obj %s: %w", oid, err)
+		}
+		return nil
+	}
+
+	for _, m := range others {
+		if err := writeFull(m.Oid); err != nil {
+			return err
+		}
+	}
+
+	for i := 0; i < len(blobs); i += 2 {
+		base := blobs[i]
+		if i+1 >= len(blobs) {
+			if err := writeFull(base.Oid); err != nil {
+				return err
+			}
+			break
+		}
+		tgt := blobs[i+1]
+
+		baseObj, err := store.Read(base.Oid)
+		if err != nil {
+			return fmt.Errorf("read base %s: %w", base.Oid, err)
+		}
+		tgtObj, err := store.Read(tgt.Oid)
+		if err != nil {
+			return fmt.Errorf("read target %s: %w", tgt.Oid, err)
+		}
+
+		hi, lo := base.Size, tgt.Size
+		if hi < lo {
+			hi, lo = lo, hi
+		}
+		useDelta := false
+		var delta []byte
+		if hi <= 2*lo && deltaPrecheck(baseObj.Content, tgtObj.Content) {
+			d, err := EncodeDelta(baseObj.Content, tgtObj.Content)
+			if err != nil {
+				return fmt.Errorf("encode delta base=%s tgt=%s: %w", base.Oid, tgt.Oid, err)
+			}
+			if len(d)*2 < tgt.Size { // 负收益回退
+				useDelta = true
+				delta = d
+			} else if currentLogLevel() >= LogDetail {
+				log.Printf("upload-pack: delta fallback (negative) base=%s target=%s deltaLen=%d tgtSize=%d", base.Oid, tgt.Oid, len(d), tgt.Size)
+			}
+		} else if currentLogLevel() >= LogDetail {
+			log.Printf("upload-pack: delta skip base=%s target=%s hi=%d lo=%d", base.Oid, tgt.Oid, hi, lo)
+		}
+
+		if err := enc.WriteObject(baseObj); err != nil {
+			return fmt.Errorf("pack obj %s: %w", base.Oid, err)
+		}
+		if useDelta {
+			if err := enc.WriteOfsDelta(base.Oid, delta); err != nil {
+				return fmt.Errorf("pack delta %s: %w", tgt.Oid, err)
+			}
+			if currentLogLevel() >= LogDetail {
+				log.Printf("upload-pack: delta base=%s target=%s baseSize=%d tgtSize=%d deltaLen=%d", base.Oid, tgt.Oid, base.Size, tgt.Size, len(delta))
+			}
+		} else {
+			if err := enc.WriteObject(tgtObj); err != nil {
+				return fmt.Errorf("pack obj %s: %w", tgt.Oid, err)
+			}
+		}
+	}
+
+	if err := enc.WriteTrailer(); err != nil {
+		return fmt.Errorf("pack trailer: %w", err)
+	}
+	return nil
 }

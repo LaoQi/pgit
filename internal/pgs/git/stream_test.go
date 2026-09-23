@@ -165,6 +165,9 @@ func (discardStore) Read(oid Oid) (*RawObject, error) {
 }
 func (discardStore) Exists(oid Oid) bool               { return false }
 func (discardStore) Write(obj *RawObject) (Oid, error) { return obj.Oid(), nil }
+func (discardStore) Stat(oid Oid) (ObjectType, int, error) {
+	return "", 0, fmt.Errorf("discard store has no objects")
+}
 
 // 上限：SetMaxReceivePackBytes 生效于 receive-pack —— pack 超限时不得更新 ref，
 // 且必须回 report-status（unpack error）而不是让客户端挂死。
@@ -219,4 +222,180 @@ func InitBareRepoForTest(dir string) error {
 		return err
 	}
 	return nil
+}
+
+// WalkReachable 只调用 Stat：用「禁止 Read blob」的 store 验证遍历不解压 blob 内容。
+func TestWalkReachableStatsOnly(t *testing.T) {
+	dir := t.TempDir()
+	store := &LooseStore{Root: dir}
+	// 构造一个 8MiB 的 blob + tree + commit
+	big := NewRawObject(ObjBlob, bytes.Repeat([]byte("x"), 8<<20))
+	tree := makeTree([]TreeEntry{{Mode: 0o100644, Name: "big.bin", Oid: big.Oid()}})
+	commit := makeCommit(tree.Oid(), nil, "big\n")
+	for _, o := range []*RawObject{big, tree, commit} {
+		if _, err := store.Write(o); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	counting := &countingStore{inner: store, forbidBlobRead: true}
+	metas, err := WalkReachable(counting, []Oid{commit.Oid()}, nil, nil)
+	if err != nil {
+		t.Fatalf("WalkReachable: %v", err)
+	}
+	if len(metas) != 3 {
+		t.Fatalf("metas = %d, want 3", len(metas))
+	}
+	for _, m := range metas {
+		if m.Oid == big.Oid() && m.Size != 8<<20 {
+			t.Fatalf("blob size = %d, want %d", m.Size, 8<<20)
+		}
+	}
+	if counting.blobReads != 0 {
+		t.Fatalf("blob content read %d times, want 0", counting.blobReads)
+	}
+}
+
+// have 排除集在 WalkReachable 下同样生效（增量 clone 不重复发送已有对象）。
+func TestWalkReachableHaveFilter(t *testing.T) {
+	dir := t.TempDir()
+	store := &LooseStore{Root: dir}
+	blobA := makeBlob("a\n")
+	treeA := makeTree([]TreeEntry{{Mode: 0o100644, Name: "a", Oid: blobA.Oid()}})
+	commitA := makeCommit(treeA.Oid(), nil, "a\n")
+	blobB := makeBlob("b\n")
+	treeB := makeTree([]TreeEntry{{Mode: 0o100644, Name: "b", Oid: blobB.Oid()}})
+	commitB := makeCommit(treeB.Oid(), []Oid{commitA.Oid()}, "b\n")
+	for _, o := range []*RawObject{blobA, treeA, commitA, blobB, treeB, commitB} {
+		if _, err := store.Write(o); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	full, err := WalkReachable(store, []Oid{commitB.Oid()}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inc, err := WalkReachable(store, []Oid{commitB.Oid()}, []Oid{commitA.Oid()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full) != 6 {
+		t.Fatalf("full = %d, want 6", len(full))
+	}
+	if len(inc) != 3 { // commitB + treeB + blobB
+		t.Fatalf("incremental = %d, want 3", len(inc))
+	}
+	for _, m := range inc {
+		switch m.Oid {
+		case commitA.Oid(), treeA.Oid(), blobA.Oid():
+			t.Fatalf("have-reachable object %s should be excluded", m.Oid)
+		}
+	}
+}
+
+// countingStore 统计读操作，可选禁止读取 blob 内容。
+type countingStore struct {
+	inner          ObjectStore
+	blobReads      int
+	reads          int
+	forbidBlobRead bool
+}
+
+func (s *countingStore) Read(oid Oid) (*RawObject, error) {
+	s.reads++
+	if s.forbidBlobRead {
+		if t, _, err := s.inner.Stat(oid); err == nil && t == ObjBlob {
+			s.blobReads++
+			return nil, fmt.Errorf("blob read forbidden")
+		}
+	}
+	return s.inner.Read(oid)
+}
+func (s *countingStore) Exists(oid Oid) bool                   { return s.inner.Exists(oid) }
+func (s *countingStore) Write(obj *RawObject) (Oid, error)     { return s.inner.Write(obj) }
+func (s *countingStore) Stat(oid Oid) (ObjectType, int, error) { return s.inner.Stat(oid) }
+
+// clone 编码路径（encodePack 单遍）产出的 pack 可解、对象齐全、内容一致。
+func TestEncodePackFromMetasEquivalence(t *testing.T) {
+	dir := t.TempDir()
+	store := &LooseStore{Root: dir}
+	var objs []*RawObject
+	// 若干相似 blob（可 delta）+ 一个不相似 blob
+	for i := 0; i < 6; i++ {
+		content := append([]byte(strings.Repeat("shared-prefix-", 500)), []byte(fmt.Sprintf("variant-%d\n", i))...)
+		objs = append(objs, NewRawObject(ObjBlob, content))
+	}
+	objs = append(objs, NewRawObject(ObjBlob, bytes.Repeat([]byte{0xAA}, 5000)))
+	for _, o := range objs {
+		if _, err := store.Write(o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var roots []Oid
+	for _, o := range objs {
+		roots = append(roots, o.Oid())
+	}
+	metas, err := WalkReachable(store, roots, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := encodePack(store, metas, &buf); err != nil {
+		t.Fatalf("encodePack: %v", err)
+	}
+
+	got, err := NewPackDecoder(bytes.NewReader(buf.Bytes())).Decode()
+	if err != nil {
+		t.Fatalf("decode produced pack: %v", err)
+	}
+	if len(got) != len(objs) {
+		t.Fatalf("decoded %d objects, want %d", len(got), len(objs))
+	}
+	byOid := map[Oid]*RawObject{}
+	for _, o := range got {
+		byOid[o.Oid()] = o
+	}
+	for _, o := range objs {
+		back, ok := byOid[o.Oid()]
+		if !ok || !bytes.Equal(back.Content, o.Content) {
+			t.Fatalf("object %s missing or content mismatch", o.Oid())
+		}
+	}
+}
+
+// 每个对象只被读取一次（单遍编码）：统计 store 的 Read 次数应等于对象数。
+func TestEncodePackSinglePass(t *testing.T) {
+	dir := t.TempDir()
+	store := &LooseStore{Root: dir}
+	var objs []*RawObject
+	for i := 0; i < 5; i++ {
+		objs = append(objs, NewRawObject(ObjBlob, append(bytes.Repeat([]byte("same-"), 200), byte('0'+i))))
+	}
+	objs = append(objs, NewRawObject(ObjBlob, bytes.Repeat([]byte{0xBB}, 3000))) // 落单 blob
+	for _, o := range objs {
+		if _, err := store.Write(o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var roots []Oid
+	for _, o := range objs {
+		roots = append(roots, o.Oid())
+	}
+	counting := &countingStore{inner: store}
+	metas, err := WalkReachable(counting, roots, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readsBefore := counting.reads
+
+	var buf bytes.Buffer
+	if err := encodePack(counting, metas, &buf); err != nil {
+		t.Fatal(err)
+	}
+	reads := counting.reads - readsBefore
+	if reads > len(objs) {
+		t.Fatalf("encodePack read %d objects for %d objects (multi-pass)", reads, len(objs))
+	}
 }

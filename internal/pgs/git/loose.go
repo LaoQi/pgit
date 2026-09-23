@@ -16,6 +16,9 @@ type ObjectStore interface {
 	Read(oid Oid) (*RawObject, error)
 	Exists(oid Oid) bool
 	Write(obj *RawObject) (Oid, error)
+	// Stat 只读取对象头部（type 与 size），不解压整个内容。
+	// 供 clone 侧「先规划、后编码」两遍式遍历使用，避免对象内容全量驻留内存。
+	Stat(oid Oid) (ObjectType, int, error)
 }
 
 // NewObjectStore 打开仓库的松散对象存储（<repoRoot>/objects）。
@@ -77,6 +80,50 @@ func (s *LooseStore) Read(oid Oid) (*RawObject, error) {
 		return nil, fmt.Errorf("loose %s: size mismatch header=%d actual=%d", oid, size, len(content))
 	}
 	return &RawObject{Type: objType, Size: size, Content: content}, nil
+}
+
+// Stat 解析 loose 对象头部，返回 type 与 content 长度，不加载 content。
+// zlib 流中 header 位于最前，读到 NUL 即可停止。
+func (s *LooseStore) Stat(oid Oid) (ObjectType, int, error) {
+	f, err := os.Open(s.Path(oid))
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.Close()
+	zr, err := zlib.NewReader(f)
+	if err != nil {
+		return "", 0, fmt.Errorf("loose %s: zlib init: %w", oid, err)
+	}
+	defer zr.Close()
+
+	// 头部格式 "<type> <size>\0"，长度有限（type ≤ 6 + 空格 + 数字），最多读 64 字节
+	var head []byte
+	buf := make([]byte, 1)
+	for len(head) < 64 {
+		n, err := zr.Read(buf)
+		if n > 0 {
+			head = append(head, buf[0])
+			if buf[0] == 0 {
+				break
+			}
+		}
+		if err != nil {
+			return "", 0, fmt.Errorf("loose %s: read header: %w", oid, err)
+		}
+	}
+	nul := bytes.IndexByte(head, 0)
+	if nul < 0 {
+		return "", 0, fmt.Errorf("loose %s: no header terminator", oid)
+	}
+	sp := bytes.IndexByte(head[:nul], ' ')
+	if sp < 0 {
+		return "", 0, fmt.Errorf("loose %s: bad header %q", oid, head[:nul])
+	}
+	var size int
+	if _, err := fmt.Sscanf(string(head[sp+1:nul]), "%d", &size); err != nil {
+		return "", 0, fmt.Errorf("loose %s: bad size: %w", oid, err)
+	}
+	return ObjectType(head[:sp]), size, nil
 }
 
 // Write 写入 loose 对象。先写临时文件再 rename，原子性。

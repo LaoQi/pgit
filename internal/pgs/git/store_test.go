@@ -37,6 +37,14 @@ func (s *memStore) Write(obj *RawObject) (Oid, error) {
 	return oid, nil
 }
 
+func (s *memStore) Stat(oid Oid) (ObjectType, int, error) {
+	o, ok := s.objs[oid]
+	if !ok {
+		return "", 0, fmt.Errorf("memstore: object %s not found", oid)
+	}
+	return o.Type, o.Size, nil
+}
+
 var _ ObjectStore = (*memStore)(nil)
 
 // 浏览 API（TreeAt/BlobAt/CommitLog）与可达性遍历（CollectReachable）
