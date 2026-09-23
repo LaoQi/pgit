@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 )
 
 // PackDecoder 解析 packfile（入向，含 OFS_DELTA/REF_DELTA 应用，push 用）。
@@ -70,8 +71,12 @@ func (d *PackDecoder) Decode() ([]*RawObject, error) {
 	return d.objects, nil
 }
 
-// readObject 从 body[start] 读一个对象，返回对象 + 消耗字节数
+// readObject 从 body[start] 读一个对象，返回对象 + 消耗字节数。
+// 所有读取都做边界检查：pack 内容来自不可信输入，越界必须返回错误而非 panic。
 func (d *PackDecoder) readObject(body []byte, start int) (*RawObject, int, error) {
+	if start >= len(body) {
+		return nil, 0, fmt.Errorf("truncated object header at %d", start)
+	}
 	pos := start
 	b := body[pos]
 	pos++
@@ -79,6 +84,12 @@ func (d *PackDecoder) readObject(body []byte, start int) (*RawObject, int, error
 	size := uint64(b & 0x0f)
 	shift := uint(4)
 	for b&0x80 != 0 {
+		if pos >= len(body) {
+			return nil, 0, fmt.Errorf("truncated object header (size varint) at %d", start)
+		}
+		if shift >= 64 {
+			return nil, 0, fmt.Errorf("object size varint too long at %d", start)
+		}
 		b = body[pos]
 		pos++
 		size |= uint64(b&0x7f) << shift
@@ -97,8 +108,14 @@ func (d *PackDecoder) readObject(body []byte, start int) (*RawObject, int, error
 		return NewRawObject(objType, content), (pos - start) + n, nil
 	case packObjOfsDelta:
 		// 读 offset varint（git ofs-delta 编码：big-endian base-128，每续位 +1 补偿）
-		off, m := readOfsDelta(body, pos)
+		off, m, err := readOfsDelta(body, pos)
+		if err != nil {
+			return nil, 0, err
+		}
 		pos += m
+		if off <= 0 || off > start {
+			return nil, 0, fmt.Errorf("ofs-delta: bad offset %d at %d", off, start)
+		}
 		delta, n, err := readZlib(body, pos)
 		if err != nil {
 			return nil, 0, fmt.Errorf("ofs-delta zlib: %w", err)
@@ -187,10 +204,16 @@ func readZlib(body []byte, pos int) ([]byte, int, error) {
 
 // readOfsDelta 读 git ofs-delta 偏移 varint。
 // 编码（与 git get_delta_base 一致）：
-//   off = c & 0x7f
-//   while c & 0x80: off += 1; c = next; off = (off<<7) | (c&0x7f)
-// 返回解码值与消耗字节数。该值是「当前对象 type 字节偏移 - base type 字节偏移」。
-func readOfsDelta(b []byte, pos int) (int, int) {
+//
+//	off = c & 0x7f
+//	while c & 0x80: off += 1; c = next; off = (off<<7) | (c&0x7f)
+//
+// 返回解码值、消耗字节数与错误。该值是「当前对象 type 字节偏移 - base type 字节偏移」。
+// 越界或偏移溢出返回错误（pack 内容不可信）。
+func readOfsDelta(b []byte, pos int) (int, int, error) {
+	if pos >= len(b) {
+		return 0, 0, fmt.Errorf("ofs-delta: missing offset at %d", pos)
+	}
 	var c byte
 	var off uint64
 	n := 0
@@ -199,11 +222,17 @@ func readOfsDelta(b []byte, pos int) (int, int) {
 	n++
 	off = uint64(c & 0x7f)
 	for c&0x80 != 0 {
+		if pos >= len(b) {
+			return 0, 0, fmt.Errorf("ofs-delta: truncated offset at %d", pos)
+		}
 		off += 1
 		c = b[pos]
 		pos++
 		n++
 		off = (off << 7) | uint64(c&0x7f)
+		if off > math.MaxInt32 {
+			return 0, 0, fmt.Errorf("ofs-delta: offset too large (%d)", off)
+		}
 	}
-	return int(off), n
+	return int(off), n, nil
 }

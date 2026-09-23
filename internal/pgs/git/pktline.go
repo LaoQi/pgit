@@ -73,7 +73,7 @@ func (p *PktReader) ReadPkt() (payload []byte, isFlush bool, err error) {
 	if _, err := fmt.Sscanf(hexStr, "%x", &n); err != nil {
 		return nil, false, fmt.Errorf("pkt: bad length %q: %w", hexStr, err)
 	}
-	if n < 4 {
+	if n < 4 || n > 65520 { // LARGE_PACKET_MAX：超长长度直接拒绝，避免无谓分配
 		return nil, false, fmt.Errorf("pkt: bad length %d", n)
 	}
 	payload = make([]byte, n-4)

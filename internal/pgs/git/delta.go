@@ -10,22 +10,45 @@ import "fmt"
 //     insert: 0b0xxxxxxx（x≠0），后续 x 字节直接拷贝
 //   - 0x00 非法
 
-// ApplyDelta 对 base 应用 delta 指令，返回还原后的 target
+// maxDeltaTarget 是单个 delta 还原后的目标大小上限（防不可信 tgtSize 触发的内存放大）。
+const maxDeltaTarget = 1 << 30 // 1 GiB
+
+// ApplyDelta 对 base 应用 delta 指令，返回还原后的 target。
+// delta 内容来自不可信输入：所有读取均做边界检查，越界返回错误而非 panic。
 func ApplyDelta(base, delta []byte) ([]byte, error) {
+	if len(delta) == 0 {
+		return nil, fmt.Errorf("delta: empty input")
+	}
 	pos := 0
 	srcSize, n := readVarintLE(delta[pos:])
 	pos += n
 	if int(srcSize) != len(base) {
 		return nil, fmt.Errorf("delta: src size %d != base %d", srcSize, len(base))
 	}
+	if pos >= len(delta) {
+		return nil, fmt.Errorf("delta: truncated header (target size)")
+	}
 	tgtSize, n := readVarintLE(delta[pos:])
 	pos += n
-	target := make([]byte, 0, tgtSize)
+	if tgtSize > maxDeltaTarget {
+		return nil, fmt.Errorf("delta: target size %d exceeds limit %d", tgtSize, maxDeltaTarget)
+	}
+	// 预分配上限 4MiB：tgtSize 来自不可信输入，按需 append 增长，避免内存放大
+	target := make([]byte, 0, min(int(tgtSize), 4<<20))
 	for pos < len(delta) {
 		op := delta[pos]
 		pos++
 		if op&0x80 != 0 {
-			// copy: 读 offset 与 size
+			// copy: 读 offset 与 size。先校验所需字节数，越界直接报错（不可信输入）。
+			need := 0
+			for i := uint(0); i < 7; i++ {
+				if op&(1<<i) != 0 {
+					need++
+				}
+			}
+			if pos+need > len(delta) {
+				return nil, fmt.Errorf("delta: truncated copy instruction (need %d, remain %d)", need, len(delta)-pos)
+			}
 			var offset, size uint32
 			if op&0x01 != 0 {
 				offset |= uint32(delta[pos])
@@ -115,7 +138,7 @@ func encodeVarintLE(v uint64) []byte {
 
 // --- delta 生成（出向 clone 编码用）---
 
-const deltaWindow = 16         // 固定匹配窗口长度
+const deltaWindow = 16          // 固定匹配窗口长度
 const deltaHashBase uint32 = 31 // 滚动 hash 基数
 
 // deltaBucketScanLimit 单个 hash 桶最多尝试的 base position 数。
