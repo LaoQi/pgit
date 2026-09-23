@@ -5,6 +5,30 @@ pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；�
 
 ## 2026-09-23
 
+**perf(git): 阶段 3-3 clone 流式化**（40ba493）
+- `ObjectStore` 新增 `Stat(oid)`（只解压头部取 type/size），新增 `WalkReachable`：可达性遍历只 `Stat`，
+  内存与仓库体积无关，blob 不再被解压
+- upload-pack 改**单遍编码** `encodePack`：非 blob 按 BFS 顺序、blob 按 size 降序两两配对（base 先写），
+  每个对象只读一次
+- 实测（vistty/1537 对象）：峰值 RSS 150.4MB → 110.1MB（**−27%**），client 1.94s → 2.49s（+22%）；
+  产物 HEAD 与 .git 体积完全一致。时间代价源于对象不再常驻内存、编码时重新解压
+
+**refactor(git)!: 阶段 3-2 push/fetch 流式化与资源上限**（b14e4ca）
+- `PackDecoder` 重写为流式：逐对象解析即交出（`DecodeTo` 落盘 / `Decode` 收集），
+  不再 `io.ReadAll` + 全量驻留；trailer SHA1 边读边校验（依赖 `io.ByteReader` 精确消费定位 offset）
+- OFS_DELTA 改为「偏移 → oid → Store 回读」；`DecodeTo` 与 `Decode` 对同一 pack 结果一致
+- receive-pack 流式落盘；pack 被拒（超限/损坏）回 `report-status`（unpack error + ng），
+  客户端立刻得到明确错误而非挂断
+- fetch：sideband 经 `io.Pipe` 流式喂入解码器；非 sideband 直接读（peek 判定 up-to-date）
+- 新增 `Setting.maxPushBytes`（默认 2GiB）与 `Setting.maxConcurrentPacks`（默认 4）；
+  HTTP 侧用 `MaxBytesReader` + pack 传输信号量（排队 / ctx 取消返回 503），git 侧 `SetMaxReceivePackBytes` 兜底
+- 实测：8.4MiB 未压缩内容峰值堆 18.3MB → 1.09MB
+
+**fix(git): 阶段 3-1 解析层边界加固**（40a31de）
+- `readObject`/`readOfsDelta`/`ApplyDelta`/`PktReader` 补边界检查（此前畸形输入可 panic）；
+  `ApplyDelta` 增 `tgtSize` 上限 1GiB 且预分配封顶 4MiB
+- 新增 `hardening_test.go`（评估文档附录 A-2/A-3 转回归）+ 4 个 fuzz 目标（`ApplyDelta`/`PackDecoder`/`readOfsDelta`/`PktReader`）
+
 **refactor(arch): 阶段 2 存储抽象与依赖注入**（0f25c29）
 - 2-1 存储接口化：新增 `git.ObjectStore`（`Read/Exists/Write`）与 `git.NewObjectStore(repoRoot)`；
   `CollectReachable`/`TreeAt`/`BlobAt`/`CommitLog`/`derefToTree`/`isFastForward` 签名收敛到接口；

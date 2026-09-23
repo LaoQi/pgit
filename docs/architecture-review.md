@@ -33,22 +33,23 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
   `LastSync/LastError`（`manager.go:259-265`）。
 - `SaveMetadata` 全量覆盖写、无锁、无 fsync（`repository.go:46-57`）→ 并发下后写者覆盖前写者，设置改动或同步状态静默丢失。
 
-### 2.3 解析层对畸形输入 panic
+### 2.3 解析层对畸形输入 panic（阶段 3-1 已修，40a31de）
 
 - 实测（附录 A-2/A-3）：`pack_decode.go:86` 与 `delta.go:30-57` 存在越界 panic
   （`index out of range [13] with length 13` / `[3] with length 3`）；攻击者可自算 SHA1 trailer 绕过校验到达此处。
 - 后果：HTTP 侧被 net/http recover 成 500，SSH 侧被 mux recover 成断连——服务不死，但请求被毁、可被用作 DoS 与日志噪音。
-- 同类风险：`readObject`/`readOfsDelta` 缺 `pos < len` 检查；`ApplyDelta` 按不可信 `tgtSize` 预分配（`delta.go:23`）。
+- 同类风险：`readObject`/`readOfsDelta` 缺 `pos < len` 检查；`ApplyDelta` 按不可信 `tgtSize` 预分配。
+- **阶段 3-1 已修**：补齐边界检查 + `tgtSize` 上限 + 预分配封顶；附录 A-2/A-3 转为回归测试，另加 4 个 fuzz 目标。
 
-### 2.4 资源无边界
+### 2.4 资源无边界（阶段 3-2/3-3 已修主体）
 
-| 位置 | 现状 | 后果 |
+| 位置 | 阶段 3 之前 | 现状 |
 |------|------|------|
-| `protocol.go:364` | push 时 `io.ReadAll(in)` 读整个 pack | 峰值内存 ≈ 请求体 |
-| `pack_decode.go:38` | `Decode()` 再 `io.ReadAll` + 全部对象驻留 `d.objects` | 峰值 ≈ 3–4× pack |
-| `protocol.go:249` | clone 侧 `CollectReachable` 返回全部对象（含内容） | 峰值 ≈ 仓库解压总量 |
-| `mux.go:44-52` | 每连接一 goroutine，无并发/连接上限 | 并发 clone 叠加上述内存 |
-| `repository.go:227-238` | blob 读取全量进内存 | 大文件浏览 OOM |
+| push 请求体 | `io.ReadAll(in)` 读整个 pack | 流式 `DecodeTo` 逐对象落盘；`maxPushBytes`（默认 2GiB）上限 |
+| pack 解码 | `io.ReadAll` + 全部对象驻留 | 流式解码，峰值 ≈ 单个最大对象 + delta base |
+| clone 出向 | `CollectReachable` 返回全部对象（含内容） | `WalkReachable` 只读头部 + 单遍编码；峰值 RSS −27% |
+| 并发 | 每连接一 goroutine，无上限 | `maxConcurrentPacks`（默认 4）信号量，排队 / 503 |
+| **仍存** | — | 每连接仍一 goroutine（无全局连接上限）；blob 浏览仍全量进内存；无连接/请求级超时 |
 
 本地样例 `repo/vistty.git` 仅 36MB/1540 对象，故当前无感；GB 级仓库必然失败。
 
@@ -133,12 +134,14 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
 - 验收：`go build/vet` + `go test -race ./...` 全绿；真实实例端到端验证 HTTP clone/push、
   SSH clone、mirror 同步、mirror 拒绝 push、WebUI/tree/commits 均正常。
 
-### 阶段 3：流式化与资源边界
+### 阶段 3：流式化与资源边界（已完成，40a31de / b14e4ca / 40ba493）
 
-- clone：改为「遍历-编码」迭代器，pack 直接写 socket，不再驻留全量对象；
-- push：流式解码 + 临时文件落盘，取代 `io.ReadAll`×2；
-- 加 `MaxBytes`（push/请求体）、并发 clone 信号量、context 取消与超时；
-- 解析层补边界检查（附录 A-2/A-3 用例转为单元测试）+ 对 pack/pkt/delta 加 fuzz。
+- 3-1（40a31de）：解析层边界检查 + `tgtSize`/预分配上限；A-2/A-3 转回归测试；4 个 fuzz 目标。
+- 3-2（b14e4ca）：`PackDecoder` 流式化（`DecodeTo`）、receive-pack 流式落盘 + 拒绝回 report-status、
+  fetch sideband 流式、`maxPushBytes`/`maxConcurrentPacks` 上限与信号量。
+- 3-3（40ba493）：`ObjectStore.Stat` + `WalkReachable`（只读头部）+ 单遍 `encodePack`；
+  clone 峰值 RSS −27%（产物与旧实现字节级一致）。
+- 已取舍得证：单遍编码避免重复解压，代价（+22% 时间）来自对象不再常驻内存。
 
 ### 阶段 4：接入层安全与生命周期
 
