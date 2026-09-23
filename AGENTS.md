@@ -2,7 +2,7 @@
 
 Go 编写的个人 git 服务器。模块名 `pgit`，`go 1.26.4`。单端口多路复用 HTTP+SSH，路径映射解耦访问 URL 与存储目录，内置简易 WebUI（embed 嵌入，可导出至磁盘自定义）。
 
-本文件只描述**当前**架构、约束与用法；变更历史、修复记录与演进决策见 `CHANGELOG.md`。
+本文件只描述**当前**架构、约束与用法；变更历史与演进决策见 `CHANGELOG.md`，架构评估见 `docs/architecture-review.md`，后续计划见 `docs/roadmap.md`，安全策略见 `docs/security-policy.md`。
 
 ## 构建状态
 

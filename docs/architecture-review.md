@@ -170,10 +170,10 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
 - 后续（3ac08c9）P1-5 fetch 分层超时与重试已单独修复，见上文。
 - 未做：mirror webhook（阶段 6）。
 
-### 阶段 6：功能扩展
+### 阶段 6：功能扩展（未实施，计划见 `docs/roadmap.md`）
 
-- webhook（push / mirror 完成事件）；gc/repack 后台任务；
-- 协议 v2（`ls-refs` + `fetch`，shallow/filter 前置）；API 分页与 ETag；apidocs 由路由生成。
+- webhook（E1）、gc/repack 后台任务（E2）、协议 v2（E3）、浏览 API 分页与 ETag（E4）、
+  工程基建 CI/lint/依赖（E5）、零散项（E6）——逐项设计要点与优先级见 `docs/roadmap.md`。
 
 ## 附录 A：本次评估的复现方法
 
