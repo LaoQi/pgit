@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeConfig(t *testing.T, path, content string) {
@@ -164,5 +165,37 @@ func TestHotReloadConcurrentWithReads(t *testing.T) {
 	}()
 	for i := 0; i < 7; i++ {
 		<-done
+	}
+}
+
+// 镜像 fetch 超时/重试配置属于可热加载字段（下一次同步即生效）。
+func TestHotReloadIncludesMirrorFetchOptions(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	writeConfig(t, cfgPath, `{"listen":"127.0.0.1:3000","gitRoot":"`+dir+`","mirrorRetryAttempts":3,"mirrorStallTimeoutSec":120}`)
+
+	s := &Setting{}
+	s.SetConfigPath(cfgPath)
+	if err := s.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.MirrorFetchOptions().MaxAttempts; got != 3 {
+		t.Fatalf("MaxAttempts = %d, want 3", got)
+	}
+	if got := s.MirrorFetchOptions().StallTimeout; got != 120*time.Second {
+		t.Fatalf("StallTimeout = %v, want 120s", got)
+	}
+
+	writeConfig(t, cfgPath, `{"listen":"127.0.0.1:3000","gitRoot":"`+dir+`","mirrorRetryAttempts":5,"mirrorStallTimeoutSec":45,"mirrorRetryBaseDelaySec":2}`)
+	restart, err := s.HotReload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restart) != 0 {
+		t.Errorf("mirror fetch options should be hot-reloadable, got restartNeeded=%v", restart)
+	}
+	o := s.MirrorFetchOptions()
+	if o.MaxAttempts != 5 || o.StallTimeout != 45*time.Second || o.RetryBaseDelay != 2*time.Second {
+		t.Errorf("options after hot reload = %+v, want 5 attempts / 45s / 2s base", o)
 	}
 }

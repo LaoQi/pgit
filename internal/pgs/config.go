@@ -206,6 +206,10 @@ func (s *Setting) hotReloadFrom(src *Setting) []string {
 	s.MaxPushBytes = src.MaxPushBytes
 	s.MaxConcurrentPacks = src.MaxConcurrentPacks
 	s.Credentials = src.Credentials
+	// 镜像 fetch 超时/重试：下一次同步即生效（无需重启）
+	s.MirrorStallTimeoutSec = src.MirrorStallTimeoutSec
+	s.MirrorRetryAttempts = src.MirrorRetryAttempts
+	s.MirrorRetryBaseDelaySec = src.MirrorRetryBaseDelaySec
 	return restartNeeded
 }
 
