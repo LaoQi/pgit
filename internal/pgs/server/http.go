@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -58,41 +59,103 @@ func (h *HTTPHandler) releasePack() { <-h.packSem }
 
 func (h *HTTPHandler) buildRouter() http.Handler {
 	r := chi.NewRouter()
-	r.Use(requestIDMiddleware)
-	r.Use(requestLogger)
 
-	if h.Settings.HttpAuth {
-		r.Use(basicAuth("pgit", h.Settings.Credentials))
+	// 探针与指标：独立的 Group，只挂请求日志与请求 ID，不挂 BasicAuth
+	// （chi 要求中间件先于路由声明，故用 Group 而非在 r.Use 后注册）。
+	r.Group(func(r chi.Router) {
+		r.Use(requestIDMiddleware)
+		r.Use(requestLogger)
+		r.Get("/healthz", h.healthz)
+		r.Get("/metrics", h.metrics)
+	})
+
+	r.Group(func(r chi.Router) {
+		r.Use(requestIDMiddleware)
+		r.Use(requestLogger)
+		if h.Settings.HttpAuth {
+			r.Use(basicAuth("pgit", h.Settings.Credentials))
+		}
+
+		prefix := "/" + h.Settings.WebUIPrefix
+
+		r.Route("/api/v1", func(r chi.Router) {
+			r.Get("/", h.serveAPIDocs)
+			r.Get("/repos", h.listRepos)
+			r.Post("/repos/{name}", h.createRepo)
+			r.Get("/repos/{name}", h.getRepo)
+			r.Delete("/repos/{name}", h.deleteRepo)
+			r.Post("/repos/{name}/aliases", h.addAlias)
+			r.Delete("/repos/{name}/aliases/{alias}", h.removeAlias)
+			r.Post("/repos/{name}/default-branch", h.setDefaultBranch)
+			r.Post("/repos/{name}/settings", h.updateSettings)
+			r.Get("/repos/{name}/tree/{ref}/*", h.tree)
+			r.Get("/repos/{name}/blob/{ref}/*", h.blob)
+			r.Get("/repos/{name}/archive/{ref}", h.archive)
+			r.Get("/repos/{name}/commits/{ref}", h.commits)
+			r.Post("/repos/{name}/sync", h.syncRepo)
+			r.Get("/repos/{name}/sync-log", h.syncLog)
+		})
+
+		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, prefix+"/", http.StatusFound)
+		})
+		r.Get(prefix, h.serveWebUI)
+		r.Get(prefix+"/*", h.serveWebUI)
+
+		r.NotFound(h.gitTransport)
+	})
+
+	return r
+}
+
+// healthz 健康检查：进程存活 + 仓库根可读 + 同步管理器就绪。
+func (h *HTTPHandler) healthz(w http.ResponseWriter, r *http.Request) {
+	status := http.StatusOK
+	checks := map[string]string{}
+
+	// 仓库根目录可读
+	root := ""
+	if h.Manager != nil && h.Manager.Config != nil {
+		root = h.Manager.Config.GitRoot
+	}
+	if root == "" {
+		root = pgs.GitRoot
+	}
+	if _, err := os.Stat(root); err != nil {
+		status = http.StatusServiceUnavailable
+		checks["gitRoot"] = "error: " + err.Error()
+	} else {
+		checks["gitRoot"] = "ok"
 	}
 
-	prefix := "/" + h.Settings.WebUIPrefix
+	if h.Sync != nil {
+		checks["syncManager"] = "ok"
+	} else {
+		checks["syncManager"] = "absent" // 非致命：无镜像功能
+	}
 
-	r.Route("/api/v1", func(r chi.Router) {
-		r.Get("/", h.serveAPIDocs)
-		r.Get("/repos", h.listRepos)
-		r.Post("/repos/{name}", h.createRepo)
-		r.Get("/repos/{name}", h.getRepo)
-		r.Delete("/repos/{name}", h.deleteRepo)
-		r.Post("/repos/{name}/aliases", h.addAlias)
-		r.Delete("/repos/{name}/aliases/{alias}", h.removeAlias)
-		r.Post("/repos/{name}/default-branch", h.setDefaultBranch)
-		r.Post("/repos/{name}/settings", h.updateSettings)
-		r.Get("/repos/{name}/tree/{ref}/*", h.tree)
-		r.Get("/repos/{name}/blob/{ref}/*", h.blob)
-		r.Get("/repos/{name}/archive/{ref}", h.archive)
-		r.Get("/repos/{name}/commits/{ref}", h.commits)
-		r.Post("/repos/{name}/sync", h.syncRepo)
-		r.Get("/repos/{name}/sync-log", h.syncLog)
-	})
+	repos := 0
+	if h.Manager != nil {
+		repos = len(h.Manager.List())
+	}
+	pgs.SetReposTotal(repos)
+	checks["repositories"] = fmt.Sprintf("%d", repos)
 
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, prefix+"/", http.StatusFound)
-	})
-	r.Get(prefix, h.serveWebUI)
-	r.Get(prefix+"/*", h.serveWebUI)
+	pgs.DefaultRegistry().Gauge("pgit_pack_inflight", "当前进行中的 pack 传输数。").Set(float64(pgs.InflightPacks()))
 
-	r.NotFound(h.gitTransport)
-	return r
+	body := map[string]any{"status": "ok", "checks": checks}
+	if status != http.StatusOK {
+		body["status"] = "degraded"
+	}
+	writeJSON(w, status, body)
+}
+
+// metrics 输出 Prometheus 文本格式指标。
+func (h *HTTPHandler) metrics(w http.ResponseWriter, r *http.Request) {
+	pgs.DefaultRegistry().Gauge("pgit_pack_inflight", "当前进行中的 pack 传输数。").Set(float64(pgs.InflightPacks()))
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(pgs.DefaultRegistry().Render())
 }
 
 func (h *HTTPHandler) HandleConn(conn net.Conn) {
@@ -571,6 +634,8 @@ func (h *HTTPHandler) gitCommand(w http.ResponseWriter, r *http.Request, repoPat
 		return
 	}
 	defer h.releasePack()
+	pgs.PackStarted()
+	defer pgs.PackFinished()
 
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-git-%s-result", command))
 	w.WriteHeader(http.StatusOK)
@@ -589,11 +654,17 @@ func (h *HTTPHandler) gitCommand(w http.ResponseWriter, r *http.Request, repoPat
 	switch command {
 	case "upload-pack":
 		if err := git.HandleUploadPack(repoPath, body, w); err != nil {
+			pgs.ObserveGitOperation("upload-pack", "failure")
 			slog.Error("upload-pack failed", "requestId", requestID(r.Context()), "error", err)
+		} else {
+			pgs.ObserveGitOperation("upload-pack", "success")
 		}
 	case "receive-pack":
 		if err := git.HandleReceivePack(repoPath, body, w); err != nil {
+			pgs.ObserveGitOperation("receive-pack", "failure")
 			slog.Error("receive-pack failed", "requestId", requestID(r.Context()), "error", err)
+		} else {
+			pgs.ObserveGitOperation("receive-pack", "success")
 		}
 	default:
 		http.Error(w, "unknown command", http.StatusBadRequest)
@@ -684,6 +755,8 @@ func requestLogger(next http.Handler) http.Handler {
 		if remote == "" {
 			remote = r.RemoteAddr
 		}
+		pgs.ObserveHTTPRequest(r.Method, sw.status, time.Since(start))
+
 		attrs := []any{
 			"requestId", requestID(r.Context()),
 			"method", r.Method,

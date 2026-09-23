@@ -153,6 +153,7 @@ func (sm *SyncManager) runSync(name string, trigger string) (*SyncLogEntry, erro
 		entry.Haves = result.Haves
 		entry.PackSize = result.PackSize
 	}
+	SetMirrorSyncResult(name, err == nil, entry.ObjectsFetch, entry.Duration)
 	if repo, err := sm.manager.GetRepository(name); err == nil {
 		if logErr := AppendSyncLog(repo.Path(), *entry); logErr != nil {
 			slog.Warn("append sync log failed", "repo", name, "error", logErr)
