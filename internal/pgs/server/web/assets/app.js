@@ -24,6 +24,15 @@ function escAttr(s) {
 
 function enc(s) { return encodeURIComponent(s); }
 
+// 仓库引用一律作为 ref 参数（仓库名或别名），不占路径段：多段别名无需编码。
+function repoUrl(ref) { return '/repo/info?ref=' + enc(ref); }
+
+function treePageUrl(ref, treeish, path) {
+    var url = '/repo/tree';
+    if (path) url += '/' + path.split('/').map(enc).join('/');
+    return url + '?ref=' + enc(ref) + '&treeish=' + enc(treeish);
+}
+
 function fmtDate(iso) {
     try { return new Date(iso).toLocaleString(); }
     catch(e) { return iso; }
@@ -119,19 +128,15 @@ function route() {
     var path = currentPath();
     var app = document.getElementById('app');
     app.innerHTML = '<div class="loading">Loading...</div>';
+    var query = new URLSearchParams(window.location.search);
     if (path === '/') {
         viewRepos(app);
-    } else if (path.indexOf('/repo/') === 0) {
-        var rest = path.slice('/repo/'.length);
-        var parts = rest.split('/');
-        var name = decodeURIComponent(parts[0]);
-        if (parts.length >= 3 && parts[1] === 'tree') {
-            var ref = decodeURIComponent(parts[2]);
-            var subPath = parts.slice(3).map(decodeURIComponent).join('/');
-            viewTree(app, name, ref, subPath);
-        } else {
-            viewRepoDetail(app, name);
-        }
+    } else if (path === '/repo/info') {
+        viewRepoDetail(app, query.get('ref') || '');
+    } else if (path === '/repo/tree' || path.indexOf('/repo/tree/') === 0) {
+        var subPath = path === '/repo/tree' ? '' : path.slice('/repo/tree/'.length);
+        viewTree(app, query.get('ref') || '', query.get('treeish') || '',
+            subPath.split('/').map(decodeURIComponent).join('/'));
     } else if (path === '/import') {
         viewImport(app);
     } else if (path === '/api') {
@@ -200,7 +205,7 @@ function viewRepos(app) {
                 var host = window.location.host;
                 var httpClone = window.location.protocol + '//' + host + '/' + firstAlias + '.git';
                 var sshClone = 'ssh://' + host + '/' + firstAlias + '.git';
-                var link = '/repo/' + enc(r.name);
+                var link = repoUrl(r.name);
                 var mirrorBadge = r.mirror ? ' <span class="badge badge-mirror">mirror</span>' : '';
                 var haystack = (r.name + ' ' + (r.description || '') + ' ' + aliases.join(' ')).toLowerCase();
                 html += '<div class="repo-card" data-search="' + escAttr(haystack) + '">'
@@ -254,7 +259,7 @@ function viewRepos(app) {
             if (isMirror) {
                 var mirrorUrl = document.getElementById('mirrorUrl').value.trim();
                 if (!mirrorUrl) { showToast('Remote URL is required', 'error'); return; }
-                var params = { description: desc, mirrorUrl: mirrorUrl };
+                var params = { name: name, description: desc, mirrorUrl: mirrorUrl };
                 var interval = document.getElementById('mirrorInterval').value.trim();
                 if (interval) params.mirrorInterval = interval;
                 var authType = document.getElementById('mirrorAuthType').value;
@@ -265,15 +270,15 @@ function viewRepos(app) {
                 }
                 var proxy = document.getElementById('mirrorProxy').value.trim();
                 if (proxy) params.mirrorProxy = proxy;
-                apiForm('POST', API + '/repos/' + enc(name), params).then(function() {
+                apiForm('POST', API + '/repos', params).then(function() {
                     showToast('Mirror repository created, sync will start shortly');
-                    navigate('/repo/' + enc(name));
+                    navigate(repoUrl(name));
                 }).catch(function(err) { showToast(err.message, 'error'); });
             } else {
                 var defaultBranch = document.getElementById('repoDefaultBranch').value.trim() || 'master';
-                apiForm('POST', API + '/repos/' + enc(name), { description: desc, defaultBranch: defaultBranch }).then(function() {
+                apiForm('POST', API + '/repos', { name: name, description: desc, defaultBranch: defaultBranch }).then(function() {
                     showToast('Repository created');
-                    navigate('/repo/' + enc(name));
+                    navigate(repoUrl(name));
                 }).catch(function(err) { showToast(err.message, 'error'); });
             }
         });
@@ -282,13 +287,16 @@ function viewRepos(app) {
     });
 }
 
-function viewRepoDetail(app, name) {
-    apiJSON(API + '/repos/' + enc(name)).then(function(data) {
+function viewRepoDetail(app, ref) {
+    if (!ref) {
+        app.innerHTML = '<div class="error">Missing repository reference.</div>';
+        return;
+    }
+    apiJSON(API + '/repos/info?ref=' + enc(ref)).then(function(data) {
         var repo = data.metadata || {};
         var refs = data.refs || [];
         var aliases = repo.aliases || [];
         var host = window.location.host;
-        var repoLink = '/repo/' + enc(repo.name);
 
         var html = '<div class="breadcrumb"><a href="." data-link="/">Repositories</a>'
             + '<span class="sep">/</span><strong>' + esc(repo.name) + '</strong></div>';
@@ -333,12 +341,12 @@ function viewRepoDetail(app, name) {
              html += '<table><thead><tr><th>Type</th><th>Name</th><th>Subject</th><th>Author</th><th>Date</th><th></th></tr></thead><tbody>';
              refs.forEach(function(ref) {
                  var badge = ref.type === 'tag' ? '<span class="badge badge-tag">tag</span>' : '<span class="badge badge-commit">branch</span>';
-                 var treeLink = '/repo/' + enc(repo.name) + '/tree/' + enc(ref.name);
+                 var treeLink = treePageUrl(repo.name, ref.name, '');
                  html += '<tr><td>' + badge + '</td><td>' + esc(ref.name) + '</td>'
                      + '<td>' + esc(ref.subject || '') + '</td>'
                      + '<td>' + esc(ref.author || '') + '</td>'
                      + '<td class="text-muted">' + esc(fmtTs(ref.timestamp)) + '</td>'
-                     + '<td><a href="repo/' + enc(repo.name) + '/tree/' + enc(ref.name) + '" data-link="' + escAttr(treeLink) + '" class="btn btn-sm">Browse</a></td>'
+                     + '<td><a href="' + escAttr(treeLink) + '" data-link="' + escAttr(treeLink) + '" class="btn btn-sm">Browse</a></td>'
                      + '</tr>';
              });
              html += '</tbody></table>';
@@ -362,14 +370,12 @@ function viewRepoDetail(app, name) {
 
          html += '<div class="card"><h3>Aliases</h3>';
          aliases.forEach(function(a) {
-             var hasSlash = a.indexOf('/') >= 0;
              html += '<div class="alias-item"><span class="alias-name">' + esc(a) + '</span>';
              if (a === repo.name) {
                  html += '<span class="text-muted text-sm">(default)</span>';
-             } else if (hasSlash) {
-                 html += '<span class="alias-note">Cannot delete via API (contains slash)</span>';
              } else {
-                 html += '<button class="btn btn-danger btn-sm" data-remove-repo="' + escAttr(repo.name) + '" data-remove-alias="' + escAttr(a) + '">Remove</button>';
+                 html += '<a class="btn btn-sm" href="' + escAttr(repoUrl(a)) + '" data-link="' + escAttr(repoUrl(a)) + '">open</a> '
+                     + '<button class="btn btn-danger btn-sm" data-remove-repo="' + escAttr(repo.name) + '" data-remove-alias="' + escAttr(a) + '">Remove</button>';
              }
              html += '</div>';
          });
@@ -422,21 +428,21 @@ function viewRepoDetail(app, name) {
         if (document.getElementById('downloadArchiveBtn')) {
             document.getElementById('downloadArchiveBtn').addEventListener('click', function() {
                 var ref = document.getElementById('archiveRef').value;
-                window.open(API + '/repos/' + enc(repo.name) + '/archive/' + enc(ref), '_blank');
+                window.open(API + '/repos/archive?ref=' + enc(repo.name) + '&treeish=' + enc(ref), '_blank');
             });
         }
         document.getElementById('addAliasBtn').addEventListener('click', function() {
             var alias = document.getElementById('newAlias').value.trim();
             if (!alias) { showToast('Alias is required', 'error'); return; }
-            apiForm('POST', API + '/repos/' + enc(repo.name) + '/aliases', { alias: alias }).then(function() {
+            apiForm('POST', API + '/repos/aliases', { ref: repo.name, alias: alias }).then(function() {
                 showToast('Alias added');
-                viewRepoDetail(app, name);
+                viewRepoDetail(app, ref);
             }).catch(function(err) { showToast(err.message, 'error'); });
         });
          document.getElementById('deleteRepoBtn').addEventListener('click', function() {
              var input = prompt('Type the repository name to confirm deletion:', '');
              if (input !== repo.name) { showToast('Confirmation mismatch', 'error'); return; }
-             apiDelete(API + '/repos/' + enc(repo.name) + '?confirm=' + enc(repo.name)).then(function() {
+             apiDelete(API + '/repos/info?ref=' + enc(repo.name) + '&confirm=' + enc(repo.name)).then(function() {
                  showToast('Repository deleted');
                  navigate('/');
              }).catch(function(err) { showToast(err.message, 'error'); });
@@ -445,9 +451,9 @@ function viewRepoDetail(app, name) {
               document.getElementById('setDefaultBranchBtn').addEventListener('click', function() {
                   var branch = document.getElementById('newDefaultBranch').value;
                   if (!branch) { showToast('Select a branch', 'error'); return; }
-                  apiForm('POST', API + '/repos/' + enc(repo.name) + '/default-branch', { branch: branch }).then(function() {
+                  apiForm('POST', API + '/repos/default-branch', { ref: repo.name, branch: branch }).then(function() {
                       showToast('Default branch updated to ' + branch);
-                      viewRepoDetail(app, name);
+                      viewRepoDetail(app, ref);
                   }).catch(function(err) { showToast(err.message, 'error'); });
               });
           }
@@ -455,7 +461,7 @@ function viewRepoDetail(app, name) {
           var saveSettingsBtn = document.getElementById('saveSettingsBtn');
           if (saveSettingsBtn) {
               saveSettingsBtn.addEventListener('click', function() {
-                  var params = { description: document.getElementById('setDesc').value };
+                  var params = { ref: repo.name, description: document.getElementById('setDesc').value };
                   if (repo.mirror) {
                       params.mirrorRemoteUrl = document.getElementById('setMirrorUrl').value.trim();
                       params.mirrorInterval = document.getElementById('setMirrorInterval').value.trim();
@@ -467,9 +473,9 @@ function viewRepoDetail(app, name) {
                           if (pw) params.mirrorPassword = pw;
                       }
                   }
-                  apiForm('POST', API + '/repos/' + enc(repo.name) + '/settings', params).then(function() {
+                  apiForm('POST', API + '/repos/settings', params).then(function() {
                       showToast('Settings saved');
-                      viewRepoDetail(app, name);
+                      viewRepoDetail(app, ref);
                   }).catch(function(err) { showToast(err.message, 'error'); });
               });
           }
@@ -483,7 +489,7 @@ function viewRepoDetail(app, name) {
           var commitsContainer = document.getElementById('commitsList');
          if (commitsContainer) {
              var commitsRef = data.defaultBranch || 'master';
-             apiJSON(API + '/repos/' + enc(repo.name) + '/commits/' + enc(commitsRef) + '?limit=20').then(function(commits) {
+             apiJSON(API + '/repos/commits?ref=' + enc(repo.name) + '&treeish=' + enc(commitsRef) + '&limit=20').then(function(commits) {
                  if (!commits || commits.length === 0) {
                      commitsContainer.innerHTML = '<div class="empty">No commits found.</div>';
                      return;
@@ -508,14 +514,14 @@ function viewRepoDetail(app, name) {
              syncNowBtn.addEventListener('click', function() {
                  syncNowBtn.disabled = true;
                  syncNowBtn.textContent = 'Syncing...';
-                 apiForm('POST', API + '/repos/' + enc(repo.name) + '/sync').then(function(data) {
+                 apiForm('POST', API + '/repos/sync', { ref: repo.name }).then(function(data) {
                      var sync = data.sync || {};
                      if (sync.success) {
                          showToast('Sync completed: ' + sync.objectsFetched + ' objects, ' + sync.refsUpdated + ' refs updated');
                      } else {
                          showToast('Sync failed: ' + (sync.error || 'unknown error'), 'error');
                      }
-                     viewRepoDetail(app, name);
+                     viewRepoDetail(app, ref);
                  }).catch(function(err) {
                      showToast(err.message, 'error');
                      syncNowBtn.disabled = false;
@@ -526,7 +532,7 @@ function viewRepoDetail(app, name) {
 
          var syncLogContainer = document.getElementById('syncLogList');
          if (syncLogContainer) {
-             apiJSON(API + '/repos/' + enc(repo.name) + '/sync-log?limit=20').then(function(data) {
+             apiJSON(API + '/repos/sync-log?ref=' + enc(repo.name) + '&limit=20').then(function(data) {
                  var entries = data.entries || [];
                  if (entries.length === 0) {
                      syncLogContainer.innerHTML = '<div class="empty">No sync history yet.</div>';
@@ -567,7 +573,7 @@ function viewRepoDetail(app, name) {
 }
 
 function removeAlias(repoName, alias) {
-    apiDelete(API + '/repos/' + enc(repoName) + '/aliases/' + enc(alias)).then(function() {
+    apiDelete(API + '/repos/aliases?ref=' + enc(repoName) + '&alias=' + enc(alias)).then(function() {
         showToast('Alias removed');
         viewRepoDetail(document.getElementById('app'), repoName);
     }).catch(function(err) { showToast(err.message, 'error'); });
@@ -592,37 +598,41 @@ function viewBlob(blobUrl, fileName) {
     });
 }
 
-function viewTree(app, name, ref, subPath) {
-    var treeUrl = API + '/repos/' + enc(name) + '/tree/' + enc(ref) + '/';
-    if (subPath) treeUrl += subPath.split('/').map(enc).join('/');
+function viewTree(app, repoRef, treeish, subPath) {
+    if (!repoRef) {
+        app.innerHTML = '<div class="error">Missing repository reference.</div>';
+        return;
+    }
+    var treeUrl = API + '/repos/tree';
+    if (subPath) treeUrl += '/' + subPath.split('/').map(enc).join('/');
+    treeUrl += '?ref=' + enc(repoRef) + '&treeish=' + enc(treeish);
 
     apiJSON(treeUrl).then(function(files) {
         var html = '<div class="breadcrumb">'
             + '<a href="." data-link="/">Repositories</a><span class="sep">/</span>'
-            + '<a href="repo/' + enc(name) + '" data-link="/repo/' + enc(name) + '">' + esc(name) + '</a>'
-            + '<span class="sep">/</span><span class="badge badge-tree">' + esc(ref) + '</span>';
+            + '<a href="' + escAttr(repoUrl(repoRef)) + '" data-link="' + escAttr(repoUrl(repoRef)) + '">' + esc(repoRef) + '</a>'
+            + '<span class="sep">/</span><span class="badge badge-tree">' + esc(treeish) + '</span>';
         if (subPath) {
             var segs = subPath.split('/');
             var acc = '';
             segs.forEach(function(seg, i) {
                 acc += (i > 0 ? '/' : '') + seg;
-                var link = '/repo/' + enc(name) + '/tree/' + enc(ref) + '/' + acc.split('/').map(enc).join('/');
-                html += '<span class="sep">/</span><a href="repo/' + enc(name) + '/tree/' + enc(ref) + '/' + acc.split('/').map(enc).join('/') + '" data-link="' + escAttr(link) + '">' + esc(decodeURIComponent(seg)) + '</a>';
+                var link = treePageUrl(repoRef, treeish, acc);
+                html += '<span class="sep">/</span><a href="' + escAttr(link) + '" data-link="' + escAttr(link) + '">' + esc(decodeURIComponent(seg)) + '</a>';
             });
         }
         html += '</div>';
 
         if (subPath) {
             var parent = subPath.split('/').slice(0, -1).join('/');
-            var parentLink = '/repo/' + enc(name) + '/tree/' + enc(ref);
-            if (parent) parentLink += '/' + parent.split('/').map(enc).join('/');
+            var parentLink = treePageUrl(repoRef, treeish, parent);
             html += '<div class="file-entry" data-link="' + escAttr(parentLink) + '">'
                 + '<span class="icon">&#8617;</span><span class="name">..</span></div>';
         }
 
         files.forEach(function(f) {
             if (f.type === 'tree') {
-                var link = '/repo/' + enc(name) + '/tree/' + enc(ref) + '/' + (subPath ? subPath.split('/').map(enc).join('/') + '/' : '') + enc(f.name);
+                var link = treePageUrl(repoRef, treeish, (subPath ? subPath + '/' : '') + f.name);
                 html += '<div class="file-entry" data-link="' + escAttr(link) + '">'
                     + '<span class="icon">&#128193;</span>'
                     + '<span class="name">' + esc(f.name) + '</span>'
@@ -633,7 +643,7 @@ function viewTree(app, name, ref, subPath) {
                     + '<span class="hash">submodule</span></div>';
             } else {
                 var blobPath = (subPath ? subPath + '/' : '') + f.name;
-                var blobUrl = API + '/repos/' + enc(name) + '/blob/' + enc(ref) + '/' + blobPath.split('/').map(enc).join('/');
+                var blobUrl = API + '/repos/blob/' + blobPath.split('/').map(enc).join('/') + '?ref=' + enc(repoRef) + '&treeish=' + enc(treeish);
                 html += '<div class="file-entry" data-blob-url="' + escAttr(blobUrl) + '" data-blob-name="' + escAttr(f.name) + '">'
                     + '<span class="icon">&#128196;</span>'
                     + '<span class="name">' + esc(f.name) + '</span>'
@@ -644,9 +654,9 @@ function viewTree(app, name, ref, subPath) {
         html += '<div id="blobView"></div>';
         app.innerHTML = html;
     }).catch(function(err) {
-        var link = '/repo/' + enc(name);
+        var link = repoUrl(repoRef);
         app.innerHTML = '<div class="error">' + esc(err.message) + '</div>'
-            + '<p><a href="repo/' + enc(name) + '" data-link="' + escAttr(link) + '">Back to repository</a></p>';
+            + '<p><a href="' + escAttr(link) + '" data-link="' + escAttr(link) + '">Back to repository</a></p>';
     });
 }
 

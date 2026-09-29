@@ -5,6 +5,25 @@ pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；�
 
 ## 2026-09-29
 
+**refactor(api,webui): 仓库引用改为 ref 参数；ref 唯一性与别名规则收紧**
+- 破坏性改造（已确认不做兼容）：管理 API 与 WebUI 路由不再把仓库引用放在路径里，改为参数：
+  `GET|DELETE /api/v1/repos/info?ref=`、`POST|DELETE /api/v1/repos/aliases?ref=&alias=`、
+  `POST /api/v1/repos/{default-branch,settings,sync}`、`GET /api/v1/repos/{tree/{path...},blob/{path...},archive,commits,sync-log,mirror-status}`；
+  创建改为 `POST /api/v1/repos`（`name` 参数）。WebUI 与 API 同构：`/repo/info?ref=`、`/repo/tree/{path...}?ref=&treeish=`
+- 动机：`owner/repo` 这类多段别名原先只能以 `%2F` 进入单段路径参数（裸斜杠会跌到 `/` 兜底变 404），
+  前端因此对含斜杠别名直接隐藏删除按钮；改参数后斜杠零编码，`alias` 与 `treeish`（如 `feature/x`）一并修复
+- 新增 `Manager.Resolve(ref)`：先按 Name 再按别名精确解析，handler 解析出 canonical name 后走原逻辑，日志记 `repo`+`ref`
+- 删除 `confirm` 语义：必须等于 canonical name（用别名寻址也要写真实名字）
+- ref 唯一性（`f080306`）：`Name ∪ alias` 全局唯一且不区分大小写；建仓拒绝与既有 alias 冲突、加别名拒绝与既有 Name/alias 冲突（HTTP 409 `ErrRefConflict`）
+- ref 规则（`f080306`）：白名单 `A-Za-z0-9_-.` + `/`（段首尾须字母数字下划线），段 ≤64/总长 ≤100/段数 ≤8，
+  禁 `.git` 结尾与保留字（`api`、`{webuiPrefix}` 及其子树、`healthz`、`metrics`）；分支名校验从别名规则拆出保持宽松
+- 启动扫描冲突策略（`f080306`）：ref 冲突时涉及仓库**全部禁用**（不进入索引）并逐条记 ERROR；同仓库内重复 ref 记 WARN 去重
+- 顺带：删除死代码（`repoLink`、`gitTransportRe`）、`archive` 文件名对含 `/` 的 treeish 做替换、`blob`/`tree` 注册
+  根路径形态避免尾斜杠陷阱
+- 验证：`go build/vet/test ./...` 全绿；临时实例 + 真实 chromium 端到端（API 15 条路由 × name/多段别名矩阵、
+  WebUI 列表→详情→文件树→blob→删除含斜杠别名→UI 建仓、旧 URL 形态走 404）
+
+
 **fix(git,server): SSH `ls-remote` 的正常收尾被记为 ERROR**
 - 问题：`git ls-remote`（SSH）读完备选 refs 后发一个 flush-pkt 结束会话，`ServeUploadPack`
   把「首帧是 flush」判为协议错误（`upload-pack: unexpected flush as first frame`），

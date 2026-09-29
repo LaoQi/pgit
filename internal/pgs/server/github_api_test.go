@@ -286,7 +286,7 @@ func TestMirrorStatusIncludesQueued(t *testing.T) {
 	if err := manager.CreateMirrorRepository("m1", "", mirror); err != nil {
 		t.Fatal(err)
 	}
-	rec := do(h, http.MethodGet, "/api/v1/repos/m1/mirror-status")
+	rec := do(h, http.MethodGet, "/api/v1/repos/mirror-status?ref=m1")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}

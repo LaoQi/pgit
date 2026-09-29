@@ -83,11 +83,14 @@ type MirrorConfig struct {
 - **存储**：`<GitRoot>/<name>.git/`（手工创建）
 - **元数据**：`<GitRoot>/<name>.git/pgit.json`（name/aliases/description/createdAt/mirror），SaveMetadata 原子写（tmp+rename）
 - **同步日志**：`<GitRoot>/<name>.git/pgit-sync.jsonl`（JSONL 追加写，仅镜像仓库）
-- **启动扫描**：遍历 `<GitRoot>/*.git/pgit.json` 重建双索引(`byName`/`byAlias`)；缺 pgit.json 的旧目录自动迁移补齐（name=目录名、aliases=[目录名]）
+- **启动扫描**：遍历 `<GitRoot>/*.git/pgit.json` 重建索引（`byName`/`byAlias` + 唯一性用的 `byRefFolded`）；缺 pgit.json 的旧目录自动迁移补齐（name=目录名、aliases=[目录名]）；ref 冲突时涉及仓库全部禁用（见下）
 - **镜像仓库**：Mirror 非 nil 时启动自动注册 SyncManager（SyncInterval>0 时定时同步）；**禁止 push**（HTTP/SSH 入口拦截 receive-pack，详见协议层说明）
 - **GitHub 导入的命名与访问**：本地 `Name = {namePrefix}{owner}_{repo}`（owner 不含 `_`，故可逆且账号内唯一），额外 alias `{owner}/{repo}` → `git clone http://host/{owner}/{repo}.git`；远端取 GitHub `clone_url`（可用 `cloneBase` 覆盖），`description`/默认分支取自 GitHub，Token 存 `MirrorConfig`（`AuthType=basic`、`Username=x-access-token`）。同名仓库/alias 冲突一律跳过且不覆盖，单次导入上限 200
-- **alias 规则**：Name 是默认 alias 不可删；全局唯一；禁止 `/` 开头、`..`、空段、`api` 前缀
-- **name 规则**：禁止 `/`、`..`、以 `.` 开头、`api`
+- **ref 模型**：`Name` 是唯一标识（单段、创建后不可变、同时是默认 ref 不可删）；alias 是指向该仓库的映射，与 Name **可互换使用**（git 访问路径、管理 API 的 `ref` 参数）
+- **ref 唯一性**：`Name ∪ alias` 是全局唯一命名空间，比较**不区分大小写**（解析仍大小写敏感）；建仓拒绝与既有 alias 同名，加别名拒绝与既有 Name/alias 冲突（HTTP 409 `ErrRefConflict`）；删仓库/删别名释放 ref
+- **ref 规则（白名单）**：字符 `A-Za-z0-9_-.` + 段分隔 `/`，段首尾必须是字母/数字/下划线；段 ≤64、总长 ≤100、段数 ≤8（Name 固定 1 段）；禁 `.git` 结尾；禁保留字 `api` 及其子树、`{webuiPrefix}` 及其子树、`healthz`、`metrics`（大小写不敏感，避免被更具体路由遮蔽）
+- **扫描期冲突**：某 ref 被多个仓库声明时，**涉及冲突的仓库全部不进入索引**（全部不可用，git 与管理 API 都 404），逐条记 ERROR 日志等待人工修元数据；同仓库内重复 ref 记 WARN 去重；元数据缺 Name 时只在内存补齐 ref（不写盘）
+- **分支名校验**：与 ref 规则解耦（`ValidateDefaultBranch` 保持宽松），避免收紧 ref 连带限制分支名（`feature/x`、`user@host` 等仍可用于默认分支设置）
 
 ## 自研 git 协议层（internal/pgs/git）
 
@@ -120,17 +123,19 @@ type MirrorConfig struct {
 
 ## API 路由
 
-管理 API（`/api/v1/`，`HttpAuth=true` 时加 Basic Auth）：
-- `GET /api/v1/`（API 文档 JSON）、`GET/POST /api/v1/repos`、`GET/DELETE /api/v1/repos/{name}`
-- `POST /api/v1/repos/{name}`（创建仓库，`mirrorUrl` 表单字段存在时创建镜像仓库，支持 `mirrorInterval`/`mirrorAuthType`/`mirrorUsername`/`mirrorPassword`/`mirrorProxy`）
-- `POST/DELETE /api/v1/repos/{name}/aliases[/{alias}]`
-- `POST /api/v1/repos/{name}/default-branch`（设置默认分支，要求分支已存在）
-- `POST /api/v1/repos/{name}/settings`（更新 description 与镜像配置：`mirrorRemoteUrl`/`mirrorInterval`/`mirrorAuthType`/`mirrorUsername`/`mirrorPassword`/`mirrorProxy`；密码留空=保留原值；改 interval 重新注册定时调度）
-- `GET /api/v1/repos/{name}/{tree|blob|archive}/{ref}[/*]`
-- `GET /api/v1/repos/{name}/commits/{ref}`（列出最近 commits，支持 `?limit=N`，默认 20）
-- `POST /api/v1/repos/{name}/sync`（手动同步镜像仓库，返回 SyncLogEntry）
-- `GET /api/v1/repos/{name}/sync-log`（查询同步日志，`?limit=N` 默认 50，最新在前）
-- `GET /api/v1/repos/{name}/mirror-status`（镜像调度/同步状态：scheduled/intervalSec/queued/syncing/lastSync/lastError/nextScheduled）
+管理 API（`/api/v1/`，`HttpAuth=true` 时加 Basic Auth）。**仓库引用一律通过 `ref` 参数传递（仓库名或别名），不占路径段**，因此 `owner/repo` 这类多段别名与含斜杠的别名无需百分号编码：
+- `GET /api/v1/`（API 文档 JSON）、`GET /api/v1/repos`（列表）、`POST /api/v1/repos`（创建；form：`name`(必填) + `description`/`defaultBranch` + `mirrorUrl`/`mirrorInterval`/`mirrorAuthType`/`mirrorUsername`/`mirrorPassword`/`mirrorProxy`）
+- `GET|DELETE /api/v1/repos/info`（详情 / 删除；`ref`；删除需 `confirm` == canonical name）
+- `POST|DELETE /api/v1/repos/aliases`（加/删别名；`ref` + `alias`，别名可含斜杠）
+- `POST /api/v1/repos/default-branch`（`ref` + `branch`，要求分支已存在）
+- `POST /api/v1/repos/settings`（`ref` + description 与镜像配置 `mirrorRemoteUrl`/`mirrorInterval`/`mirrorAuthType`/`mirrorUsername`/`mirrorPassword`/`mirrorProxy`；密码留空=保留原值；改 interval 重新注册定时调度）
+- `GET /api/v1/repos/tree/{path...}`（`ref` + `treeish`，缺省用仓库默认分支；`path` 是尾随通配，根目录时可省略）
+- `GET /api/v1/repos/blob/{path...}`（`ref` + `treeish`，返回 text/plain 原文）
+- `GET /api/v1/repos/archive`（`ref` + `treeish`，ZIP 下载）
+- `GET /api/v1/repos/commits`（`ref` + `treeish` + `limit`，默认 20）
+- `POST /api/v1/repos/sync`（`ref`，手动同步镜像仓库，返回 SyncLogEntry）
+- `GET /api/v1/repos/sync-log`（`ref` + `limit`，默认 50，最新在前）
+- `GET /api/v1/repos/mirror-status`（`ref`，镜像调度/同步状态：scheduled/intervalSec/queued/syncing/lastSync/lastError/nextScheduled）
 - `GET /api/v1/github/repos`（发现 GitHub 账号仓库，只读；query：`owner`(必填)/`token`/`apiBase`/`proxy`/`includeForks`/`includeArchived`(默认 true)/`namePrefix`；Token 也可用 `X-Github-Token` 头传，避免进 URL；返回 `localName` 与 `conflict`）
 - `POST /api/v1/github/import`（按勾选生成镜像仓库；form：`owner`(必填)、重复的 `repos`(必填，也接受 `owner/repo` 与逗号分隔)、`token`/`apiBase`/`cloneBase`/`proxy`/`namePrefix`/`syncInterval`；返回 `{ok,created,failed,results[]}`，逐仓库独立成败，单次上限 200）
 
@@ -142,12 +147,12 @@ WebUI（`/{webuiPrefix}/`，默认 `__webui`，受 `HttpAuth` 鉴权）：
 - `GET /` → 302 重定向至 `/{webuiPrefix}/`
 - `GET /{webuiPrefix}` 或 `GET /{webuiPrefix}/*` → `serveWebUI`：embed/磁盘静态资源 + SPA fallback（非文件请求回退 index.html）
 - index.html 含 `__WEBUI_PREFIX__` 占位符，per-request 替换为实际前缀注入 `<base>` 标签
-- 前端 History API 路由（非 hash）：`/` 仓库列表、`/repo/{name}` 详情、`/repo/{name}/tree/{ref}` 文件树、`/import` GitHub 导入页（账号表单 → 加载仓库 → 勾选 → 创建 + 结果）、`/api` API 文档页
+- 前端 History API 路由（非 hash，与 API 同构）：`/` 仓库列表、`/repo/info?ref=<name|alias>` 详情、`/repo/tree/{path...}?ref=&treeish=` 文件树、`/import` GitHub 导入页（账号表单 → 加载仓库 → 勾选 → 创建 + 结果）、`/api` API 文档页；旧的 `/repo/{name}` 形态已移除（不做兼容）；页面内导航统一使用 canonical name（别名只在入口解析）
 
 Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 - `GET /{alias}.git/info/refs`、`POST /{alias}.git/git-{command}`
 
-> 路由用标准库 `http.ServeMux`（Go 1.22+ 模式路由，无第三方依赖）：`/api/v1/` 与 `/{webuiPrefix}/` 以精确模式注册，alias.git 走 `HandleFunc("/", h.gitTransport)` 兜底；ServeMux 的「更具体模式优先」保证精确路由压过 `/` 兜底。路径参数用 `r.PathValue("name"|"ref"|"alias"|"path")`（`path...` 捕获多段 rest 路径），且**值已解码**——不要再做 `url.QueryUnescape`（旧 chi 需补偿、现已移除）。`webuiPrefix` 默认 `__webui`，可配置为多段（如 `custom/ui`）。未注册方法返回 405（stdlib 语义）。
+> 路由用标准库 `http.ServeMux`（Go 1.22+ 模式路由，无第三方依赖）：`/api/v1/` 与 `/{webuiPrefix}/` 以精确模式注册，`/{alias}.git/` 走 `HandleFunc("/", h.gitTransport)` 兜底；ServeMux 的「更具体模式优先」保证精确路由压过 `/` 兜底。管理 API 只有 `tree`/`blob` 保留尾随通配参数 `{path...}`（`r.PathValue("path")`，根目录时两种模式都注册以避免尾斜杠陷阱），仓库引用与 `treeish` 都是普通参数，用 `r.FormValue` 读取（查询串与表单体都接受）。所有参数值**已解码**——不要再做 `url.QueryUnescape`。`webuiPrefix` 默认 `__webui`，可配置为多段（如 `custom/ui`）。未注册方法返回 405（stdlib 语义）。
 
 ## 配置与运行
 
@@ -166,9 +171,9 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 
 ## 测试与质量
 
-- `internal/pgs`：`errors.go` 哨兵错误；`hardening2_test.go`（哨兵错误/InitBare 回滚/权限位）、`log_test.go`（级别/格式解析与标准库 log 重定向）、`metrics_test.go`（文本格式/标签转义/并发采集）、`config_hotreload_test.go`（热加载生效/需重启回报/非法拒绝/并发无竞态）、`concurrency_test.go`、`repository_test.go`（InitBare 与 pgit.json/自定义默认分支、Manager 双索引与扫描恢复、alias 增删与校验、SetDefaultBranch、CreateMirrorRepository、MirrorBackwardCompat、URL 校验）、`repository_browse_test.go`（Tree/Blob/Archive/ForEachRef 端到端，构造 loose 对象）、`concurrency_test.go`（Manager 并发读写无崩溃、快照隔离、sync 注册回归、sync 与设置更新并发）、`sync_log_test.go`、`sync_manager_test.go`、`sync_queue_test.go`（排队去重/队列关闭快速失败/日志字段）、`task_queue_test.go`（并发度实测、SetWorkers 收缩、满队列丢弃、Stop 语义、panic 恢复）、`task_test.go`（约 6 秒）。
+- `internal/pgs`：`errors.go` 哨兵错误；`naming_test.go`（ref 白名单矩阵（含保留字/长度/段数）、建仓撞别名/大小写变体、加别名撞 Name 与别名、删仓/删别名释放 ref、扫描冲突涉及仓库全部禁用、元数据缺 Name 时内存补齐且不写盘、同仓库内重复 ref 去重、分支名规则解耦）；`hardening2_test.go`（哨兵错误/InitBare 回滚/权限位）、`log_test.go`（级别/格式解析与标准库 log 重定向）、`metrics_test.go`（文本格式/标签转义/并发采集）、`config_hotreload_test.go`（热加载生效/需重启回报/非法拒绝/并发无竞态）、`concurrency_test.go`、`repository_test.go`（InitBare 与 pgit.json/自定义默认分支、Manager 双索引与扫描恢复、alias 增删与校验、SetDefaultBranch、CreateMirrorRepository、MirrorBackwardCompat、URL 校验）、`repository_browse_test.go`（Tree/Blob/Archive/ForEachRef 端到端，构造 loose 对象）、`concurrency_test.go`（Manager 并发读写无崩溃、快照隔离、sync 注册回归、sync 与设置更新并发）、`sync_log_test.go`、`sync_manager_test.go`、`sync_queue_test.go`（排队去重/队列关闭快速失败/日志字段）、`task_queue_test.go`（并发度实测、SetWorkers 收缩、满队列丢弃、Stop 语义、panic 恢复）、`task_test.go`（约 6 秒）。
 - `internal/pgs`：`github_test.go`（假 GitHub API：分页 Link、本人 `/user/repos`、用户→组织回退、fork/archived 过滤、限流/未找到/无效 Token 分类、单仓库兜底）、`github_import_test.go`（命名与 alias、Token 落盘、default_branch、二次导入冲突、与非镜像/alias 冲突、cloneBase、校验与上限、并发导入只成功一次、列表缺项兜底、冲突标注）。
-- `internal/pgs/server`：`mux_test.go`（并发连接/关闭回收连接/Shutdown 幂等与等待进行中请求/Serve 返回）、`health_test.go`、`limit_test.go`、`ssh_test.go` 走真实 TCP + x/crypto 客户端（upload-pack clone 全量交换验证 pack 对象、receive-pack push 验证 ref+loose 落盘、mirror 仓库 push 拒绝 stderr），无需 git/ssh 二进制；`TestSSHClonePushE2E` 需 `PGIT_E2E=1` + git/ssh 二进制。
+- `internal/pgs/server`：`api_ref_test.go`（按 name 与多段别名访问 info/tree/blob/commits/archive 结果等价且 Content-Type 正确、写操作（settings/default-branch/别名增删）按别名寻址、删除 confirm 必须等于 canonical name、未知 ref 404 与缺 ref 400、树/文件路径通配与 root blob 缺 path 的边界）、`router_test.go`（路由表命中与 405/404 语义、缺 ref 400）、`mux_test.go`（并发连接/关闭回收连接/Shutdown 幂等与等待进行中请求/Serve 返回）、`health_test.go`、`limit_test.go`、`ssh_test.go` 走真实 TCP + x/crypto 客户端（upload-pack clone 全量交换验证 pack 对象、receive-pack push 验证 ref+loose 落盘、mirror 仓库 push 拒绝 stderr），无需 git/ssh 二进制；`TestSSHClonePushE2E` 需 `PGIT_E2E=1` + git/ssh 二进制。
 - `internal/pgs/git`：`loose_test`/`store_test`（内存 ObjectStore 驱动浏览 API/可达性/REF_DELTA 回查）/`stream_test`（流式解码内存对比、WalkReachable 只 Stat、单遍 encodePack 等价性）/`hardening_test`（畸形输入回归 + fuzz）/`delta_test`/`pack_test`/`refs_test`/`reach_test`/`browse_test`/`protocol_test`/`fetch_test`/`e2e_test`，覆盖 delta 应用与生成 roundtrip、deltaPrecheck 预检、桶扫描限制、pack 编解码（与真实 git pack、index-pack 互验）、ofs-delta 回环、ref CAS/symref/packed-refs、可达性 BFS 与 have 差量过滤、treeIsh/tree/blob/ForEachRefs、v0 状态机 + sideband、增量 fetch（have flush/多 POST/无 done 等）、fetch 客户端（initial/incremental/up-to-date/empty/basic auth/ref 删除/ACK 响应，httptest + 自身协议当远程，无需外部 git）；e2e 集成需 `PGIT_E2E=1`。`go test ./...` 通过。
 - 无 linter/formatter/CI 配置。用 `go vet ./...` 和 `go build` 验证。路由层无第三方依赖（`http.ServeMux`）。
 - 测试中调用真实 `git` 时必须注入 `-c commit.gpgsign=false`（`internal/pgs/git/gitcmd_test.go` 的 `newGitCmd`、`internal/pgs/testmain_test.go` 调低重试次数）（见 `internal/pgs/git/gitcmd_test.go` 的 `newGitCmd`）：否则用户的全局 `commit.gpgsign=true` 会让 `git commit` 等待 GPG 口令直至超时。

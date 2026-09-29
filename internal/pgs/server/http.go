@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -63,23 +62,28 @@ func (h *HTTPHandler) buildRouter() http.Handler {
 	probe.HandleFunc("GET /metrics", h.metrics)
 
 	// 管理 API：独立 mux，随后整体套一层鉴权与日志中间件。
+	// 仓库引用一律走 ref 参数（不占路径段），路径只表达动作：
+	// 这样多段别名（owner/repo）与含斜杠的别名在全部接口上都不需要百分号编码。
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/{$}", h.serveAPIDocs)
 	api.HandleFunc("GET /api/v1/repos", h.listRepos)
-	api.HandleFunc("POST /api/v1/repos/{name}", h.createRepo)
-	api.HandleFunc("GET /api/v1/repos/{name}", h.getRepo)
-	api.HandleFunc("DELETE /api/v1/repos/{name}", h.deleteRepo)
-	api.HandleFunc("POST /api/v1/repos/{name}/aliases", h.addAlias)
-	api.HandleFunc("DELETE /api/v1/repos/{name}/aliases/{alias}", h.removeAlias)
-	api.HandleFunc("POST /api/v1/repos/{name}/default-branch", h.setDefaultBranch)
-	api.HandleFunc("POST /api/v1/repos/{name}/settings", h.updateSettings)
-	api.HandleFunc("GET /api/v1/repos/{name}/tree/{ref}/{path...}", h.tree)
-	api.HandleFunc("GET /api/v1/repos/{name}/blob/{ref}/{path...}", h.blob)
-	api.HandleFunc("GET /api/v1/repos/{name}/archive/{ref}", h.archive)
-	api.HandleFunc("GET /api/v1/repos/{name}/commits/{ref}", h.commits)
-	api.HandleFunc("POST /api/v1/repos/{name}/sync", h.syncRepo)
-	api.HandleFunc("GET /api/v1/repos/{name}/sync-log", h.syncLog)
-	api.HandleFunc("GET /api/v1/repos/{name}/mirror-status", h.mirrorStatus)
+	api.HandleFunc("POST /api/v1/repos", h.createRepo)
+	api.HandleFunc("GET /api/v1/repos/info", h.getRepo)
+	api.HandleFunc("DELETE /api/v1/repos/info", h.deleteRepo)
+	api.HandleFunc("POST /api/v1/repos/aliases", h.addAlias)
+	api.HandleFunc("DELETE /api/v1/repos/aliases", h.removeAlias)
+	api.HandleFunc("POST /api/v1/repos/default-branch", h.setDefaultBranch)
+	api.HandleFunc("POST /api/v1/repos/settings", h.updateSettings)
+	// tree/blob 的文件路径是尾随通配（根目录时为空），两种形态都注册以避免尾斜杠陷阱。
+	api.HandleFunc("GET /api/v1/repos/tree", h.tree)
+	api.HandleFunc("GET /api/v1/repos/tree/{path...}", h.tree)
+	api.HandleFunc("GET /api/v1/repos/blob", h.blob)
+	api.HandleFunc("GET /api/v1/repos/blob/{path...}", h.blob)
+	api.HandleFunc("GET /api/v1/repos/archive", h.archive)
+	api.HandleFunc("GET /api/v1/repos/commits", h.commits)
+	api.HandleFunc("POST /api/v1/repos/sync", h.syncRepo)
+	api.HandleFunc("GET /api/v1/repos/sync-log", h.syncLog)
+	api.HandleFunc("GET /api/v1/repos/mirror-status", h.mirrorStatus)
 	api.HandleFunc("GET /api/v1/github/repos", h.githubRepos)
 	api.HandleFunc("POST /api/v1/github/import", h.githubImport)
 
@@ -205,16 +209,20 @@ func (h *HTTPHandler) listRepos(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) createRepo(w http.ResponseWriter, r *http.Request) {
-	name := pathParam(r, "name")
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
 	description := r.FormValue("description")
 	defaultBranch := r.FormValue("defaultBranch")
 
 	mirrorURL := r.FormValue("mirrorUrl")
 	if mirrorURL != "" {
 		syncInterval := 0
-		if s := r.FormValue("mirrorInterval"); s != "" {
-			if v, err := strconv.Atoi(s); err == nil && v >= 0 {
-				syncInterval = v
+		if v := r.FormValue("mirrorInterval"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				syncInterval = n
 			}
 		}
 		authType := r.FormValue("mirrorAuthType")
@@ -250,10 +258,8 @@ func (h *HTTPHandler) createRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) getRepo(w http.ResponseWriter, r *http.Request) {
-	name := pathParam(r, "name")
-	repo, err := h.Manager.GetRepository(name)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
 		return
 	}
 	refs, err := repo.ForEachRef()
@@ -270,20 +276,58 @@ func (h *HTTPHandler) getRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) deleteRepo(w http.ResponseWriter, r *http.Request) {
-	name := pathParam(r, "name")
+	repo, ref, ok := h.resolveRepo(w, r)
+	if !ok {
+		return
+	}
+	// 确认值必须等于 canonical name：即使按别名寻址，也要写出真实名字才允许删除。
 	confirm := r.FormValue("confirm")
-	if confirm != name {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("confirm mismatch, expected %s", name))
+	if confirm != repo.Name {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("confirm mismatch, expected %s", repo.Name))
 		return
 	}
 	if h.Sync != nil {
-		h.Sync.Unregister(name)
+		h.Sync.Unregister(repo.Name)
 	}
-	if err := h.Manager.DeleteRepository(name); err != nil {
+	if err := h.Manager.DeleteRepository(repo.Name); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	slog.Info("deleted repository", "repo", repo.Name, "ref", ref)
 	w.WriteHeader(http.StatusOK)
+}
+
+// refParam 读取仓库引用参数（仓库名或别名）。
+func refParam(r *http.Request) string { return strings.TrimSpace(r.FormValue("ref")) }
+
+// resolveRepo 把 ref 参数解析为仓库元数据快照；失败时已写完响应，调用方直接 return。
+//
+// 后续步骤一律使用 canonical name 调用 Manager（Sync/设置等接口按 name 工作），
+// 调试日志同时记录 ref 与解析结果，便于审计「用哪个别名访问的」。
+func (h *HTTPHandler) resolveRepo(w http.ResponseWriter, r *http.Request) (*pgs.Repository, string, bool) {
+	ref := refParam(r)
+	if ref == "" {
+		writeError(w, http.StatusBadRequest, "ref is required")
+		return nil, "", false
+	}
+	repo, err := h.Manager.Resolve(ref)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return nil, "", false
+	}
+	slog.Debug("api ref resolved", "repo", repo.Name, "ref", ref, "path", r.URL.Path)
+	return repo, ref, true
+}
+
+// treeishParam 读取 treeish 参数；缺省时回落到仓库默认分支。
+func treeishParam(r *http.Request, repo *pgs.Repository) string {
+	if v := strings.TrimSpace(r.FormValue("treeish")); v != "" {
+		return v
+	}
+	if db, err := repo.DefaultBranch(); err == nil && db != "" {
+		return db
+	}
+	return "master"
 }
 
 // refErrorStatus 把 ref 唯一性冲突映射为 409，其余校验错误映射为 400。
@@ -295,37 +339,39 @@ func refErrorStatus(err error) int {
 }
 
 func (h *HTTPHandler) addAlias(w http.ResponseWriter, r *http.Request) {
-	name := pathParam(r, "name")
-	alias := r.FormValue("alias")
-	if err := h.Manager.AddAlias(name, alias); err != nil {
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
+		return
+	}
+	if err := h.Manager.AddAlias(repo.Name, r.FormValue("alias")); err != nil {
 		writeError(w, refErrorStatus(err), err.Error())
 		return
 	}
-	repo, _ := h.Manager.GetRepository(name)
-	writeJSON(w, http.StatusOK, repo)
+	updated, _ := h.Manager.GetRepository(repo.Name)
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (h *HTTPHandler) removeAlias(w http.ResponseWriter, r *http.Request) {
-	name := pathParam(r, "name")
-	alias := pathParam(r, "alias")
-	if err := h.Manager.RemoveAlias(name, alias); err != nil {
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
+		return
+	}
+	if err := h.Manager.RemoveAlias(repo.Name, r.FormValue("alias")); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	repo, _ := h.Manager.GetRepository(name)
-	writeJSON(w, http.StatusOK, repo)
+	updated, _ := h.Manager.GetRepository(repo.Name)
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (h *HTTPHandler) setDefaultBranch(w http.ResponseWriter, r *http.Request) {
-	name := pathParam(r, "name")
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
+		return
+	}
 	branch := r.FormValue("branch")
 	if branch == "" {
 		writeError(w, http.StatusBadRequest, "branch is required")
-		return
-	}
-	repo, err := h.Manager.GetRepository(name)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	if err := repo.SetDefaultBranch(branch); err != nil {
@@ -339,22 +385,11 @@ func (h *HTTPHandler) setDefaultBranch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) tree(w http.ResponseWriter, r *http.Request) {
-	name := pathParam(r, "name")
-	ref := pathParam(r, "ref")
-	repo, err := h.Manager.GetRepository(name)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
 		return
 	}
-	if ref == "" {
-		if db, err := repo.DefaultBranch(); err == nil && db != "" {
-			ref = db
-		} else {
-			ref = "master"
-		}
-	}
-	subtree := pathParam(r, "path")
-	files, err := repo.Tree(ref, subtree)
+	files, err := repo.Tree(treeishParam(r, repo), pathParam(r, "path"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -363,26 +398,16 @@ func (h *HTTPHandler) tree(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) blob(w http.ResponseWriter, r *http.Request) {
-	name := pathParam(r, "name")
-	ref := pathParam(r, "ref")
-	repo, err := h.Manager.GetRepository(name)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
 		return
-	}
-	if ref == "" {
-		if db, err := repo.DefaultBranch(); err == nil && db != "" {
-			ref = db
-		} else {
-			ref = "master"
-		}
 	}
 	path := pathParam(r, "path")
 	if path == "" {
 		writeError(w, http.StatusBadRequest, "path is empty")
 		return
 	}
-	body, err := repo.Blob(ref, path)
+	body, err := repo.Blob(treeishParam(r, repo), path)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -393,45 +418,28 @@ func (h *HTTPHandler) blob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) archive(w http.ResponseWriter, r *http.Request) {
-	name := pathParam(r, "name")
-	ref := pathParam(r, "ref")
-	repo, err := h.Manager.GetRepository(name)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
 		return
 	}
-	if ref == "" {
-		if db, err := repo.DefaultBranch(); err == nil && db != "" {
-			ref = db
-		} else {
-			ref = "master"
-		}
-	}
-	body, err := repo.Archive(ref)
+	treeish := treeishParam(r, repo)
+	body, err := repo.Archive(treeish)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	defer body.Close()
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s-%s.zip", name, ref))
+	// treeish 可能含 '/'（如 feature/x），写进文件名前替换掉。
+	w.Header().Set("Content-Disposition",
+		fmt.Sprintf("attachment; filename=%s-%s.zip", repo.Name, strings.ReplaceAll(treeish, "/", "-")))
 	_, _ = io.Copy(w, body)
 }
 
 func (h *HTTPHandler) commits(w http.ResponseWriter, r *http.Request) {
-	name := pathParam(r, "name")
-	ref := pathParam(r, "ref")
-	repo, err := h.Manager.GetRepository(name)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
 		return
-	}
-	if ref == "" {
-		if db, err := repo.DefaultBranch(); err == nil && db != "" {
-			ref = db
-		} else {
-			ref = "master"
-		}
 	}
 	limit := 20
 	if n := r.FormValue("limit"); n != "" {
@@ -439,7 +447,7 @@ func (h *HTTPHandler) commits(w http.ResponseWriter, r *http.Request) {
 			limit = v
 		}
 	}
-	commits, err := repo.Commits(ref, limit)
+	commits, err := repo.Commits(treeishParam(r, repo), limit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -448,12 +456,15 @@ func (h *HTTPHandler) commits(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) syncRepo(w http.ResponseWriter, r *http.Request) {
-	name := pathParam(r, "name")
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
+		return
+	}
 	if h.Sync == nil {
 		writeError(w, http.StatusInternalServerError, "sync manager not initialized")
 		return
 	}
-	entry, err := h.Sync.SyncNow(name)
+	entry, err := h.Sync.SyncNow(repo.Name)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgs.ErrRepoNotFound), errors.Is(err, pgs.ErrAliasNotFound):
@@ -474,10 +485,8 @@ func (h *HTTPHandler) syncRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) syncLog(w http.ResponseWriter, r *http.Request) {
-	name := pathParam(r, "name")
-	repo, err := h.Manager.GetRepository(name)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
 		return
 	}
 	if !repo.IsMirror() {
@@ -485,9 +494,9 @@ func (h *HTTPHandler) syncLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := 50
-	if s := r.FormValue("limit"); s != "" {
-		if v, err := strconv.Atoi(s); err == nil && v > 0 {
-			limit = v
+	if v := r.FormValue("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
 		}
 	}
 	entries, err := pgs.ReadSyncLog(repo.Path(), limit)
@@ -502,12 +511,15 @@ func (h *HTTPHandler) syncLog(w http.ResponseWriter, r *http.Request) {
 
 // mirrorStatus 返回镜像仓库的调度/同步状态（含上次错误与下次触发时间）。
 func (h *HTTPHandler) mirrorStatus(w http.ResponseWriter, r *http.Request) {
-	name := pathParam(r, "name")
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
+		return
+	}
 	if h.Sync == nil {
 		writeError(w, http.StatusInternalServerError, "sync manager not initialized")
 		return
 	}
-	st, err := h.Sync.Status(name)
+	st, err := h.Sync.Status(repo.Name)
 	if err != nil {
 		if errors.Is(err, pgs.ErrRepoNotFound) || errors.Is(err, pgs.ErrAliasNotFound) {
 			writeError(w, http.StatusNotFound, err.Error())
@@ -649,10 +661,8 @@ func (h *HTTPHandler) githubImport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
-	name := pathParam(r, "name")
-	repo, err := h.Manager.GetRepository(name)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
 		return
 	}
 	description := r.FormValue("description")
@@ -660,9 +670,9 @@ func (h *HTTPHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	var mirrorUpdates *pgs.MirrorConfig
 	if repo.IsMirror() {
 		interval := 0
-		if s := r.FormValue("mirrorInterval"); s != "" {
-			if v, err := strconv.Atoi(s); err == nil && v >= 0 {
-				interval = v
+		if v := r.FormValue("mirrorInterval"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				interval = n
 			} else {
 				writeError(w, http.StatusBadRequest, "invalid mirrorInterval")
 				return
@@ -682,18 +692,18 @@ func (h *HTTPHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	oldInterval, err := h.Manager.UpdateRepositorySettings(name, description, mirrorUpdates)
+	oldInterval, err := h.Manager.UpdateRepositorySettings(repo.Name, description, mirrorUpdates)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	updated, _ := h.Manager.GetRepository(name)
+	updated, _ := h.Manager.GetRepository(repo.Name)
 
 	// syncInterval 变化时重新注册定时调度（0<->N、N->M 均重建）
 	if h.Sync != nil && updated != nil && updated.IsMirror() {
 		if oldInterval != updated.Mirror.SyncInterval {
-			h.Sync.Unregister(name)
+			h.Sync.Unregister(repo.Name)
 			h.Sync.Register(updated)
 		}
 	}
@@ -702,8 +712,6 @@ func (h *HTTPHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Git smart-http transport ---
-
-var gitTransportRe = regexp.MustCompile(`^/(.+?)/git/(info/refs|git-.+)$`)
 
 func (h *HTTPHandler) gitTransport(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path

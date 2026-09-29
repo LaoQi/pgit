@@ -532,7 +532,8 @@ func (r *RepositoriesManager) AddAlias(name string, alias string) error {
 		return err
 	}
 	if repo.HasAlias(alias) {
-		return fmt.Errorf("alias %s already bound to repository %s", alias, name)
+		// 同一仓库重复绑定也归为 ref 冲突（HTTP 层统一 409）。
+		return fmt.Errorf("%w: ref %q is already bound to repository %q", ErrRefConflict, alias, name)
 	}
 	// ref 空间唯一：别名不得与任何仓库名或别名（含大小写变体）冲突。
 	if err := r.checkRefAvailableLocked(alias); err != nil {

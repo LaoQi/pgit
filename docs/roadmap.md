@@ -4,6 +4,11 @@
 > 已完成的阶段 1–5 与 P1-5/B/C/D 见 `CHANGELOG.md`；架构评估见 `docs/architecture-review.md`；
 > 安全策略见 `docs/security-policy.md`。最后更新：2026-09-24。
 
+## 已完成
+
+- **2026-09-29 ref/路由重构**：仓库引用改为 `ref` 参数（API 与 WebUI 同构）、ref 唯一性双向检测、
+  别名白名单（URL 安全、零编码）、启动扫描冲突时涉及仓库全部禁用。详见 `CHANGELOG.md` 同日条目。
+
 ## 约定
 
 - 每项独立可交付、独立提交；验收统一为 `go build ./... && go vet ./... && go test -race ./...` 全绿，
