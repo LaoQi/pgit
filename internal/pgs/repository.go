@@ -240,7 +240,6 @@ func (repo Repository) SetDefaultBranch(branch string) error {
 	return rs.SetHead(fullName)
 }
 
-// ValidateDefaultBranch 校验默认分支名合法性（与 alias 校验规则一致）。
 // ValidateDefaultBranch 校验默认分支名合法性。
 //
 // 分支名来自 git 客户端（可能含 @、+ 等别名规则之外的字符），因此这里保持宽松规则，

@@ -61,7 +61,8 @@ func (r *RepositoriesManager) root() string {
 	return GitRoot // 过渡兜底
 }
 
-// CheckRepositories 扫描存储目录重建索引。
+// CheckRepositories 扫描存储目录重建索引（仅初始化时调用一次：索引为累积写入，
+// 重复调用不会清理已移除的仓库）。
 //
 // 唯一性策略（ref 空间 = 仓库名 ∪ 别名，大小写不敏感）：某个 ref 被多个仓库声明时，
 // 涉及冲突的仓库**全部不进入索引**（即全部不可用），并逐条记 ERROR 日志等待人工修复；
