@@ -2,6 +2,7 @@ package git
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -546,6 +547,43 @@ func TestServeReceivePackDeleteRef(t *testing.T) {
 		t.Errorf("missing 'ok refs/heads/tmp': %q", statusStr)
 	}
 }
+
+// 首帧即 flush（客户端读完 advertisement 后放弃，如 git ls-remote 的收尾 flush）：
+// 返回 ErrClientAborted，供 HTTP/SSH 层降级为 debug 日志，而不是记为协议错误。
+func TestServeUploadPackClientAborted(t *testing.T) {
+	dir, _ := makeRepoWithCommit(t)
+
+	var inBuf bytes.Buffer
+	inw := NewPktWriter(&inBuf)
+	inw.WriteFlush() // 客户端不发任何 want，直接结束会话
+
+	var outBuf bytes.Buffer
+	err := ServeUploadPack(dir, &inBuf, &outBuf)
+	if !errors.Is(err, ErrClientAborted) {
+		t.Fatalf("err = %v, want ErrClientAborted", err)
+	}
+	if outBuf.Len() != 0 {
+		t.Errorf("server should write nothing on client abort, got %d bytes", outBuf.Len())
+	}
+
+	// SSH 单连接入口同样透传该哨兵（advertise 已由调用方写出）
+	err = HandleSSHSession("git-upload-pack", dir, &flushOnlyConn{})
+	if !errors.Is(err, ErrClientAborted) {
+		t.Fatalf("HandleSSHSession err = %v, want ErrClientAborted", err)
+	}
+}
+
+// flushOnlyConn 模拟「连上就读 advertisement、随后只发一个 flush」的 SSH 客户端。
+type flushOnlyConn struct{ io.Reader }
+
+func (c *flushOnlyConn) Read(p []byte) (int, error) {
+	if c.Reader == nil {
+		c.Reader = bytes.NewReader([]byte(PktFlush))
+	}
+	return c.Reader.Read(p)
+}
+
+func (c *flushOnlyConn) Write(p []byte) (int, error) { return len(p), nil }
 
 // TestHandleSSHSessionUploadPack: SSH upload-pack 单连接回环（advertise + serve）
 func TestHandleSSHSessionUnsupportedArchive(t *testing.T) {

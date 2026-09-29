@@ -160,7 +160,12 @@ func (s *SSHHandler) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 
 			req.Reply(true, nil)
 			if err := git.HandleSSHSession(cmdName, repoPath, ch); err != nil {
-				slog.Error("ssh session failed", "command", cmdName, "alias", alias, "error", err)
+				if errors.Is(err, git.ErrClientAborted) {
+					// 客户端读完 advertisement 即断开（如 git ls-remote 的收尾 flush）
+					slog.Debug("ssh session ended by client", "command", cmdName, "alias", alias)
+				} else {
+					slog.Error("ssh session failed", "command", cmdName, "alias", alias, "error", err)
+				}
 			}
 			ch.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
 			return

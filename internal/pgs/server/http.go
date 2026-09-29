@@ -794,6 +794,12 @@ func (h *HTTPHandler) gitCommand(w http.ResponseWriter, r *http.Request, repoPat
 	switch command {
 	case "upload-pack":
 		if err := git.HandleUploadPack(repoPath, body, w); err != nil {
+			if errors.Is(err, git.ErrClientAborted) {
+				// 客户端在交换前放弃（空 body / 首帧 flush）：正常收尾，不计失败
+				pgs.ObserveGitOperation("upload-pack", "aborted")
+				slog.Debug("upload-pack aborted by client", "requestId", requestID(r.Context()))
+				return
+			}
 			pgs.ObserveGitOperation("upload-pack", "failure")
 			slog.Error("upload-pack failed", "requestId", requestID(r.Context()), "error", err)
 		} else {

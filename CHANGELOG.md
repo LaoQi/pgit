@@ -3,6 +3,20 @@
 pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；变更过程、缺陷修复、
 性能调优与历史决策收录于此。条目按时间倒序，括注提交短 hash。
 
+## 2026-09-29
+
+**fix(git,server): SSH `ls-remote` 的正常收尾被记为 ERROR**
+- 问题：`git ls-remote`（SSH）读完备选 refs 后发一个 flush-pkt 结束会话，`ServeUploadPack`
+  把「首帧是 flush」判为协议错误（`upload-pack: unexpected flush as first frame`），
+  SSH 层按 ERROR 记录 → 每次 `ls-remote` 刷一条假错误（实测精确 +1），污染日志与告警；
+  操作本身一直成功（refs 正确，clone/fetch 不受影响）
+- 新增哨兵 `git.ErrClientAborted`：首帧 flush 表示客户端主动放弃，不是协议错误；
+  SSH 层降级为 debug（`ssh session ended by client`），HTTP 层降级为 debug 并把指标记为
+  `pgit_git_operations_total{service="upload-pack",result="aborted"}`
+- 回归：`TestServeUploadPackClientAborted`（ServeUploadPack 与 HandleSSHSession 两条入口
+  都返回该哨兵、且不向客户端写任何字节）
+- 归属：既有行为（`protocol.go` 上次改动为 `6647da7`），在 NAS 上用 SSH `ls-remote` 时暴露
+
 ## 2026-09-28
 
 **feat(github): 从 GitHub 账号发现并勾选生成镜像仓库；镜像同步改为任务队列**

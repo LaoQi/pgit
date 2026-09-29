@@ -191,7 +191,9 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("upload-pack: read first want: %w", err)
 	}
 	if isFlush {
-		return fmt.Errorf("upload-pack: unexpected flush as first frame")
+		// 客户端读完 advertisement 后直接放弃（如 git ls-remote 的收尾 flush）：
+		// 正常行为，交由调用方降级处理，不计为协议错误。
+		return ErrClientAborted
 	}
 	firstOid, clientCaps, ok := parseWantLine(string(first))
 	if !ok {
