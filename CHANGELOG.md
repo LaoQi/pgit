@@ -5,7 +5,7 @@ pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；�
 
 ## 2026-09-29
 
-**refactor(api,webui): 仓库引用改为 ref 参数；ref 唯一性与别名规则收紧**
+**refactor(api,webui): 仓库引用改为 ref 参数；ref 唯一性与别名规则收紧**（`d500994`）
 - 破坏性改造（已确认不做兼容）：管理 API 与 WebUI 路由不再把仓库引用放在路径里，改为参数：
   `GET|DELETE /api/v1/repos/info?ref=`、`POST|DELETE /api/v1/repos/aliases?ref=&alias=`、
   `POST /api/v1/repos/{default-branch,settings,sync}`、`GET /api/v1/repos/{tree/{path...},blob/{path...},archive,commits,sync-log,mirror-status}`；

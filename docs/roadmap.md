@@ -29,7 +29,8 @@
   头 `X-Pgit-Event`、`X-Pgit-Delivery`（投递 ID）、`X-Pgit-Signature-256`（HMAC-SHA256 of body，密钥为 `secret`）。
 - 可靠性：异步队列 + 有界并发；失败按指数退避重试（复用 fetch 的退避/分类思路）；
   投递记录 JSONL（`pgit-hooks.jsonl`）供查询；超时与响应体大小上限。
-- 端点：`GET/POST/DELETE /api/v1/repos/{name}/webhooks`、`GET .../webhooks-log`。
+- 端点：`GET/POST/DELETE /api/v1/repos/webhooks`（`ref` 参数）、`GET /api/v1/repos/webhooks-log?ref=`
+  ——与现有 API 一致：仓库引用走 `ref` 参数，不占路径段。
 - 注意：`receive-pack` 当前在 `protocol.go` 内完成 ref 更新，事件需在其后投递（避免阻塞传输主路径）。
 
 ## E2. gc / repack 后台任务（优先级：中）
@@ -60,8 +61,8 @@
 
 ## E4. 浏览 API 可用性（优先级：中）
 
-- **分页**：`GET /api/v1/repos/{name}/commits/{ref}` 支持 `?cursor=`/`?limit=`（当前只有 limit）；
-  大仓库 `GET /repos/{name}` 的 refs 列表同理。
+- **分页**：`GET /api/v1/repos/commits?ref=&treeish=` 支持 `?cursor=`/`?limit=`（当前只有 limit）；
+  大仓库 `GET /api/v1/repos/info?ref=` 的 refs 列表同理。
 - **ETag / 条件请求**：tree/blob/commits 响应加 ETag（基于 ref 指纹 + 路径），支持 `If-None-Match` 走 304。
   可复用 `ForEachRefs` 已有的 refs 指纹。
 - **`RefStore.List()` 每请求全量 `filepath.Walk`**：`ForEachRefs`/upload-pack 每次调用都 walk `refs/` 目录（`refs.go`）。
@@ -80,7 +81,8 @@
 ## E6. 其他零散项
 
 - `apidocs.go` 手写静态 JSON 与路由双份维护 → 由路由表生成（需先在路由注册时收集元数据）。
-- `DELETE /api/v1/repos/{name}` 的 `confirm` 只能走 query：`r.FormValue` 不解析 DELETE 的 body
+- `DELETE /api/v1/repos/info` 必须按 `ref` + `confirm`（= canonical name）调用；`confirm` 走 query
+  即可（`r.FormValue` 会读 query，DELETE 的 body 不解析，现已由参数形态规避）
   （net/http 仅对 POST/PUT/PATCH 解析表单）。apidocs 已正确标注 `In: "query"`，无需修改；
   但 WebUI/第三方客户端需注意勿用 body 传 `confirm`（否则 400）。
 - 镜像 webhook 与 E1 合并；`mirror` 的失败告警（邮件/webhook）一并考虑。

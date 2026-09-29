@@ -312,7 +312,6 @@ pre code { background: none; padding: 0; }
     padding: 6px 0;
 }
 .alias-item .alias-name { flex: 1; font-family: monospace; }
-.alias-item .alias-note { font-size: 11px; color: var(--orange); }
 
 /* Commits list */
 .commits-list { max-height: 400px; overflow-y: auto; }

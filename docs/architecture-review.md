@@ -102,7 +102,7 @@ loose/refs/metadata 一律 tmp+rename 原子写，测试量与生产代码接近
   基准 1000 refs 批量更新 190ms → 56ms（3.4×）。**仍存**：`RefStore.List()` 仍每请求 `filepath.Walk` 扫描 `refs/` 目录
   （`RepositoriesManager.List()` 只遍历内存索引，无此问题）。
 - ~~`ForEachRefs` 每请求解析每个 ref 对象~~ → 已修（9a7c7f7）：refs 指纹缓存（未变直接返回）；
-  ~~`listRepos` 调 `List()` 两次~~ → 已修。**仍存**：`GET /repos/{name}` 无分页；`RefStore.List()` 每次 Walk `refs/`。
+  ~~`listRepos` 调 `List()` 两次~~ → 已修。**仍存**：`GET /api/v1/repos/info?ref=` 无分页；`RefStore.List()` 每次 Walk `refs/`。
 - ~~错误分类靠字符串匹配~~ → 阶段 4 已改哨兵错误 + `errors.Is`。
 - ~~git URL 用首个 `.git/` 切分~~ → 阶段 4 已改 `LastIndex`（含 `.git/` 段的 alias 可访问）。
 - ~~`InitBare` 失败无回滚~~ → 阶段 4 已加回滚（失败时移除半成品目录）。

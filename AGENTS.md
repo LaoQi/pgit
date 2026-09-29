@@ -8,7 +8,7 @@ Go 编写的个人 git 服务器。模块名 `pgit`，`go 1.26.4`。单端口多
 
 - `go build ./...`、`go vet ./...`、`go test ./...` 全部通过。
 - **不依赖 `git` 二进制**：git 传输（HTTP smart-http + SSH exec 的 upload-pack/receive-pack）与浏览 API（Tree/Blob/Archive/ForEachRef）均由 `internal/pgs/git` 纯 Go 实现；浏览 API 基于 `browse.go`（`ResolveTreeIsh`/`TreeAt`/`BlobAt`/`ForEachRefs`）+ 标准库 `archive/zip`，对象经 `git.ObjectStore` 接口读取（当前唯一实现 `LooseStore`）。运行时无需 `git` 在 `PATH`。
-- `pgs.InitBare` 手工创建裸仓库目录结构 + config + HEAD + pgit.json，支持指定默认分支（`defaultBranch` 参数，空值默认 `master`）。默认分支可经 `POST /api/v1/repos/{name}/default-branch` 切换（要求分支已存在）；`DefaultBranch()` 读 HEAD symref；浏览 API 空 ref 时用仓库默认分支。
+- `pgs.InitBare` 手工创建裸仓库目录结构 + config + HEAD + pgit.json，支持指定默认分支（`defaultBranch` 参数，空值默认 `master`）。默认分支可经 `POST /api/v1/repos/default-branch`（`ref` + `branch`）切换（要求分支已存在）；`DefaultBranch()` 读 HEAD symref；浏览 API 空 ref 时用仓库默认分支。
 - **对象仅 loose 存储**：仓库对象来自 pgit 自身 receive-pack（HTTP/SSH push，pack 自动解包为 loose）。不支持外部 `git` 导入的含 packfile 仓库直读（`LooseStore` 只读 loose、不读 packfile）。
 - **传输流式化**：push/fetch 侧 `PackDecoder` 逐对象流式解析（`DecodeTo` 直接落盘，不驻留全量对象）；clone 侧 `WalkReachable` 只读对象头部（`ObjectStore.Stat`）+ 单遍 `encodePack` 编码。资源上限：`maxPushBytes`（默认 2GiB）、`maxConcurrentPacks`（默认 4）。
 - **镜像仓库**：纯 Go fetch 客户端（`fetch.go`）从远程 HTTP/HTTPS smart-http 仓库全量镜像所有 refs；定时自动同步（`SyncManager` per-repo goroutine）+ 手动同步（API）；同步日志 JSONL（`pgit-sync.jsonl`）。
