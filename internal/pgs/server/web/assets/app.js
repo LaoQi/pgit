@@ -212,7 +212,6 @@ function viewRepos(app) {
         }
         app.innerHTML = html;
 
-        document.getElementById('importBtn').addEventListener('click', function() { navigate('/import'); });
         document.getElementById('toggleNewBtn').addEventListener('click', function() {
             var form = document.getElementById('newRepoForm');
             form.style.display = form.style.display === 'none' ? 'block' : 'none';
