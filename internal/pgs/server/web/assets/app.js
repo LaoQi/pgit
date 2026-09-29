@@ -186,6 +186,10 @@ function viewRepos(app) {
             + '<button class="btn btn-primary btn-sm" id="createRepoBtn">Create</button>'
             + '</div></div>';
 
+        if (repos.length > 0) {
+            html += '<input class="search-input" id="repoSearch" placeholder="Search repositories..." autocomplete="off">';
+        }
+
         if (repos.length === 0) {
             html += '<div class="empty">No repositories yet. Create one to get started.</div>';
         } else {
@@ -198,7 +202,8 @@ function viewRepos(app) {
                 var sshClone = 'ssh://' + host + '/' + firstAlias + '.git';
                 var link = '/repo/' + enc(r.name);
                 var mirrorBadge = r.mirror ? ' <span class="badge badge-mirror">mirror</span>' : '';
-                html += '<div class="repo-card">'
+                var haystack = (r.name + ' ' + (r.description || '') + ' ' + aliases.join(' ')).toLowerCase();
+                html += '<div class="repo-card" data-search="' + escAttr(haystack) + '">'
                     + '<div class="name"><a href="repo/' + enc(r.name) + '" data-link="' + escAttr(link) + '">' + esc(r.name) + '</a>' + mirrorBadge + '</div>'
                     + '<div class="desc">' + esc(r.description || 'No description') + '</div>'
                     + '<div class="meta"><span>aliases: ' + aliases.length + '</span><span>' + esc(fmtDate(r.createdAt)) + '</span></div>'
@@ -209,8 +214,25 @@ function viewRepos(app) {
                     + '</div>';
             });
             html += '</div>';
+            html += '<div class="empty" id="repoNoMatch" style="display:none">No repositories match your search.</div>';
         }
         app.innerHTML = html;
+
+        var repoSearch = document.getElementById('repoSearch');
+        if (repoSearch) {
+            var repoCards = [].slice.call(app.querySelectorAll('.repo-card'));
+            var repoNoMatch = document.getElementById('repoNoMatch');
+            repoSearch.addEventListener('input', function() {
+                var q = this.value.trim().toLowerCase();
+                var shown = 0;
+                repoCards.forEach(function(card) {
+                    var hit = !q || (card.getAttribute('data-search') || '').indexOf(q) >= 0;
+                    card.style.display = hit ? '' : 'none';
+                    if (hit) shown++;
+                });
+                if (repoNoMatch) repoNoMatch.style.display = shown === 0 ? 'block' : 'none';
+            });
+        }
 
         document.getElementById('toggleNewBtn').addEventListener('click', function() {
             var form = document.getElementById('newRepoForm');
@@ -739,7 +761,7 @@ function renderGithubList() {
     var html = '<div class="card"><div class="flex-between mb-16"><h3>Repositories ('
         + ghState.repos.length + ', ' + creatable + ' importable)</h3>'
         + '<span><label class="checkbox-label"><input type="checkbox" id="ghOnlyNew"> only importable</label> '
-        + '<input class="api-search" id="ghFilter" placeholder="filter..." autocomplete="off" style="width:160px"></span></div>'
+        + '<input class="search-input" id="ghFilter" placeholder="filter..." autocomplete="off" style="width:160px"></span></div>'
         + '<div id="ghRows"></div>'
         + '<div class="flex-between" style="margin-top:12px">'
         + '<span id="ghCount" class="muted"></span>'
@@ -856,7 +878,7 @@ function viewApiDocs(app) {
     apiJSON(API + '/').then(function(data) {
         var endpoints = data.endpoints || [];
         var html = '<h2 class="mb-16">API Documentation</h2>'
-            + '<input class="api-search" id="apiSearch" placeholder="Search endpoints..." autocomplete="off">'
+            + '<input class="search-input" id="apiSearch" placeholder="Search endpoints..." autocomplete="off">'
             + '<div class="api-filters">'
             + '<button class="api-filter-btn active" data-filter="ALL">All</button>'
             + '<button class="api-filter-btn" data-filter="GET">GET</button>'

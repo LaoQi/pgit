@@ -148,6 +148,22 @@ main { max-width: 1100px; margin: 0 auto; padding: 24px; }
     box-shadow: 0 0 0 3px rgba(9,105,218,0.15);
 }
 
+/* 通用搜索框（仓库列表 / GitHub 导入 / API 文档共用） */
+.search-input {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: inherit;
+    margin-bottom: 16px;
+}
+.search-input:focus {
+    outline: none;
+    border-color: var(--link);
+    box-shadow: 0 0 0 3px rgba(9,105,218,0.15);
+}
+
 .btn {
     display: inline-block;
     padding: 8px 16px;
@@ -321,15 +337,6 @@ pre code { background: none; padding: 0; }
 .commit-meta { font-size: 12px; color: var(--text-muted); white-space: nowrap; flex-shrink: 0; }
 
 /* API docs */
-.api-search {
-    width: 100%;
-    padding: 8px 12px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font-size: 14px;
-    margin-bottom: 16px;
-}
-
 .api-filters { display: flex; gap: 8px; margin-bottom: 16px; }
 .api-filter-btn {
     padding: 4px 12px;
