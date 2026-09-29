@@ -80,6 +80,8 @@ func (h *HTTPHandler) buildRouter() http.Handler {
 	api.HandleFunc("POST /api/v1/repos/{name}/sync", h.syncRepo)
 	api.HandleFunc("GET /api/v1/repos/{name}/sync-log", h.syncLog)
 	api.HandleFunc("GET /api/v1/repos/{name}/mirror-status", h.mirrorStatus)
+	api.HandleFunc("GET /api/v1/github/repos", h.githubRepos)
+	api.HandleFunc("POST /api/v1/github/import", h.githubImport)
 
 	prefix := "/" + h.Settings.WebUIPrefix
 
@@ -155,6 +157,11 @@ func (h *HTTPHandler) healthz(w http.ResponseWriter, r *http.Request) {
 
 	pgs.DefaultRegistry().Gauge("pgit_pack_inflight", "当前进行中的 pack 传输数。").Set(float64(pgs.InflightPacks()))
 
+	if h.Sync != nil {
+		st := h.Sync.QueueStats()
+		checks["syncQueue"] = fmt.Sprintf("workers=%d queued=%d running=%d dropped=%d", st.Workers, st.Queued, st.Running, st.Dropped)
+	}
+
 	body := map[string]any{"status": "ok", "checks": checks}
 	if status != http.StatusOK {
 		body["status"] = "degraded"
@@ -165,6 +172,9 @@ func (h *HTTPHandler) healthz(w http.ResponseWriter, r *http.Request) {
 // metrics 输出 Prometheus 文本格式指标。
 func (h *HTTPHandler) metrics(w http.ResponseWriter, r *http.Request) {
 	pgs.DefaultRegistry().Gauge("pgit_pack_inflight", "当前进行中的 pack 传输数。").Set(float64(pgs.InflightPacks()))
+	if h.Sync != nil {
+		h.Sync.QueueStats() // 采集同步任务队列的瞬时指标
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(pgs.DefaultRegistry().Render())
@@ -499,6 +509,135 @@ func (h *HTTPHandler) mirrorStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+// --- GitHub 导入（一次性发现 + 勾选生成镜像仓库）---
+
+// githubToken 从表单或 X-Github-Token 头取 Token（头传递可避免 Token 出现在 URL）。
+func githubToken(r *http.Request) string {
+	if v := r.FormValue("token"); v != "" {
+		return v
+	}
+	return r.Header.Get("X-Github-Token")
+}
+
+// formBool 解析表单布尔值；未提供（或无法识别）时返回默认值。
+func formBool(r *http.Request, name string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(r.FormValue(name))) {
+	case "":
+		return def
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return def
+	}
+}
+
+// writeGithubError 把发现/导入错误映射为 HTTP 状态码：
+// 未找到 → 404，无效 Token → 401，限流 → 429，上游/网络错误 → 502，其余（参数校验）→ 400。
+func writeGithubError(w http.ResponseWriter, err error) {
+	var apiErr *pgs.GithubAPIError
+	switch {
+	case errors.Is(err, pgs.ErrGithubNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, pgs.ErrGithubRateLimited):
+		writeError(w, http.StatusTooManyRequests, err.Error())
+	case errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized:
+		writeError(w, http.StatusUnauthorized, err.Error())
+	case errors.As(err, &apiErr), errors.Is(err, pgs.ErrGithubUpstream):
+		writeError(w, http.StatusBadGateway, err.Error())
+	default:
+		writeError(w, http.StatusBadRequest, err.Error())
+	}
+}
+
+// githubRepos 发现账号仓库（只读，无副作用），并标注本地命名与冲突。
+func (h *HTTPHandler) githubRepos(w http.ResponseWriter, r *http.Request) {
+	owner := strings.TrimSpace(r.FormValue("owner"))
+	if owner == "" {
+		writeError(w, http.StatusBadRequest, "owner is required")
+		return
+	}
+	namePrefix := r.FormValue("namePrefix")
+	repos, err := pgs.DiscoverGithubRepos(pgs.GithubDiscoverQuery{
+		Owner:           owner,
+		Token:           githubToken(r),
+		APIBase:         r.FormValue("apiBase"),
+		Proxy:           r.FormValue("proxy"),
+		IncludeForks:    formBool(r, "includeForks", false),
+		IncludeArchived: formBool(r, "includeArchived", true),
+		NamePrefix:      namePrefix,
+	})
+	if err != nil {
+		writeGithubError(w, err)
+		return
+	}
+	h.Manager.AnnotateGithubRepos(repos, namePrefix)
+	creatable := 0
+	for _, repo := range repos {
+		if repo.Conflict == "" {
+			creatable++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"owner":        owner,
+		"total":        len(repos),
+		"creatable":    creatable,
+		"repositories": repos,
+	})
+}
+
+// githubImport 为勾选的仓库创建镜像仓库（逐个独立处理）。
+func (h *HTTPHandler) githubImport(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid form: "+err.Error())
+		return
+	}
+	owner := strings.TrimSpace(r.FormValue("owner"))
+	if owner == "" {
+		writeError(w, http.StatusBadRequest, "owner is required")
+		return
+	}
+	interval := 0
+	if v := strings.TrimSpace(r.FormValue("syncInterval")); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "invalid syncInterval")
+			return
+		}
+		interval = parsed
+	}
+	repos := r.Form["repos"]
+	if len(repos) == 0 {
+		// 也接受逗号分隔的单字段形式
+		if v := strings.TrimSpace(r.FormValue("repos")); v != "" {
+			repos = strings.Split(v, ",")
+		}
+	}
+
+	results, err := pgs.ImportGithubMirrors(h.Manager, h.Sync, pgs.GithubImportRequest{
+		Owner:        owner,
+		Token:        githubToken(r),
+		APIBase:      r.FormValue("apiBase"),
+		CloneBase:    r.FormValue("cloneBase"),
+		Proxy:        r.FormValue("proxy"),
+		NamePrefix:   r.FormValue("namePrefix"),
+		SyncInterval: interval,
+		Repos:        repos,
+	})
+	if err != nil {
+		writeGithubError(w, err)
+		return
+	}
+	created, failed := pgs.SummarizeGithubImport(results)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      failed == 0,
+		"created": created,
+		"failed":  failed,
+		"results": results,
+	})
 }
 
 func (h *HTTPHandler) updateSettings(w http.ResponseWriter, r *http.Request) {

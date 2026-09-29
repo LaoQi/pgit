@@ -47,6 +47,8 @@ func TestRouterAdminRoutesNotFallingThrough(t *testing.T) {
 		{http.MethodGet, "/api/v1/repos/r1/commits/master", true},
 		{http.MethodGet, "/api/v1/repos/r1/sync-log", true},
 		{http.MethodGet, "/api/v1/repos/r1/mirror-status", true},
+		{http.MethodGet, "/api/v1/github/repos", true},
+		{http.MethodPost, "/api/v1/github/import", true},
 	}
 	for _, c := range cases {
 		rec := do(h, c.method, c.path)

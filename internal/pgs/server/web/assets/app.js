@@ -132,6 +132,8 @@ function route() {
         } else {
             viewRepoDetail(app, name);
         }
+    } else if (path === '/import') {
+        viewImport(app);
     } else if (path === '/api') {
         viewApiDocs(app);
     } else {
@@ -210,6 +212,7 @@ function viewRepos(app) {
         }
         app.innerHTML = html;
 
+        document.getElementById('importBtn').addEventListener('click', function() { navigate('/import'); });
         document.getElementById('toggleNewBtn').addEventListener('click', function() {
             var form = document.getElementById('newRepoForm');
             form.style.display = form.style.display === 'none' ? 'block' : 'none';
@@ -624,6 +627,230 @@ function viewTree(app, name, ref, subPath) {
         app.innerHTML = '<div class="error">' + esc(err.message) + '</div>'
             + '<p><a href="repo/' + enc(name) + '" data-link="' + escAttr(link) + '">Back to repository</a></p>';
     });
+}
+
+// GitHub 导入页：填账号信息 → 加载仓库 → 勾选 → 生成镜像仓库
+var ghState = { repos: [], owner: '', loaded: false };
+
+function ghConflictLabel(c) {
+    switch (c) {
+        case 'not-a-mirror': return 'name taken by a local repo';
+        case 'mirror-same-remote': return 'already mirrored';
+        case 'mirror-other-remote': return 'mirrored from another remote';
+        case 'alias-exists': return 'alias taken';
+        default: return '';
+    }
+}
+
+function viewImport(app) {
+    apiJSON(API + '/repos').then(function(data) {
+        var existing = (data.repositories || []).length;
+        var html = '<h2 class="mb-16">Import from GitHub</h2>'
+            + '<div class="card"><h3>Account</h3>'
+            + '<div class="form-group"><label>Owner (user or organization) *</label>'
+            + '<input id="ghOwner" placeholder="LaoQi" autocomplete="off" value="' + escAttr(ghState.owner) + '"></div>'
+            + '<div class="form-group"><label>Token (optional — without it only public repositories are listed)</label>'
+            + '<input id="ghToken" type="password" placeholder="ghp_xxx" autocomplete="off"></div>'
+            + '<div class="form-group"><label class="checkbox-label"><input type="checkbox" id="ghForks"> Include forks</label></div>'
+            + '<div class="form-group"><label class="checkbox-label"><input type="checkbox" id="ghArchived" checked> Include archived</label></div>'
+            + '<div class="form-group"><label>Local name prefix (optional)</label>'
+            + '<input id="ghPrefix" placeholder="" autocomplete="off"></div>'
+            + '<div class="form-group"><label>Sync interval in seconds (0 = manual only)</label>'
+            + '<input id="ghInterval" value="3600" autocomplete="off"></div>'
+            + '<details><summary class="muted">Advanced</summary>'
+            + '<div class="form-group"><label>API base (default https://api.github.com)</label>'
+            + '<input id="ghApiBase" placeholder="https://api.github.com" autocomplete="off"></div>'
+            + '<div class="form-group"><label>Clone base (default: the clone URL returned by GitHub)</label>'
+            + '<input id="ghCloneBase" placeholder="https://github.com" autocomplete="off"></div>'
+            + '<div class="form-group"><label>Proxy (optional)</label>'
+            + '<input id="ghProxy" placeholder="http://127.0.0.1:7890" autocomplete="off"></div>'
+            + '</details>'
+            + '<button class="btn btn-primary btn-sm" id="ghLoadBtn">Load repositories</button> '
+            + '<button class="btn btn-sm" id="ghCancelBtn">Cancel</button>'
+            + '<div class="muted" style="margin-top:8px">' + existing + ' repositories on this server. '
+            + 'Created mirrors are named {prefix}{owner}_{repo} with an additional {owner}/{repo} alias.</div>'
+            + '</div><div id="ghList"></div>';
+        app.innerHTML = html;
+
+        document.getElementById('ghOwner').value = ghState.owner || '';
+        document.getElementById('ghLoadBtn').addEventListener('click', loadGithubRepos);
+        document.getElementById('ghCancelBtn').addEventListener('click', function() { navigate('/'); });
+        if (ghState.loaded) renderGithubList();
+    }).catch(function(err) {
+        app.innerHTML = '<div class="error">' + esc(err.message) + '</div>';
+    });
+}
+
+function ghParam(name) {
+    var el = document.getElementById(name);
+    return el ? el.value.trim() : '';
+}
+
+function loadGithubRepos() {
+    var owner = ghParam('ghOwner');
+    if (!owner) { showToast('Owner is required', 'error'); return; }
+    ghState.owner = owner;
+    var params = new URLSearchParams();
+    params.set('owner', owner);
+    var token = ghParam('ghToken');
+    var apiBase = ghParam('ghApiBase');
+    var proxy = ghParam('ghProxy');
+    var prefix = ghParam('ghPrefix');
+    if (apiBase) params.set('apiBase', apiBase);
+    if (proxy) params.set('proxy', proxy);
+    if (prefix) params.set('namePrefix', prefix);
+    if (document.getElementById('ghForks').checked) params.set('includeForks', 'true');
+    if (!document.getElementById('ghArchived').checked) params.set('includeArchived', 'false');
+
+    var btn = document.getElementById('ghLoadBtn');
+    btn.disabled = true;
+    btn.textContent = 'Loading...';
+    var headers = token ? { 'X-Github-Token': token } : {};
+    fetch(API + '/github/repos?' + params.toString(), { headers: headers })
+        .then(function(res) {
+            return res.json().catch(function() { return { error: res.statusText }; }).then(function(data) {
+                if (!res.ok) throw new Error(data.error || res.statusText);
+                return data;
+            });
+        })
+        .then(function(data) {
+            ghState.repos = data.repositories || [];
+            ghState.loaded = true;
+            ghState.token = token;
+            renderGithubList();
+        })
+        .catch(function(err) {
+            showToast(err.message, 'error');
+            document.getElementById('ghList').innerHTML = '<div class="error">' + esc(err.message) + '</div>';
+        })
+        .then(function() {
+            btn.disabled = false;
+            btn.textContent = 'Load repositories';
+        });
+}
+
+function renderGithubList() {
+    var list = document.getElementById('ghList');
+    if (!ghState.loaded) { list.innerHTML = ''; return; }
+    if (ghState.repos.length === 0) {
+        list.innerHTML = '<div class="empty">No repositories found. Check the owner name and token scope.</div>';
+        return;
+    }
+    var creatable = ghState.repos.filter(function(r) { return !r.conflict; }).length;
+    var html = '<div class="card"><div class="flex-between mb-16"><h3>Repositories ('
+        + ghState.repos.length + ', ' + creatable + ' importable)</h3>'
+        + '<span><label class="checkbox-label"><input type="checkbox" id="ghOnlyNew"> only importable</label> '
+        + '<input class="api-search" id="ghFilter" placeholder="filter..." autocomplete="off" style="width:160px"></span></div>'
+        + '<div id="ghRows"></div>'
+        + '<div class="flex-between" style="margin-top:12px">'
+        + '<span id="ghCount" class="muted"></span>'
+        + '<button class="btn btn-primary btn-sm" id="ghCreateBtn">Create mirror repositories</button></div></div>'
+        + '<div id="ghResult"></div>';
+    list.innerHTML = html;
+
+    function renderRows() {
+        var onlyNew = document.getElementById('ghOnlyNew').checked;
+        var q = (document.getElementById('ghFilter').value || '').toLowerCase();
+        var rows = '';
+        var selected = 0;
+        ghState.repos.forEach(function(r, i) {
+            var conflict = r.conflict || '';
+            if (onlyNew && conflict) return;
+            if (q && r.name.toLowerCase().indexOf(q) < 0) return;
+            var badges = '';
+            if (r.private) badges += ' <span class="badge badge-post">private</span>';
+            if (r.fork) badges += ' <span class="badge badge-commit">fork</span>';
+            if (r.archived) badges += ' <span class="badge badge-sync-trigger">archived</span>';
+            if (conflict) badges += ' <span class="badge badge-sync-fail">' + esc(ghConflictLabel(conflict)) + '</span>';
+            if (ghState.selected && ghState.selected[r.name]) selected++;
+            rows += '<tr class="gh-row">'
+                + '<td style="width:28px"><input type="checkbox" class="gh-check" data-repo="' + escAttr(r.name) + '"'
+                + (ghState.selected && ghState.selected[r.name] ? ' checked' : '') + '></td>'
+                + '<td><a href="' + escAttr(r.cloneUrl || '#') + '" target="_blank" rel="noopener">' + esc(r.name) + '</a>'
+                + badges + '<div class="desc">' + esc(r.description || '') + '</div></td>'
+                + '<td style="white-space:nowrap"><code>' + esc(r.localName) + '</code></td>'
+                + '<td style="white-space:nowrap">' + (r.defaultBranch ? esc(r.defaultBranch) : '') + '</td>'
+                + '<td style="white-space:nowrap">' + esc(fmtBytes((r.sizeKb || 0) * 1024)) + '</td>'
+                + '<td style="white-space:nowrap">' + esc(r.updatedAt ? r.updatedAt.slice(0, 10) : '') + '</td>'
+                + '</tr>';
+        });
+        document.getElementById('ghRows').innerHTML = rows
+            ? '<table><thead><tr><th></th><th>Repository</th><th>Local name</th><th>Branch</th><th>Size</th><th>Updated</th></tr></thead><tbody>' + rows + '</tbody></table>'
+            : '<div class="empty">No matching repositories</div>';
+        document.getElementById('ghCount').textContent = selected + ' selected';
+    }
+
+    if (!ghState.selected) ghState.selected = {};
+    document.getElementById('ghOnlyNew').addEventListener('change', function() {
+        if (this.checked) {
+            // 默认勾选出所有可导入的仓库
+            ghState.repos.forEach(function(r) { if (!r.conflict) ghState.selected[r.name] = true; });
+        }
+        renderRows();
+    });
+    document.getElementById('ghFilter').addEventListener('input', renderRows);
+    document.getElementById('ghRows').addEventListener('change', function(e) {
+        var el = e.target.closest('.gh-check');
+        if (!el) return;
+        ghState.selected[el.getAttribute('data-repo')] = el.checked;
+        var n = 0;
+        Object.keys(ghState.selected).forEach(function(k) { if (ghState.selected[k]) n++; });
+        document.getElementById('ghCount').textContent = n + ' selected';
+    });
+    document.getElementById('ghCreateBtn').addEventListener('click', createGithubMirrors);
+    renderRows();
+}
+
+function createGithubMirrors() {
+    var repos = Object.keys(ghState.selected || {}).filter(function(k) { return ghState.selected[k]; });
+    if (repos.length === 0) { showToast('Select at least one repository', 'error'); return; }
+    var params = new URLSearchParams();
+    params.set('owner', ghState.owner);
+    var interval = ghParam('ghInterval');
+    if (interval) params.set('syncInterval', interval);
+    var prefix = ghParam('ghPrefix');
+    if (prefix) params.set('namePrefix', prefix);
+    var apiBase = ghParam('ghApiBase');
+    if (apiBase) params.set('apiBase', apiBase);
+    var cloneBase = ghParam('ghCloneBase');
+    if (cloneBase) params.set('cloneBase', cloneBase);
+    var proxy = ghParam('ghProxy');
+    if (proxy) params.set('proxy', proxy);
+    repos.forEach(function(r) { params.append('repos', r); });
+
+    var btn = document.getElementById('ghCreateBtn');
+    btn.disabled = true;
+    btn.textContent = 'Creating...';
+    var headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+    var token = ghParam('ghToken') || ghState.token;
+    if (token) headers['X-Github-Token'] = token;
+    fetch(API + '/github/import', { method: 'POST', headers: headers, body: params })
+        .then(function(res) {
+            return res.json().catch(function() { return { error: res.statusText }; }).then(function(data) {
+                if (!res.ok) throw new Error(data.error || res.statusText);
+                return data;
+            });
+        })
+        .then(function(data) {
+            showToast(data.created + ' mirror repositories created, ' + data.failed + ' failed', data.failed ? 'error' : '');
+            var rows = '';
+            (data.results || []).forEach(function(r) {
+                var state = r.ok ? '<span class="badge badge-sync-ok">created</span>' : '<span class="badge badge-sync-fail">failed</span>';
+                rows += '<tr><td>' + esc(r.repo) + '</td><td><code>' + esc(r.localName || '-') + '</code></td>'
+                    + '<td>' + state + ' ' + esc(r.error || r.warning || '') + '</td></tr>';
+            });
+            document.getElementById('ghResult').innerHTML = '<div class="card"><h3>Result</h3>'
+                + '<div class="muted mb-16">' + data.created + ' created, ' + data.failed + ' failed. '
+                + 'Initial sync is queued; created mirrors appear on the Repositories page.</div>'
+                + '<table><thead><tr><th>Repository</th><th>Local name</th><th>Status</th></tr></thead><tbody>'
+                + rows + '</tbody></table></div>';
+            document.getElementById('ghCount').textContent = '0 selected';
+        })
+        .catch(function(err) { showToast(err.message, 'error'); })
+        .then(function() {
+            btn.disabled = false;
+            btn.textContent = 'Create mirror repositories';
+        });
 }
 
 function viewApiDocs(app) {

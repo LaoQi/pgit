@@ -380,6 +380,7 @@ description=Updated&mirrorRemoteUrl=https://github.com/user/repo.git&mirrorInter
       "success": false,
       "error": "dial tcp: connection refused",
       "trigger": "scheduled",
+      "queueWaitMs": 0,
       "wants": 0,
       "haves": 0,
       "packSize": 0
@@ -405,6 +406,7 @@ description=Updated&mirrorRemoteUrl=https://github.com/user/repo.git&mirrorInter
 				"Entries are returned newest-first.",
 				"Never-synced mirror repos return empty array.",
 				"Sync logs are stored in <repo>.git/pgit-sync.jsonl.",
+				"trigger is one of initial (on register/startup), scheduled, manual. queueWaitMs is the time spent waiting in the task queue.",
 			},
 		},
 		{
@@ -418,6 +420,7 @@ description=Updated&mirrorRemoteUrl=https://github.com/user/repo.git&mirrorInter
   "repo": "my-mirror",
   "scheduled": true,
   "intervalSec": 600,
+  "queued": false,
   "syncing": false,
   "lastSync": "2026-09-23T12:05:00Z",
   "lastError": "",
@@ -426,9 +429,113 @@ description=Updated&mirrorRemoteUrl=https://github.com/user/repo.git&mirrorInter
 			Curl: `curl http://localhost:3000/api/v1/repos/my-mirror/mirror-status`,
 			Notes: []string{
 				"scheduled=true means an active timer; intervalSec=0 means manual-only.",
+				"queued=true means the sync task is waiting in the task queue; syncing=true means it is executing now.",
+				"Sync tasks run in a bounded queue (mirrorMaxConcurrentSyncs, default 5); scheduled tasks are dropped when the queue is full.",
 				"lastError is the most recent failure message (empty on success).",
 				"nextScheduled is approximate (interval from now).",
 				"Non-mirror repos return 400; unknown repos return 404.",
+			},
+		},
+		{
+			Method:  "GET",
+			Path:    "/api/v1/github/repos",
+			Summary: "Discover repositories of a GitHub account (read-only, no local changes)",
+			Params: []apiDocParam{
+				{Name: "owner", In: "query", Required: true, Example: "LaoQi", Desc: "GitHub user or organization name"},
+				{Name: "token", In: "query", Required: false, Example: "ghp_xxx", Desc: "Personal access token. Without it only public repositories are returned"},
+				{Name: "apiBase", In: "query", Required: false, Example: "https://api.github.com", Desc: "API base URL (default https://api.github.com, set it for GitHub Enterprise)"},
+				{Name: "proxy", In: "query", Required: false, Example: "http://127.0.0.1:7890", Desc: "HTTP proxy for the API calls (empty=direct)"},
+				{Name: "includeForks", In: "query", Required: false, Example: "false", Desc: "Include forked repositories (default false)"},
+				{Name: "includeArchived", In: "query", Required: false, Example: "true", Desc: "Include archived repositories (default true)"},
+				{Name: "namePrefix", In: "query", Required: false, Example: "gh-", Desc: "Prefix for the suggested local repository name (default empty)"},
+			},
+			RequestExample: `GET /api/v1/github/repos?owner=LaoQi&includeForks=false HTTP/1.1
+X-Github-Token: ghp_xxx`,
+			ResponseExample: `{
+  "owner": "LaoQi",
+  "total": 2,
+  "creatable": 1,
+  "repositories": [
+    {
+      "fullName": "LaoQi/alpha",
+      "name": "alpha",
+      "owner": "LaoQi",
+      "private": false,
+      "fork": false,
+      "archived": false,
+      "description": "alpha desc",
+      "defaultBranch": "main",
+      "sizeKb": 42,
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "cloneUrl": "https://github.com/LaoQi/alpha.git",
+      "localName": "LaoQi_alpha",
+      "conflict": ""
+    },
+    {
+      "fullName": "LaoQi/beta",
+      "name": "beta",
+      "owner": "LaoQi",
+      "localName": "LaoQi_beta",
+      "conflict": "mirror-same-remote",
+      "cloneUrl": "https://github.com/LaoQi/beta.git"
+    }
+  ]
+}`,
+			Curl: `curl "http://localhost:3000/api/v1/github/repos?owner=LaoQi" -H "X-Github-Token: ghp_xxx"`,
+			Notes: []string{
+				"Read-only: nothing is created or modified on the server.",
+				"Without token only public repositories are listed; private ones require a token with repo scope (the token is never logged).",
+				"Pass the token via the X-Github-Token header to keep it out of URLs and logs.",
+				"localName is the suggested local repository name: {namePrefix}{owner}_{repo}.",
+				"conflict: empty=importable, not-a-mirror=local repo with that name exists, mirror-same-remote=already mirrored from the same URL, mirror-other-remote=mirrored from another URL, alias-exists=the {owner}/{repo} alias is taken.",
+				"GitHub rate limits apply (60/h unauthenticated, 5000/h with token); 429 is returned when exceeded, 404 when the owner does not exist.",
+			},
+		},
+		{
+			Method:  "POST",
+			Path:    "/api/v1/github/import",
+			Summary: "Create mirror repositories for the selected GitHub repositories",
+			Params: []apiDocParam{
+				{Name: "owner", In: "form", Required: true, Example: "LaoQi", Desc: "GitHub user or organization name"},
+				{Name: "repos", In: "form", Required: true, Example: "alpha", Desc: "Repository name, repeat the field for multiple repos (owner/repo form also accepted)"},
+				{Name: "token", In: "form", Required: false, Example: "ghp_xxx", Desc: "Token used to clone private repos; stored per repo as basic auth (x-access-token). Empty = public repos only"},
+				{Name: "apiBase", In: "form", Required: false, Example: "https://api.github.com", Desc: "API base URL (default https://api.github.com)"},
+				{Name: "cloneBase", In: "form", Required: false, Example: "https://github.com", Desc: "Override the clone base URL (default: the clone_url returned by GitHub)"},
+				{Name: "proxy", In: "form", Required: false, Example: "http://127.0.0.1:7890", Desc: "HTTP proxy for API calls and mirror sync (empty=direct)"},
+				{Name: "namePrefix", In: "form", Required: false, Example: "gh-", Desc: "Prefix for the local repository name (default empty)"},
+				{Name: "syncInterval", In: "form", Required: false, Example: "3600", Desc: "Sync interval in seconds for the created mirrors (0=manual only, default 0)"},
+			},
+			RequestExample: `POST /api/v1/github/import HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+owner=LaoQi&repos=alpha&repos=beta&syncInterval=3600`,
+			ResponseExample: `{
+  "ok": false,
+  "created": 1,
+  "failed": 1,
+  "results": [
+    {
+      "repo": "alpha",
+      "localName": "LaoQi_alpha",
+      "remoteUrl": "https://github.com/LaoQi/alpha.git",
+      "aliases": ["LaoQi_alpha", "LaoQi/alpha"],
+      "description": "alpha desc",
+      "ok": true
+    },
+    {
+      "repo": "beta",
+      "ok": false,
+      "error": "already mirrored from https://github.com/LaoQi/beta.git"
+    }
+  ]
+}`,
+			Curl: `curl -X POST http://localhost:3000/api/v1/github/import   -H "X-Github-Token: ghp_xxx"   -d "owner=LaoQi" -d "repos=alpha" -d "repos=beta" -d "syncInterval=3600"`,
+			Notes: []string{
+				"Creates one mirror repository per selected repo: name {namePrefix}{owner}_{repo}, alias {owner}/{repo} (clone URL /{owner}/{repo}.git).",
+				"Each created mirror keeps the GitHub description and default branch, and registers its sync timer (initial sync is enqueued immediately).",
+				"Per-repo failures do not abort the batch; check results[] for details. Existing repositories are never modified or deleted.",
+				"Empty repos[] returns 400; more than 200 repos returns 400.",
+				"Token is stored in each repository's pgit.json as basic auth password (same as a manually created mirror).",
 			},
 		},
 	},

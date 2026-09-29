@@ -219,6 +219,12 @@ func (r *RepositoriesManager) CreateRepository(name string, description string, 
 }
 
 func (r *RepositoriesManager) CreateMirrorRepository(name string, description string, mirror *MirrorConfig) error {
+	return r.CreateMirrorRepositoryWithBranch(name, description, mirror, "")
+}
+
+// CreateMirrorRepositoryWithBranch 与 CreateMirrorRepository 相同，但可指定默认分支
+// （HEAD 初始指向，如 GitHub 仓库的 default_branch；空值默认 master）。
+func (r *RepositoriesManager) CreateMirrorRepositoryWithBranch(name string, description string, mirror *MirrorConfig, defaultBranch string) error {
 	if err := ValidateRepoName(name); err != nil {
 		return err
 	}
@@ -235,7 +241,7 @@ func (r *RepositoriesManager) CreateMirrorRepository(name string, description st
 	if r.repoExistsLocked(name) {
 		return fmt.Errorf("%w: %s", ErrRepoExist, name)
 	}
-	repo, err := InitBare(r.root(), name, description, "master")
+	repo, err := InitBare(r.root(), name, description, defaultBranch)
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,32 @@
 pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；变更过程、缺陷修复、
 性能调优与历史决策收录于此。条目按时间倒序，括注提交短 hash。
 
+## 2026-09-28
+
+**feat(github): 从 GitHub 账号发现并勾选生成镜像仓库；镜像同步改为任务队列**
+- 新增只读发现：`GET /api/v1/github/repos?owner=X[&token=]`，列出账号仓库并标注本地命名建议与冲突
+  （`localName={namePrefix}{owner}_{repo}`；`conflict=not-a-mirror|mirror-same-remote|mirror-other-remote|alias-exists`）。
+  无 Token 只返回公开仓库；带 Token 且为本人账号时走 `/user/repos?affiliation=owner&visibility=all`（含私有），
+  否则 `/users/{owner}/repos`（默认 type=owner）→ 404 回退 `/orgs/{owner}/repos?type=all`；`Link` 头分页
+- 新增导入：`POST /api/v1/github/import`（`owner` + 重复的 `repos` 表单字段），逐仓库创建镜像：
+  `Name={namePrefix}{owner}_{repo}`、`aliases=[Name, "{owner}/{repo}"]`、`RemoteURL` 取 GitHub `clone_url`
+  （可用 `cloneBase` 覆盖）、`description`/默认分支取自 GitHub、Token 落 `MirrorConfig`（`basic` + `x-access-token`）。
+  冲突跳过不覆盖，逐仓库独立报错，单次上限 200。**不引入账号实体**：账号信息只在导入时用一次，
+  产物就是普通镜像仓库（`MirrorConfig` 零改动，无账号 CRUD、无定时重扫）
+- 修正发现语义：用户入口不传 `type=all`（否则会混入「我是协作者/成员」的他人仓库，实测 octocat 从 8 个被撑到 195 个）
+- 导入兜底：被勾选仓库若不在分页列表里（分页中断/列表瞬时不一致），回退 `GET /repos/{owner}/{repo}` 单仓库确认
+- **镜像同步改为有界任务队列**（新增 `internal/pgs/task_queue.go`）：worker 数 = `mirrorMaxConcurrentSyncs`（默认 5，
+  热加载），容量 1024；`Register` 的随机错峰删除（队列负责削峰）；per-repo inflight **入队即占位**（排队中不重复入队）；
+  队列满时定时任务丢弃并计数（不阻塞不重试），手工同步即时返回 `ErrQueueFull`（HTTP 503）；
+  手工同步等待结果，排队超过 30s 返回 409 并提示任务仍在队列
+- 排队语义可观测：`mirror-status` 增 `queued`（vs `syncing`）、同步日志增 `queueWaitMs`、触发器扩展
+  （`initial`/`scheduled`/`manual`/`import`）、`/metrics` 增 `pgit_sync_queue_depth`/`pgit_sync_tasks_running`/
+  `pgit_sync_workers`/`pgit_sync_tasks_total{trigger,result}`/`pgit_sync_tasks_dropped_total`、`/healthz` 增 `syncQueue` 摘要
+- WebUI：新增 `/import` 页（账号表单 → 加载仓库 → 搜索/仅可导入/全选 → 勾选 → 创建 + 结果汇总），仓库列表页加入口
+- `CreateMirrorRepositoryWithBranch`：镜像仓库可按 GitHub 的 `default_branch` 初始化 HEAD（此前硬编码 master）
+- 实测：`octocat/boysenberry-repo-1` 导入→首同步（47 对象/9.7KB）→HTTP 与 SSH clone HEAD 与上游一致；
+  4 仓库并发导入时 `running` 稳定 ≤ workers；`Spoon-Knife`(63162 refs)/`Hello-World`(3696 refs, 21MB pack) 走同一路径可拉完
+
 ## 2026-09-24
 
 **refactor(server): 移除 chi，路由改用标准库 http.ServeMux**

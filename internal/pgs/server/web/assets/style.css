@@ -454,3 +454,10 @@ pre code { background: none; padding: 0; }
 .sync-log-time { font-size: 12px; color: var(--text-muted); margin-left: auto; }
 .sync-log-detail { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
 .sync-log-error { font-size: 12px; color: var(--red); margin-top: 4px; }
+
+/* GitHub 导入页 */
+.muted { color: var(--text-muted); font-size: 12px; }
+details { margin-bottom: 12px; }
+details summary { cursor: pointer; color: var(--text-muted); font-size: 13px; margin-bottom: 8px; }
+.gh-row .desc { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.gh-row td { vertical-align: top; }

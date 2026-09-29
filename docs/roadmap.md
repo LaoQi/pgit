@@ -83,6 +83,10 @@
 
 ## 明确不做
 
+- **GitHub 账号级统一管理**（已决定不做）：不做账号实体、账号 CRUD、定时重扫发现新仓库、
+  上游消失仓库追踪/自动删除。GitHub 侧只提供「发现 + 勾选导入」（`GET /api/v1/github/repos`
+  与 `POST /api/v1/github/import`），产物是普通镜像仓库（见 `CHANGELOG.md` 2026-09-28）。
+
 - TLS / 证书 / ACME（交由外层反向代理，见 `docs/security-policy.md`）。
 - thint pack 落盘、repack-gc 之外的存储优化（见评估文档"明确不做"）。
 - OAuth/OIDC、per-branch 权限。

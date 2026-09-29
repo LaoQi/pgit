@@ -12,6 +12,8 @@ Go 编写的个人 git 服务器。模块名 `pgit`，`go 1.26.4`。单端口多
 - **对象仅 loose 存储**：仓库对象来自 pgit 自身 receive-pack（HTTP/SSH push，pack 自动解包为 loose）。不支持外部 `git` 导入的含 packfile 仓库直读（`LooseStore` 只读 loose、不读 packfile）。
 - **传输流式化**：push/fetch 侧 `PackDecoder` 逐对象流式解析（`DecodeTo` 直接落盘，不驻留全量对象）；clone 侧 `WalkReachable` 只读对象头部（`ObjectStore.Stat`）+ 单遍 `encodePack` 编码。资源上限：`maxPushBytes`（默认 2GiB）、`maxConcurrentPacks`（默认 4）。
 - **镜像仓库**：纯 Go fetch 客户端（`fetch.go`）从远程 HTTP/HTTPS smart-http 仓库全量镜像所有 refs；定时自动同步（`SyncManager` per-repo goroutine）+ 手动同步（API）；同步日志 JSONL（`pgit-sync.jsonl`）。
+- **GitHub 导入**：`GET /api/v1/github/repos`（只读发现账号仓库，标注本地命名建议与冲突）+ `POST /api/v1/github/import`（勾选后逐仓库生成镜像仓库）。**无账号实体**：账号信息只在导入时使用一次，Token 落到各仓库的 `MirrorConfig` 基本认证字段，产物与手工创建的镜像仓库完全一致。
+- **同步任务队列**：所有同步（首次/定时/手工/导入）统一提交到有界任务队列（`task_queue.go`），worker 数 = `mirrorMaxConcurrentSyncs`（默认 5，可热加载），容量固定 1024。队列满时定时任务丢弃并计数（不阻塞不重试），手工同步立刻报错（503）。
 
 ## 包结构
 
@@ -23,7 +25,10 @@ internal/pgs/                 业务核心包
   repository.go               Repository/Ref/TreeNode/MirrorConfig 模型（Repository 自包含 root，Path()/Root() 不依赖全局）+ 浏览 API（Tree/Blob/Archive/ForEachRef，接入 git 包）+ InitBare(gitRoot,...)（支持指定默认分支）+ SaveMetadata（原子写 tmp+rename）+ Snapshot（并发安全快照）+ DefaultBranch/SetDefaultBranch + IsMirror
   manager.go                  RepositoriesManager：RWMutex 保护的 byName/byAlias 双索引（对外方法返回 Repository 快照）+ root()（Config.GitRoot）+ 扫描迁移 + CRUD（支持指定默认分支）+ alias 增删 + CreateMirrorRepository + SyncRepository（锁内取快照→fetch→锁内回写状态）
   sync_log.go                 SyncLogEntry + AppendSyncLog（JSONL 追加写）+ ReadSyncLog（最新 N 条倒序）
-  sync_manager.go             SyncManager（NewSyncManager(manager) 注入）：per-repo goroutine 定时调度（1-10s 错峰+initial+ticker scheduled）+ inflight 判重（定时与手动互斥）+ SyncNow（手动同步返回 SyncLogEntry）+ Status/Statuses（调度状态视图）+ 间隔变更重建调度器 + Stop（WaitGroup 等待，可重复调用）
+  sync_manager.go             SyncManager（NewSyncManager(manager) 注入）：per-repo goroutine 定时调度（initial+ticker scheduled）+ inflight 判重（入队即占位）+ SyncNow（手动同步等待结果，排队上限 30s）+ SyncAsync（异步触发，供导入用）+ Status/Statuses（调度状态视图，含 queued/syncing）+ SetConcurrency（热加载调整）+ QueueStats + 间隔变更重建调度器 + Stop（WaitGroup + 队列停止，可重复调用）
+  task_queue.go               通用有界并发任务队列 TaskQueue：Submit（满→ErrQueueFull，触发任务 Dropped 回调）/ SetWorkers（热调整，收缩时 worker 自退）/ Stats / Stop（丢弃未开始 + 等运行中收尾）；单任务执行时长由任务自身超时兜住，无公平性保证
+  github.go                   GitHub 发现（只读）：DiscoverGithubRepos（用户/组织入口选择、Link 分页、fork/archived/disabled 过滤、限流与未找到分类）+ FetchGithubRepo（单仓库兜底）+ 客户端/重试/代理
+  github_import.go            GitHub 导入：ImportGithubMirrors（发现 → 逐个 CreateMirrorRepositoryWithBranch + AddAlias + Register/SyncAsync → 逐仓库结果）、AnnotateGithubRepos（本地命名与冲突标注）、conflictCode/sameRemoteURL、选择清洗与上限校验
   log.go                      SetupLogging：slog（text/json）初始化 + 标准库 log 重定向（既有 log.Printf 自动结构化）；级别 debug(兼容 detail)/info/warn/error
   metrics.go                  自研指标表（counter/gauge + Prometheus 文本格式，无第三方依赖）+ 采集辅助（HTTP/git/pack/镜像/仓库）
   task.go / task_manager.go
@@ -48,7 +53,7 @@ internal/pgs/server/          网络服务层
   http.go                     路由（标准库 http.ServeMux，Go 1.22+ 方法/通配符模式：/api/v1/* + /{webuiPrefix}/* + alias.git 走 "/" 兜底，HTTPHandler 持有 Manager/Settings/Sync）+ 管理 API handler + git smart-http 传输（接入 git 包，Content-Encoding: gzip 自动解压）+ Basic Auth + 请求日志/请求 ID 中间件（responseStatusWriter 透传 Flush/Hijack/Push/ReadFrom/Unwrap）
   ssh.go                      SSHHandler：host key 支持 ed25519（生成）/RSA（兼容旧 PKCS1）+ exec payload 解析 alias（剥离前导 `/`）→ repo（仓库路径用 repo.Path()）；env 请求明确 Reply(false) 拒绝 GIT_PROTOCOL v2，客户端确定性降级 v0
   web.go                      WebUI：embed 嵌入 web/ 资源 + ExportWebUI 导出 + serveWebUI（静态资源 + SPA fallback + 前缀注入）
-  apidocs.go                  API 文档端点：GET /api/v1/ 返回 13 个管理 API 的结构化描述 JSON
+  apidocs.go                  API 文档端点：GET /api/v1/ 返回 17 个管理 API 的结构化描述 JSON
   web/                        embed 源：index.html（含 __WEBUI_PREFIX__ 占位符）+ assets/（app.js/style.css/favicon.svg）
 ```
 
@@ -80,6 +85,7 @@ type MirrorConfig struct {
 - **同步日志**：`<GitRoot>/<name>.git/pgit-sync.jsonl`（JSONL 追加写，仅镜像仓库）
 - **启动扫描**：遍历 `<GitRoot>/*.git/pgit.json` 重建双索引(`byName`/`byAlias`)；缺 pgit.json 的旧目录自动迁移补齐（name=目录名、aliases=[目录名]）
 - **镜像仓库**：Mirror 非 nil 时启动自动注册 SyncManager（SyncInterval>0 时定时同步）；**禁止 push**（HTTP/SSH 入口拦截 receive-pack，详见协议层说明）
+- **GitHub 导入的命名与访问**：本地 `Name = {namePrefix}{owner}_{repo}`（owner 不含 `_`，故可逆且账号内唯一），额外 alias `{owner}/{repo}` → `git clone http://host/{owner}/{repo}.git`；远端取 GitHub `clone_url`（可用 `cloneBase` 覆盖），`description`/默认分支取自 GitHub，Token 存 `MirrorConfig`（`AuthType=basic`、`Username=x-access-token`）。同名仓库/alias 冲突一律跳过且不覆盖，单次导入上限 200
 - **alias 规则**：Name 是默认 alias 不可删；全局唯一；禁止 `/` 开头、`..`、空段、`api` 前缀
 - **name 规则**：禁止 `/`、`..`、以 `.` 开头、`api`
 
@@ -124,7 +130,9 @@ type MirrorConfig struct {
 - `GET /api/v1/repos/{name}/commits/{ref}`（列出最近 commits，支持 `?limit=N`，默认 20）
 - `POST /api/v1/repos/{name}/sync`（手动同步镜像仓库，返回 SyncLogEntry）
 - `GET /api/v1/repos/{name}/sync-log`（查询同步日志，`?limit=N` 默认 50，最新在前）
-- `GET /api/v1/repos/{name}/mirror-status`（镜像调度/同步状态：scheduled/intervalSec/syncing/lastSync/lastError/nextScheduled）
+- `GET /api/v1/repos/{name}/mirror-status`（镜像调度/同步状态：scheduled/intervalSec/queued/syncing/lastSync/lastError/nextScheduled）
+- `GET /api/v1/github/repos`（发现 GitHub 账号仓库，只读；query：`owner`(必填)/`token`/`apiBase`/`proxy`/`includeForks`/`includeArchived`(默认 true)/`namePrefix`；Token 也可用 `X-Github-Token` 头传，避免进 URL；返回 `localName` 与 `conflict`）
+- `POST /api/v1/github/import`（按勾选生成镜像仓库；form：`owner`(必填)、重复的 `repos`(必填，也接受 `owner/repo` 与逗号分隔)、`token`/`apiBase`/`cloneBase`/`proxy`/`namePrefix`/`syncInterval`；返回 `{ok,created,failed,results[]}`，逐仓库独立成败，单次上限 200）
 
 运维端点（**不挂 BasicAuth**，供探针/抓取）：
 - `GET /healthz`（gitRoot 可读性 + syncManager 就绪 + 仓库数；异常 503 且 status=degraded）
@@ -134,7 +142,7 @@ WebUI（`/{webuiPrefix}/`，默认 `__webui`，受 `HttpAuth` 鉴权）：
 - `GET /` → 302 重定向至 `/{webuiPrefix}/`
 - `GET /{webuiPrefix}` 或 `GET /{webuiPrefix}/*` → `serveWebUI`：embed/磁盘静态资源 + SPA fallback（非文件请求回退 index.html）
 - index.html 含 `__WEBUI_PREFIX__` 占位符，per-request 替换为实际前缀注入 `<base>` 标签
-- 前端 History API 路由（非 hash）：`/` 仓库列表、`/repo/{name}` 详情、`/repo/{name}/tree/{ref}` 文件树、`/api` API 文档页
+- 前端 History API 路由（非 hash）：`/` 仓库列表、`/repo/{name}` 详情、`/repo/{name}/tree/{ref}` 文件树、`/import` GitHub 导入页（账号表单 → 加载仓库 → 勾选 → 创建 + 结果）、`/api` API 文档页
 
 Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 - `GET /{alias}.git/info/refs`、`POST /{alias}.git/git-{command}`
@@ -144,9 +152,9 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 ## 配置与运行
 
 - 生成默认配置：`pgit -d > config.json`；运行：`pgit -c config.json`。无配置以 `ConfigError` 退出。
-- 热加载：向进程发 `SIGHUP` 重读配置文件。可热加载字段：`logLevel`/`logFormat`/`maxPushBytes`/`maxConcurrentPacks`/`credentials`/`mirrorStallTimeoutSec`/`mirrorRetryAttempts`/`mirrorRetryBaseDelaySec`；需重启字段：`listen`/`enableSSH`/`gitRoot`/`httpAuth`/`sshAuthType`/`sshHostKey`/`webuiPrefix`/`webuiAssets`（改动被忽略并记 WARN）。配置非法时拒绝且不半应用。
+- 热加载：向进程发 `SIGHUP` 重读配置文件。可热加载字段：`logLevel`/`logFormat`/`maxPushBytes`/`maxConcurrentPacks`/`credentials`/`mirrorStallTimeoutSec`/`mirrorRetryAttempts`/`mirrorRetryBaseDelaySec`/`mirrorMaxConcurrentSyncs`；需重启字段：`listen`/`enableSSH`/`gitRoot`/`httpAuth`/`sshAuthType`/`sshHostKey`/`webuiPrefix`/`webuiAssets`（改动被忽略并记 WARN）。配置非法时拒绝且不半应用。
 - 导出 WebUI 资源：`pgit -w ./webui`（将 embed 的 web/ 写到磁盘，可自定义修改后通过 `webuiAssets` 加载）。
-- 配置字段：`listen`（单一监听地址，默认 `0.0.0.0:3000`）、`enableSSH`、`gitRoot`、`httpAuth`、`credentials`、`sshHostKey`/`sshPublicKey`、`sshAuthType`、`webuiPrefix`（默认 `__webui`）、`webuiAssets`（默认空=用 embed，非空=从磁盘目录读）、`logLevel`（`debug`(兼容旧 `detail`)/`info`/`warn`/`error`，空=`info`）、`logFormat`（`text`/`json`）、`maxPushBytes`（默认 0=2GiB）、`maxConcurrentPacks`（默认 0=4）、`mirrorStallTimeoutSec`（默认 0=120）、`mirrorRetryAttempts`（默认 0=3）、`mirrorRetryBaseDelaySec`（默认 0=1）。无分离端口字段。
+- 配置字段：`listen`（单一监听地址，默认 `0.0.0.0:3000`）、`enableSSH`、`gitRoot`、`httpAuth`、`credentials`、`sshHostKey`/`sshPublicKey`、`sshAuthType`、`webuiPrefix`（默认 `__webui`）、`webuiAssets`（默认空=用 embed，非空=从磁盘目录读）、`logLevel`（`debug`(兼容旧 `detail`)/`info`/`warn`/`error`，空=`info`）、`logFormat`（`text`/`json`）、`maxPushBytes`（默认 0=2GiB）、`maxConcurrentPacks`（默认 0=4）、`mirrorStallTimeoutSec`（默认 0=120）、`mirrorRetryAttempts`（默认 0=3）、`mirrorRetryBaseDelaySec`（默认 0=1）、`mirrorMaxConcurrentSyncs`（镜像同步任务并发度，默认 0=5）。无分离端口字段。
 - `webuiPrefix` 校验：非空、不为 `api`、不含 `..`；可含多段斜杠（如 `custom/ui`）。
 - `webuiAssets` 校验：非空时目录必须存在且可访问。
 - SSH host key 缺失时自动生成到配置路径。
@@ -158,7 +166,8 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 
 ## 测试与质量
 
-- `internal/pgs`：`errors.go` 哨兵错误；`hardening2_test.go`（哨兵错误/InitBare 回滚/权限位）、`log_test.go`（级别/格式解析与标准库 log 重定向）、`metrics_test.go`（文本格式/标签转义/并发采集）、`config_hotreload_test.go`（热加载生效/需重启回报/非法拒绝/并发无竞态）、`concurrency_test.go`、`repository_test.go`（InitBare 与 pgit.json/自定义默认分支、Manager 双索引与扫描恢复、alias 增删与校验、SetDefaultBranch、CreateMirrorRepository、MirrorBackwardCompat、URL 校验）、`repository_browse_test.go`（Tree/Blob/Archive/ForEachRef 端到端，构造 loose 对象）、`concurrency_test.go`（Manager 并发读写无崩溃、快照隔离、sync 注册回归、sync 与设置更新并发）、`sync_log_test.go`、`sync_manager_test.go`、`task_test.go`（约 6 秒）。
+- `internal/pgs`：`errors.go` 哨兵错误；`hardening2_test.go`（哨兵错误/InitBare 回滚/权限位）、`log_test.go`（级别/格式解析与标准库 log 重定向）、`metrics_test.go`（文本格式/标签转义/并发采集）、`config_hotreload_test.go`（热加载生效/需重启回报/非法拒绝/并发无竞态）、`concurrency_test.go`、`repository_test.go`（InitBare 与 pgit.json/自定义默认分支、Manager 双索引与扫描恢复、alias 增删与校验、SetDefaultBranch、CreateMirrorRepository、MirrorBackwardCompat、URL 校验）、`repository_browse_test.go`（Tree/Blob/Archive/ForEachRef 端到端，构造 loose 对象）、`concurrency_test.go`（Manager 并发读写无崩溃、快照隔离、sync 注册回归、sync 与设置更新并发）、`sync_log_test.go`、`sync_manager_test.go`、`sync_queue_test.go`（排队去重/队列关闭快速失败/日志字段）、`task_queue_test.go`（并发度实测、SetWorkers 收缩、满队列丢弃、Stop 语义、panic 恢复）、`task_test.go`（约 6 秒）。
+- `internal/pgs`：`github_test.go`（假 GitHub API：分页 Link、本人 `/user/repos`、用户→组织回退、fork/archived 过滤、限流/未找到/无效 Token 分类、单仓库兜底）、`github_import_test.go`（命名与 alias、Token 落盘、default_branch、二次导入冲突、与非镜像/alias 冲突、cloneBase、校验与上限、并发导入只成功一次、列表缺项兜底、冲突标注）。
 - `internal/pgs/server`：`mux_test.go`（并发连接/关闭回收连接/Shutdown 幂等与等待进行中请求/Serve 返回）、`health_test.go`、`limit_test.go`、`ssh_test.go` 走真实 TCP + x/crypto 客户端（upload-pack clone 全量交换验证 pack 对象、receive-pack push 验证 ref+loose 落盘、mirror 仓库 push 拒绝 stderr），无需 git/ssh 二进制；`TestSSHClonePushE2E` 需 `PGIT_E2E=1` + git/ssh 二进制。
 - `internal/pgs/git`：`loose_test`/`store_test`（内存 ObjectStore 驱动浏览 API/可达性/REF_DELTA 回查）/`stream_test`（流式解码内存对比、WalkReachable 只 Stat、单遍 encodePack 等价性）/`hardening_test`（畸形输入回归 + fuzz）/`delta_test`/`pack_test`/`refs_test`/`reach_test`/`browse_test`/`protocol_test`/`fetch_test`/`e2e_test`，覆盖 delta 应用与生成 roundtrip、deltaPrecheck 预检、桶扫描限制、pack 编解码（与真实 git pack、index-pack 互验）、ofs-delta 回环、ref CAS/symref/packed-refs、可达性 BFS 与 have 差量过滤、treeIsh/tree/blob/ForEachRefs、v0 状态机 + sideband、增量 fetch（have flush/多 POST/无 done 等）、fetch 客户端（initial/incremental/up-to-date/empty/basic auth/ref 删除/ACK 响应，httptest + 自身协议当远程，无需外部 git）；e2e 集成需 `PGIT_E2E=1`。`go test ./...` 通过。
 - 无 linter/formatter/CI 配置。用 `go vet ./...` 和 `go build` 验证。路由层无第三方依赖（`http.ServeMux`）。
