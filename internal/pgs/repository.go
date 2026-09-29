@@ -209,6 +209,17 @@ func (repo Repository) Delete() error {
 	return os.RemoveAll(repo.Path())
 }
 
+// deletedMarkerFile 软删除标记文件：出现在仓库目录内（与 pgit.json 并列）时，
+// 启动扫描跳过该仓库——不进索引、不参与 ref 冲突检测、不注册同步，git 传输与
+// 管理 API 均不可见。数据全部保留在磁盘；删除该标记文件并重启进程即可恢复仓库。
+const deletedMarkerFile = "pgit.deleted"
+
+// MarkDeleted 写入软删除标记（内容为删除时刻的 RFC3339 时间戳），不触碰任何 git 数据。
+func (repo Repository) MarkDeleted() error {
+	content := []byte(time.Now().UTC().Format(time.RFC3339) + "\n")
+	return os.WriteFile(filepath.Join(repo.Path(), deletedMarkerFile), content, 0o644)
+}
+
 // DefaultBranch 返回仓库默认分支的 short 名（如 "master"）。
 // 解析 HEAD symref 目标，去掉 refs/heads/ 前缀。detached HEAD 或 HEAD 缺失返回空字符串。
 func (repo Repository) DefaultBranch() (string, error) {

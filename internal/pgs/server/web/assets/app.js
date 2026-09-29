@@ -429,7 +429,7 @@ function viewRepoDetail(app, ref) {
          html += '<button class="btn btn-primary btn-sm mt-8" id="saveSettingsBtn">Save Settings</button></div>';
 
          html += '<div class="card"><h3>Danger Zone</h3>'
-             + '<p class="text-muted text-sm">Delete this repository. This action cannot be undone.</p>'
+             + '<p class="text-muted text-sm">Soft delete: a pgit.deleted marker is written and the repository is hidden immediately; all data is kept on disk. Remove the marker and restart to restore.</p>'
              + '<button class="btn btn-danger btn-sm" id="deleteRepoBtn">Delete Repository</button></div>';
 
          app.innerHTML = html;
@@ -467,7 +467,7 @@ function viewRepoDetail(app, ref) {
              var input = prompt('Type the repository name to confirm deletion:', '');
              if (input !== repo.name) { showToast('Confirmation mismatch', 'error'); return; }
              apiDelete(API + '/repos/info?ref=' + enc(repo.name) + '&confirm=' + enc(repo.name)).then(function() {
-                 showToast('Repository deleted');
+                 showToast('Repository deleted (soft delete, data kept on disk)');
                  navigate('/');
              }).catch(function(err) { showToast(err.message, 'error'); });
          });

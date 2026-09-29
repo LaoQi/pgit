@@ -3,6 +3,20 @@
 pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；变更过程、缺陷修复、
 性能调优与历史决策收录于此。条目按时间倒序，括注提交短 hash。
 
+## 2026-09-29（晚二）
+
+**feat(api): 仓库删除改为软删除（打标记，不做物理删除）**
+- `DELETE /api/v1/repos/info` 不再 `os.RemoveAll`：在仓库目录内写 `pgit.deleted` 标记
+  （内容为删除时刻 RFC3339），注销内存索引（byName/byAlias/byRefFolded）+ refs 缓存 +
+  定时同步，git 数据全部保留在磁盘原位。
+- 启动扫描遇到带标记目录直接跳过（不进索引、不参与 ref 唯一性检测），日志记 INFO；
+  **恢复 = 删除标记文件并重启进程**（扫描重新装载），彻底删除 = 手动移除目录。
+- 建仓（普通/镜像）前增加目录预检：软删遗留目录报错并提示出路（remove the directory
+  or delete the marker to reuse the name），不再透传 `os.Mkdir` 的 EEXIST。
+- 同步 apidocs（软删除语义四条 Notes）、WebUI Danger Zone 文案与删除 toast、AGENTS.md；
+  测试 `softdelete_test.go` 覆盖标记写入/数据保留/索引注销/同名重建被拒/重扫跳过/
+  删标记恢复/无标记遗留目录。
+
 ## 2026-09-29（晚）
 
 **feat(github): 导入时 public 仓库不再落盘 token**

@@ -142,7 +142,8 @@ name=my-repo&description=A%20demo%20repo&defaultBranch=main`,
 			Notes: []string{
 				"confirm must equal the repository's canonical name (even when ref is an alias).",
 				"Returns empty body with 200 on success.",
-				"This action is irreversible and deletes all git data.",
+				"Soft delete: a pgit.deleted marker is written inside the repository directory; all git data is kept on disk and the repository disappears from the API and git endpoints immediately.",
+				"Startup scan skips marked directories. Delete the marker file and restart to restore the repository, or remove the directory to free the name.",
 			},
 		},
 		{

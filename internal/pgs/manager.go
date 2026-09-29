@@ -78,6 +78,10 @@ func (r *RepositoriesManager) CheckRepositories() {
 		if !file.IsDir() || !strings.HasSuffix(file.Name(), ".git") {
 			continue
 		}
+		if _, err := os.Stat(filepath.Join(r.root(), file.Name(), deletedMarkerFile)); err == nil {
+			slog.Info("skip soft-deleted repository", "dir", file.Name())
+			continue
+		}
 		repo, err := r.loadRepo(file.Name())
 		if err != nil {
 			slog.Error("load repository failed", "dir", file.Name(), "error", err)
@@ -344,6 +348,9 @@ func (r *RepositoriesManager) CreateRepository(name string, description string, 
 	if err := r.checkRefAvailableLocked(name); err != nil {
 		return err
 	}
+	if err := r.checkDirAvailableLocked(name); err != nil {
+		return err
+	}
 	repo, err := InitBare(r.root(), name, description, defaultBranch)
 	if err != nil {
 		return err // InitBare 内部已回滚半成品目录
@@ -377,6 +384,9 @@ func (r *RepositoriesManager) CreateMirrorRepositoryWithBranch(name string, desc
 		return fmt.Errorf("%w: %s", ErrRepoExist, name)
 	}
 	if err := r.checkRefAvailableLocked(name); err != nil {
+		return err
+	}
+	if err := r.checkDirAvailableLocked(name); err != nil {
 		return err
 	}
 	repo, err := InitBare(r.root(), name, description, defaultBranch)
@@ -507,6 +517,9 @@ func (r *RepositoriesManager) SyncRepository(name string) (*git.FetchResult, err
 	return result, fetchErr
 }
 
+// DeleteRepository 软删除：写入 pgit.deleted 标记并从内存索引注销（git 传输与管理
+// API 立即不可见、定时同步已由调用方注销），磁盘数据全部保留。彻底删除需手动移除
+// 仓库目录；恢复需删除标记文件并重启进程（启动扫描会重新装载）。
 func (r *RepositoriesManager) DeleteRepository(name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -514,12 +527,27 @@ func (r *RepositoriesManager) DeleteRepository(name string) error {
 	if err != nil {
 		return err
 	}
-	if err := repo.Delete(); err != nil {
+	git.InvalidateRefsCache(repo.Path())
+	if err := repo.MarkDeleted(); err != nil {
 		return err
 	}
 	r.unregisterRefLocked(repo)
-	slog.Info("deleted repository", "repo", name)
+	slog.Info("repository soft-deleted (data kept on disk)", "repo", name)
 	return nil
+}
+
+// checkDirAvailableLocked 校验待建仓库的存储目录尚不存在（调用方须持有 r.mu）。
+// 目录已存在时给出可行动的错误提示，而不是透传 InitBare 内 os.Mkdir 的 EEXIST；
+// 常见成因是软删除后遗留：数据保留、仅打 pgit.deleted 标记。
+func (r *RepositoriesManager) checkDirAvailableLocked(name string) error {
+	dir := filepath.Join(r.root(), name+".git")
+	if _, err := os.Stat(dir); err != nil {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(dir, deletedMarkerFile)); err == nil {
+		return fmt.Errorf("repository directory %s.git is soft-deleted (%s marker, data kept): remove the directory or delete the marker to reuse the name", name, deletedMarkerFile)
+	}
+	return fmt.Errorf("repository directory %s.git already exists", name)
 }
 
 func (r *RepositoriesManager) AddAlias(name string, alias string) error {
