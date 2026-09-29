@@ -299,6 +299,7 @@ function viewRepoDetail(app, ref) {
         var refs = data.refs || [];
         var aliases = repo.aliases || [];
         var host = window.location.host;
+        var primaryCloneRef = aliases[aliases.length - 1] || repo.name;
 
         var html = '<div class="breadcrumb"><a href="." data-link="/">Repositories</a>'
             + '<span class="sep">/</span><strong>' + esc(repo.name) + '</strong></div>';
@@ -325,15 +326,20 @@ function viewRepoDetail(app, ref) {
                  + '<button class="btn btn-primary btn-sm mt-8" id="syncNowBtn">Sync Now</button></div>';
          }
 
+         // 一组 HTTP/SSH 克隆框 + 别名下拉切换（多别名时），不逐别名罗列；
+         // 默认选中末位别名（首选展示 ref），与首页克隆提示一致。
          html += '<div class="card"><h3>Clone URLs</h3>';
-         aliases.forEach(function(a) {
-             var httpUrl = window.location.protocol + '//' + host + '/' + a + '.git';
-             var sshUrl = 'ssh://' + host + '/' + a + '.git';
-             html += '<div class="clone-box"><span class="label">HTTP</span><span class="url">' + esc(httpUrl) + '</span>'
-                 + '<button class="copy-btn" data-copy="' + escAttr(httpUrl) + '">copy</button></div>';
-             html += '<div class="clone-box"><span class="label">SSH</span><span class="url">' + esc(sshUrl) + '</span>'
-                 + '<button class="copy-btn" data-copy="' + escAttr(sshUrl) + '">copy</button></div>';
-         });
+         if (aliases.length > 1) {
+             html += '<div class="form-group"><label>Alias</label><select id="cloneAlias">';
+             aliases.forEach(function(a) {
+                 html += '<option value="' + escAttr(a) + '"' + (a === primaryCloneRef ? ' selected' : '') + '>' + esc(a) + '</option>';
+             });
+             html += '</select></div>';
+         }
+         html += '<div class="clone-box"><span class="label">HTTP</span><span class="url" id="cloneHttpUrl"></span>'
+             + '<button class="copy-btn" id="cloneHttpCopy">copy</button></div>';
+         html += '<div class="clone-box"><span class="label">SSH</span><span class="url" id="cloneSshUrl"></span>'
+             + '<button class="copy-btn" id="cloneSshCopy">copy</button></div>';
          html += '</div>';
 
          html += '<div class="card"><h3>Branches &amp; Tags</h3>';
@@ -427,6 +433,21 @@ function viewRepoDetail(app, ref) {
 
          app.innerHTML = html;
 
+        var cloneAliasSel = document.getElementById('cloneAlias');
+        var cloneHttpUrlEl = document.getElementById('cloneHttpUrl');
+        if (cloneHttpUrlEl) {
+            var refreshCloneUrls = function() {
+                var a = cloneAliasSel ? cloneAliasSel.value : primaryCloneRef;
+                var httpUrl = window.location.protocol + '//' + host + '/' + a + '.git';
+                var sshUrl = 'ssh://' + host + '/' + a + '.git';
+                cloneHttpUrlEl.textContent = httpUrl;
+                document.getElementById('cloneHttpCopy').setAttribute('data-copy', httpUrl);
+                document.getElementById('cloneSshUrl').textContent = sshUrl;
+                document.getElementById('cloneSshCopy').setAttribute('data-copy', sshUrl);
+            };
+            if (cloneAliasSel) cloneAliasSel.addEventListener('change', refreshCloneUrls);
+            refreshCloneUrls();
+        }
         if (document.getElementById('downloadArchiveBtn')) {
             document.getElementById('downloadArchiveBtn').addEventListener('click', function() {
                 var ref = document.getElementById('archiveRef').value;
