@@ -43,12 +43,16 @@ type Setting struct {
 	MirrorRetryAttempts int `json:"mirrorRetryAttempts"`
 	// MirrorRetryBaseDelaySec 重试退避基数（秒），0 = 默认 1。
 	MirrorRetryBaseDelaySec int `json:"mirrorRetryBaseDelaySec"`
+	// MirrorMaxConcurrentSyncs 镜像同步任务的并发上限（任务队列 worker 数），0 = 默认 5。
+	MirrorMaxConcurrentSyncs int `json:"mirrorMaxConcurrentSyncs"`
 }
 
 // 传输上限默认值。
 const (
 	DefaultMaxPushBytes       int64 = 2 << 30 // 2 GiB
 	DefaultMaxConcurrentPacks       = 4
+	// DefaultMaxConcurrentSyncs 镜像同步任务队列的默认并发度。
+	DefaultMaxConcurrentSyncs = 5
 )
 
 // LimitPushBytes 返回生效的单次 push 上限。
@@ -84,6 +88,20 @@ func (s *Setting) MirrorFetchOptions() git.FetchOptions {
 		o.RetryBaseDelay = time.Duration(base) * time.Second
 	}
 	return o
+}
+
+// LimitConcurrentSyncs 返回生效的镜像同步任务并发上限（队列 worker 数）。
+func (s *Setting) LimitConcurrentSyncs() int {
+	if s == nil {
+		return DefaultMaxConcurrentSyncs
+	}
+	s.mu.RLock()
+	v := s.MirrorMaxConcurrentSyncs
+	s.mu.RUnlock()
+	if v <= 0 {
+		return DefaultMaxConcurrentSyncs
+	}
+	return v
 }
 
 // LimitConcurrentPacks 返回生效的并发 pack 传输上限。
@@ -122,6 +140,7 @@ func (s *Setting) Snapshot() *SettingView {
 		LogFormat:          s.LogFormat,
 		MaxPushBytes:       s.MaxPushBytes,
 		MaxConcurrentPacks: s.MaxConcurrentPacks,
+		MaxConcurrentSyncs: s.MirrorMaxConcurrentSyncs,
 	}
 	if s.Credentials != nil {
 		v.Credentials = make(map[string]string, len(s.Credentials))
@@ -148,6 +167,7 @@ type SettingView struct {
 	LogFormat          string
 	MaxPushBytes       int64
 	MaxConcurrentPacks int
+	MaxConcurrentSyncs int
 }
 
 // CredentialsCopy 返回凭据表的副本（鉴权中间件每请求调用，避免与热加载竞态）。
@@ -210,6 +230,8 @@ func (s *Setting) hotReloadFrom(src *Setting) []string {
 	s.MirrorStallTimeoutSec = src.MirrorStallTimeoutSec
 	s.MirrorRetryAttempts = src.MirrorRetryAttempts
 	s.MirrorRetryBaseDelaySec = src.MirrorRetryBaseDelaySec
+	// 同步任务并发度：调用方在 HotReload 后据此调整 SyncManager 的 worker 数
+	s.MirrorMaxConcurrentSyncs = src.MirrorMaxConcurrentSyncs
 	return restartNeeded
 }
 
@@ -278,6 +300,9 @@ func (s *Setting) reloadLocked() error {
 	}
 	if s.MirrorRetryBaseDelaySec < 0 {
 		return fmt.Errorf("mirrorRetryBaseDelaySec must be >= 0")
+	}
+	if s.MirrorMaxConcurrentSyncs < 0 {
+		return fmt.Errorf("mirrorMaxConcurrentSyncs must be >= 0")
 	}
 	// 传输上限注入 git 包（pgs → git 单向，避免循环依赖）
 	// 注意：此处持有写锁，不能调用会取读锁的 LimitPushBytes（自死锁），直接读字段。

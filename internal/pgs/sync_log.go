@@ -18,6 +18,7 @@ type SyncLogEntry struct {
 	RefsDeleted  int       `json:"refsDeleted"`
 	UpToDate     bool      `json:"upToDate"`
 	Trigger      string    `json:"trigger"`
+	QueueWaitMs  int64     `json:"queueWaitMs"`
 	Wants        int       `json:"wants"`
 	Haves        int       `json:"haves"`
 	PackSize     int64     `json:"packSize"`

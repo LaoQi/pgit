@@ -123,7 +123,7 @@ func main() {
 		os.Exit(NoError)
 	}()
 
-	// SIGHUP 热加载：日志级别/格式、传输上限、HTTP 凭据即时生效；
+	// SIGHUP 热加载：日志级别/格式、传输上限/同步并发度、HTTP 凭据即时生效；
 	// 监听地址/SSH/gitRoot/webui 等需重启的字段会被忽略并提示。
 	go func() {
 		hupCh := make(chan os.Signal, 1)
@@ -135,6 +135,8 @@ func main() {
 				continue
 			}
 			slog.Info("config reloaded", "path", *config)
+			// 同步任务并发度（mirrorMaxConcurrentSyncs）热生效
+			syncMgr.SetConcurrency(pgs.Settings.LimitConcurrentSyncs())
 			if len(restartNeeded) > 0 {
 				slog.Warn("config fields require restart to take effect", "fields", restartNeeded)
 			}

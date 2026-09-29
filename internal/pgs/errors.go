@@ -10,8 +10,18 @@ var (
 	ErrAliasNotFound = errors.New("repository alias not found")
 	// ErrNotMirror 目标仓库不是镜像仓库。
 	ErrNotMirror = errors.New("repository is not a mirror")
-	// ErrSyncInProgress 已有同步在跑。
+	// ErrSyncInProgress 已有同步在跑（或在队列中排队）。
 	ErrSyncInProgress = errors.New("sync already in progress")
 	// ErrRepoExist 同名仓库已存在。
 	ErrRepoExist = errors.New("repository already exists")
+	// ErrQueueFull 任务队列已满（任务被丢弃，稍后重试）。
+	ErrQueueFull = errors.New("task queue is full")
+	// ErrQueueClosed 任务队列已停止。
+	ErrQueueClosed = errors.New("task queue is closed")
+	// ErrGithubNotFound 目标 GitHub 账号（用户或组织）不存在或不可见。
+	ErrGithubNotFound = errors.New("github owner not found")
+	// ErrGithubRateLimited GitHub API 触发速率限制。
+	ErrGithubRateLimited = errors.New("github api rate limit exceeded")
+	// ErrGithubUpstream GitHub API 不可达或返回无法解析的响应（网络/代理/上游故障）。
+	ErrGithubUpstream = errors.New("github api upstream error")
 )

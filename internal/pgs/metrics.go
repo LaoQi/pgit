@@ -249,6 +249,33 @@ func SetMirrorSyncResult(repo string, ok bool, objects int, durationMs int64) {
 	}
 }
 
+// ObserveSyncTask 记录一次镜像同步任务的执行结果（trigger: initial/scheduled/manual/import）。
+func ObserveSyncTask(trigger, result string) {
+	DefaultRegistry().Counter(
+		"pgit_sync_tasks_total",
+		"镜像同步任务总数，按触发来源与结果分类。",
+		"trigger", "result",
+	).Inc(trigger, result)
+}
+
+// ObserveSyncTaskDropped 记录未执行即被丢弃的镜像同步任务（队列满或队列已停止）。
+func ObserveSyncTaskDropped(trigger string) {
+	DefaultRegistry().Counter(
+		"pgit_sync_tasks_dropped_total",
+		"未执行即被丢弃的镜像同步任务总数，按触发来源分类。",
+		"trigger",
+	).Inc(trigger)
+}
+
+// SetSyncQueueStats 刷新同步任务队列的瞬时指标（在 /metrics、/healthz 采集时调用）。
+func SetSyncQueueStats(st QueueStats) {
+	reg := DefaultRegistry()
+	reg.Gauge("pgit_sync_queue_depth", "镜像同步任务队列中等待执行的任务数。").Set(float64(st.Queued))
+	reg.Gauge("pgit_sync_tasks_running", "当前正在执行的镜像同步任务数。").Set(float64(st.Running))
+	reg.Gauge("pgit_sync_workers", "镜像同步任务队列的 worker 数（并发上限）。").Set(float64(st.Workers))
+	reg.Gauge("pgit_sync_queue_capacity", "镜像同步任务队列容量。").Set(float64(st.Capacity))
+}
+
 // SetReposTotal 记录仓库总数。
 func SetReposTotal(n int) {
 	DefaultRegistry().Gauge("pgit_repositories_total", "仓库总数。").Set(float64(n))
