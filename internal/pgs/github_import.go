@@ -127,11 +127,6 @@ func ImportGithubMirrors(manager *RepositoriesManager, syncMgr *SyncManager, req
 		byFull[strings.ToLower(r.FullName)] = r
 	}
 
-	authType, username, password := "none", "", ""
-	if req.Token != "" {
-		authType, username, password = "basic", "x-access-token", req.Token
-	}
-
 	results := make([]GithubImportResult, 0, len(names))
 	for _, want := range names {
 		res := GithubImportResult{Repo: want}
@@ -189,6 +184,12 @@ func ImportGithubMirrors(manager *RepositoriesManager, syncMgr *SyncManager, req
 			}
 		}
 
+		// Token 只落盘到 private 仓库的镜像配置：public 仓库匿名可 fetch，
+		// 避免同一 token 被复制到几十个 pgit.json（仓库转私后可用 settings 接口补）。
+		authType, username, password := "none", "", ""
+		if req.Token != "" && remote.Private {
+			authType, username, password = "basic", "x-access-token", req.Token
+		}
 		mirror := &MirrorConfig{
 			RemoteURL:    remoteURL,
 			SyncInterval: req.SyncInterval,

@@ -193,6 +193,7 @@ func TestGithubImportEndpoint(t *testing.T) {
 	fake := &fakeGitHubAPI{repos: []map[string]any{
 		githubAPIRepo("alpha", nil),
 		githubAPIRepo("beta", map[string]any{"default_branch": "master"}),
+		githubAPIRepo("secret", map[string]any{"private": true}),
 	}}
 	srv := fake.server(t)
 
@@ -202,6 +203,7 @@ func TestGithubImportEndpoint(t *testing.T) {
 	form.Set("syncInterval", "600")
 	form.Add("repos", "alpha")
 	form.Add("repos", "beta")
+	form.Add("repos", "secret")
 	form.Add("repos", "ghost")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/github/import", strings.NewReader(form.Encode()))
@@ -221,16 +223,25 @@ func TestGithubImportEndpoint(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Created != 2 || body.Failed != 1 || body.OK {
-		t.Fatalf("body = %+v, want 2 created 1 failed", body)
+	if body.Created != 3 || body.Failed != 1 || body.OK {
+		t.Fatalf("body = %+v, want 3 created 1 failed", body)
 	}
 
 	repo, err := manager.GetRepository("LaoQi_alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repo.Mirror == nil || repo.Mirror.SyncInterval != 600 || repo.Mirror.Password != "tok" {
-		t.Errorf("mirror = %+v, want interval 600 + token auth", repo.Mirror)
+	// public 仓库：token 不落盘，匿名同步
+	if repo.Mirror == nil || repo.Mirror.SyncInterval != 600 || repo.Mirror.AuthType != "none" || repo.Mirror.Password != "" {
+		t.Errorf("public mirror = %+v, want interval 600 + anonymous", repo.Mirror)
+	}
+	// private 仓库：token 落盘为 basic
+	priv, err := manager.GetRepository("LaoQi_secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if priv.Mirror == nil || priv.Mirror.AuthType != "basic" || priv.Mirror.Username != "x-access-token" || priv.Mirror.Password != "tok" {
+		t.Errorf("private mirror = %+v, want basic token auth", priv.Mirror)
 	}
 	if _, err := manager.GetByAlias("LaoQi/alpha"); err != nil {
 		t.Errorf("alias LaoQi/alpha missing: %v", err)

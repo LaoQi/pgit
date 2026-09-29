@@ -507,7 +507,7 @@ X-Github-Token: ghp_xxx`,
 			Params: []apiDocParam{
 				{Name: "owner", In: "form", Required: true, Example: "LaoQi", Desc: "GitHub user or organization name"},
 				{Name: "repos", In: "form", Required: true, Example: "alpha", Desc: "Repository name, repeat the field for multiple repos (owner/repo form also accepted)"},
-				{Name: "token", In: "form", Required: false, Example: "ghp_xxx", Desc: "Token used to clone private repos; stored per repo as basic auth (x-access-token). Empty = public repos only"},
+				{Name: "token", In: "form", Required: false, Example: "ghp_xxx", Desc: "Token lists & imports private repos; persisted ONLY in private repos as basic auth (public repos sync anonymously, token not stored). Empty = public repos only"},
 				{Name: "apiBase", In: "form", Required: false, Example: "https://api.github.com", Desc: "API base URL (default https://api.github.com)"},
 				{Name: "cloneBase", In: "form", Required: false, Example: "https://github.com", Desc: "Override the clone base URL (default: the clone_url returned by GitHub)"},
 				{Name: "proxy", In: "form", Required: false, Example: "http://127.0.0.1:7890", Desc: "HTTP proxy for API calls and mirror sync (empty=direct)"},

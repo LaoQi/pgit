@@ -29,6 +29,7 @@ func TestImportGithubMirrorsCreatesMirrors(t *testing.T) {
 	fake := &fakeGithub{userRepos: []map[string]any{
 		githubRepoJSON("alpha", nil),
 		githubRepoJSON("beta", map[string]any{"default_branch": "master"}),
+		githubRepoJSON("secret", map[string]any{"private": true}),
 	}}
 	srv := fake.server(t)
 
@@ -37,13 +38,13 @@ func TestImportGithubMirrorsCreatesMirrors(t *testing.T) {
 		Token:        "tok",
 		APIBase:      srv.URL,
 		SyncInterval: 300,
-		Repos:        []string{"alpha", "LaoQi/beta", "alpha"}, // 含 owner/ 前缀与重复项
+		Repos:        []string{"alpha", "LaoQi/beta", "secret", "alpha"}, // 含 owner/ 前缀与重复项
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 2 {
-		t.Fatalf("results = %+v, want 2 (deduped)", results)
+	if len(results) != 3 {
+		t.Fatalf("results = %+v, want 3 (deduped)", results)
 	}
 	for _, r := range results {
 		if !r.OK {
@@ -62,8 +63,9 @@ func TestImportGithubMirrorsCreatesMirrors(t *testing.T) {
 	if m.RemoteURL != "https://github.com/LaoQi/alpha.git" {
 		t.Errorf("remoteUrl = %q", m.RemoteURL)
 	}
-	if m.AuthType != "basic" || m.Username != "x-access-token" || m.Password != "tok" {
-		t.Errorf("mirror auth = %+v, want basic/x-access-token/tok", m)
+	// public 仓库：匿名同步，token 不落盘
+	if m.AuthType != "none" || m.Username != "" || m.Password != "" {
+		t.Errorf("public mirror auth = %+v, want none/empty/empty", m)
 	}
 	if m.SyncInterval != 300 {
 		t.Errorf("syncInterval = %d, want 300", m.SyncInterval)
@@ -73,6 +75,19 @@ func TestImportGithubMirrorsCreatesMirrors(t *testing.T) {
 	}
 	if !repo.HasAlias("LaoQi/alpha") || !repo.HasAlias("LaoQi_alpha") {
 		t.Errorf("aliases = %v, want name + owner/repo", repo.Aliases)
+	}
+
+	// private 仓库：token 落盘为 basic 认证
+	priv, err := manager.GetRepository("LaoQi_secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pm := priv.Mirror
+	if pm == nil {
+		t.Fatal("private mirror config missing")
+	}
+	if pm.AuthType != "basic" || pm.Username != "x-access-token" || pm.Password != "tok" {
+		t.Errorf("private mirror auth = %+v, want basic/x-access-token/tok", pm)
 	}
 	if byAlias, err := manager.GetByAlias("LaoQi/alpha"); err != nil || byAlias.Name != "LaoQi_alpha" {
 		t.Errorf("alias lookup failed: %v %v", byAlias, err)

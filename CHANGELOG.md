@@ -3,6 +3,16 @@
 pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；变更过程、缺陷修复、
 性能调优与历史决策收录于此。条目按时间倒序，括注提交短 hash。
 
+## 2026-09-29（晚）
+
+**feat(github): 导入时 public 仓库不再落盘 token**
+- Token 只写入 **private** 仓库的 `MirrorConfig`（basic/x-access-token）；public 仓库匿名可
+  fetch，`AuthType=none` 且不带凭据——避免同一 token 被复制到几十个 pgit.json。
+- 发现阶段（列出账号仓库）token 照常使用（否则看不到 private）；仅落盘策略变化。
+- 仓库后续转 private：同步将以 401 失败并记 lastError，可经 `POST /api/v1/repos/settings`
+  手动补 basic 凭据（密码留空=保留原值）。
+- 同步 apidocs token 参数说明与 AGENTS.md；测试覆盖 public 不落盘 / private 落盘。
+
 ## 2026-09-29
 
 **feat(webui): 首选展示 ref 改为末位别名，GitHub 导入仓库以 `{owner}/{repo}` 展示**
