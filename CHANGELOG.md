@@ -5,6 +5,15 @@ pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；�
 
 ## 2026-09-29
 
+**feat(webui): 首选展示 ref 改为末位别名，GitHub 导入仓库以 `{owner}/{repo}` 展示**
+- 规则：**Aliases 末位 = 首选展示 ref**（首页仓库名展示、clone URL 提示）；`AddAlias` 本就追加到
+  末位，故新加别名自然成为新首选，无需额外设定 API。存量仓库零迁移：导入仓库的
+  `{owner}/{repo}` 已在末位，手工仓库末位即仓库名（展示不变）。
+- 首页卡片标题与链接直接使用首选别名（点击进入 `/repo/info?ref={alias}`，详情页内部导航
+  仍用 canonical name）；后端对顺序零依赖（解析/索引/git 传输均等价对待全部 alias），本变更
+  纯前端展示层。
+- 同步：apidocs 创建端点的 alias 说明、AGENTS.md 数据模型注释与 GitHub 导入段。
+
 **refactor(api,webui): 仓库引用改为 ref 参数；ref 唯一性与别名规则收紧**（`d500994`）
 - 破坏性改造（已确认不做兼容）：管理 API 与 WebUI 路由不再把仓库引用放在路径里，改为参数：
   `GET|DELETE /api/v1/repos/info?ref=`、`POST|DELETE /api/v1/repos/aliases?ref=&alias=`、

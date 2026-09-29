@@ -201,15 +201,17 @@ function viewRepos(app) {
             html += '<div class="repo-grid">';
             repos.forEach(function(r) {
                 var aliases = r.aliases || [];
-                var firstAlias = aliases[0] || r.name;
+                // 首选展示 ref = 末位别名：GitHub 导入的 {owner}/{repo} 由 AddAlias 追加在末位，
+                // 新增别名即成为新首选；无别名时回落仓库名。
+                var primaryRef = aliases[aliases.length - 1] || r.name;
                 var host = window.location.host;
-                var httpClone = window.location.protocol + '//' + host + '/' + firstAlias + '.git';
-                var sshClone = 'ssh://' + host + '/' + firstAlias + '.git';
-                var link = repoUrl(r.name);
+                var httpClone = window.location.protocol + '//' + host + '/' + primaryRef + '.git';
+                var sshClone = 'ssh://' + host + '/' + primaryRef + '.git';
+                var link = repoUrl(primaryRef);
                 var mirrorBadge = r.mirror ? ' <span class="badge badge-mirror">mirror</span>' : '';
                 var haystack = (r.name + ' ' + (r.description || '') + ' ' + aliases.join(' ')).toLowerCase();
                 html += '<div class="repo-card" data-search="' + escAttr(haystack) + '">'
-                    + '<div class="name"><a href="repo/' + enc(r.name) + '" data-link="' + escAttr(link) + '">' + esc(r.name) + '</a>' + mirrorBadge + '</div>'
+                    + '<div class="name"><a href="' + escAttr(link) + '" data-link="' + escAttr(link) + '">' + esc(primaryRef) + '</a>' + mirrorBadge + '</div>'
                     + '<div class="desc">' + esc(r.description || 'No description') + '</div>'
                     + '<div class="meta"><span>aliases: ' + aliases.length + '</span><span>' + esc(fmtDate(r.createdAt)) + '</span></div>'
                     + '<div class="clone-box"><span class="label">HTTP</span><span class="url">' + esc(httpClone) + '</span>'

@@ -63,7 +63,7 @@ internal/pgs/server/          网络服务层
 type Repository struct {
     Name        string        `json:"name"`        // 唯一标识 + 存储目录名，创建后不可变
     Description string        `json:"description"`
-    Aliases     []string      `json:"aliases"`     // git 访问路径，不含 .git；Name 自动为首个
+    Aliases     []string      `json:"aliases"`     // git 访问路径，不含 .git；Name 自动包含其中；**末位为首选展示 ref**（首页展示与 clone 提示，新增别名即成新首选）
     CreatedAt   time.Time     `json:"createdAt"`
     Mirror      *MirrorConfig `json:"mirror,omitempty"` // nil=普通仓库；非 nil=镜像仓库
 }
@@ -85,7 +85,7 @@ type MirrorConfig struct {
 - **同步日志**：`<GitRoot>/<name>.git/pgit-sync.jsonl`（JSONL 追加写，仅镜像仓库）
 - **启动扫描**：遍历 `<GitRoot>/*.git/pgit.json` 重建索引（`byName`/`byAlias` + 唯一性用的 `byRefFolded`）；缺 pgit.json 的旧目录自动迁移补齐（name=目录名、aliases=[目录名]）；ref 冲突时涉及仓库全部禁用（见下）
 - **镜像仓库**：Mirror 非 nil 时启动自动注册 SyncManager（SyncInterval>0 时定时同步）；**禁止 push**（HTTP/SSH 入口拦截 receive-pack，详见协议层说明）
-- **GitHub 导入的命名与访问**：本地 `Name = {namePrefix}{owner}_{repo}`（owner 不含 `_`，故可逆且账号内唯一），额外 alias `{owner}/{repo}` → `git clone http://host/{owner}/{repo}.git`；远端取 GitHub `clone_url`（可用 `cloneBase` 覆盖），`description`/默认分支取自 GitHub，Token 存 `MirrorConfig`（`AuthType=basic`、`Username=x-access-token`）。同名仓库/alias 冲突一律跳过且不覆盖，单次导入上限 200
+- **GitHub 导入的命名与访问**：本地 `Name = {namePrefix}{owner}_{repo}`（owner 不含 `_`，故可逆且账号内唯一），额外 alias `{owner}/{repo}`（AddAlias 追加在末位，即首选展示 ref，首页与 clone 提示直接显示 `{owner}/{repo}`）→ `git clone http://host/{owner}/{repo}.git`；远端取 GitHub `clone_url`（可用 `cloneBase` 覆盖），`description`/默认分支取自 GitHub，Token 存 `MirrorConfig`（`AuthType=basic`、`Username=x-access-token`）。同名仓库/alias 冲突一律跳过且不覆盖，单次导入上限 200
 - **ref 模型**：`Name` 是唯一标识（单段、创建后不可变、同时是默认 ref 不可删）；alias 是指向该仓库的映射，与 Name **可互换使用**（git 访问路径、管理 API 的 `ref` 参数）
 - **ref 唯一性**：`Name ∪ alias` 是全局唯一命名空间，比较**不区分大小写**（解析仍大小写敏感）；建仓拒绝与既有 alias 同名，加别名拒绝与既有 Name/alias 冲突（HTTP 409 `ErrRefConflict`）；删仓库/删别名释放 ref
 - **ref 规则（白名单）**：字符 `A-Za-z0-9_-.` + 段分隔 `/`，段首尾必须是字母/数字/下划线；段 ≤64、总长 ≤100、段数 ≤8（Name 固定 1 段）；禁 `.git` 结尾；禁保留字 `api` 及其子树、`{webuiPrefix}` 及其子树、`healthz`、`metrics`（大小写不敏感，避免被更具体路由遮蔽）
