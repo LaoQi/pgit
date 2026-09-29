@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -200,11 +201,41 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// repoSummary 是列表接口的仓库视图：平铺 Repository 元数据并附加最后提交时间。
+type repoSummary struct {
+	*pgs.Repository
+	// LastCommitTime 为 nil 表示仓库尚无提交（空仓库）。
+	LastCommitTime *time.Time `json:"lastCommitTime,omitempty"`
+}
+
 func (h *HTTPHandler) listRepos(w http.ResponseWriter, r *http.Request) {
 	repos := h.Manager.List() // 取一次：此前调用两次会各自构造切片
+	summaries := make([]repoSummary, len(repos))
+	for i, repo := range repos {
+		s := repoSummary{Repository: repo}
+		if ts := repo.LastCommitTime(); !ts.IsZero() {
+			s.LastCommitTime = &ts
+		}
+		summaries[i] = s
+	}
+	// 最后提交降序（新→旧）；无提交的空仓库排最后；同刻按 name 升序稳定。
+	sort.Slice(summaries, func(i, j int) bool {
+		a, b := summaries[i].LastCommitTime, summaries[j].LastCommitTime
+		switch {
+		case a != nil && b != nil:
+			if !a.Equal(*b) {
+				return a.After(*b)
+			}
+		case a != nil:
+			return true
+		case b != nil:
+			return false
+		}
+		return summaries[i].Name < summaries[j].Name
+	})
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"total":        len(repos),
-		"repositories": repos,
+		"total":        len(summaries),
+		"repositories": summaries,
 	})
 }
 

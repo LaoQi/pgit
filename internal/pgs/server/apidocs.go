@@ -42,14 +42,16 @@ var apiDocs = apiDocData{
       "name": "my-repo",
       "description": "A demo repository",
       "aliases": ["my-repo"],
-      "createdAt": "2026-06-24T10:00:00Z"
+      "createdAt": "2026-06-24T10:00:00Z",
+      "lastCommitTime": "2026-09-01T00:00:00Z"
     }
   ]
 }`,
 			Curl: "curl http://localhost:3000/api/v1/repos",
 			Notes: []string{
 				"Response is an object with total and repositories array, not a bare array.",
-				"Repository order is not guaranteed (map iteration).",
+				"Repositories are sorted by lastCommitTime descending (newest commit first); repositories without commits come last, then by name.",
+				"lastCommitTime is the max committer time of commits reachable from refs (annotated tags are peeled to their commit); the field is omitted for repositories without commits.",
 			},
 		},
 		{

@@ -167,7 +167,8 @@ document.addEventListener('DOMContentLoaded', route);
 function viewRepos(app) {
     apiJSON(API + '/repos').then(function(data) {
         var repos = data.repositories || [];
-        repos.sort(function(a, b) { return (b.createdAt || '').localeCompare(a.createdAt || ''); });
+        // 后端已按最后提交时间降序返回；此处防御性重排，无提交的仓库回落创建时间
+        repos.sort(function(a, b) { return (b.lastCommitTime || b.createdAt || '').localeCompare(a.lastCommitTime || a.createdAt || ''); });
         var html = '<div class="flex-between mb-16"><h2>Repositories</h2>'
             + '<button class="btn btn-primary btn-sm" id="toggleNewBtn">New Repository</button></div>'
             + '<div id="newRepoForm" style="display:none">'
@@ -213,7 +214,7 @@ function viewRepos(app) {
                 html += '<div class="repo-card" data-search="' + escAttr(haystack) + '">'
                     + '<div class="name"><a href="' + escAttr(link) + '" data-link="' + escAttr(link) + '">' + esc(primaryRef) + '</a>' + mirrorBadge + '</div>'
                     + '<div class="desc">' + esc(r.description || 'No description') + '</div>'
-                    + '<div class="meta"><span>aliases: ' + aliases.length + '</span><span>' + esc(fmtDate(r.createdAt)) + '</span></div>'
+                    + '<div class="meta"><span>aliases: ' + aliases.length + '</span><span title="created ' + escAttr(fmtDate(r.createdAt)) + '">' + (r.lastCommitTime ? 'last commit ' + esc(fmtDate(r.lastCommitTime)) : 'created ' + esc(fmtDate(r.createdAt))) + '</span></div>'
                     + '<div class="clone-box"><span class="label">HTTP</span><span class="url">' + esc(httpClone) + '</span>'
                     + '<button class="copy-btn" data-copy="' + escAttr(httpClone) + '">copy</button></div>'
                     + '<div class="clone-box"><span class="label">SSH</span><span class="url">' + esc(sshClone) + '</span>'

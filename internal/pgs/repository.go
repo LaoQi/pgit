@@ -339,6 +339,60 @@ func (repo Repository) ForEachRef() ([]*Ref, error) {
 	return refs, nil
 }
 
+// LastCommitTime 返回仓库最后提交时间：所有 ref 最终指向的 commit 的 committer
+// 时间最大值（annotated tag 引用先逐层 peel 到 commit，取 commit 时间而非 tagger
+// 时间）。遍历经 git.ForEachRefs 的 refs 指纹缓存，refs 未变时不会重复读取对象。
+// 仓库没有任何提交（空仓库）时返回零值。
+func (repo Repository) LastCommitTime() time.Time {
+	infos, err := git.ForEachRefs(repo.Path())
+	if err != nil {
+		return time.Time{}
+	}
+	store := git.NewObjectStore(repo.Path())
+	var latest time.Time
+	for _, info := range infos {
+		ts := time.Unix(info.Timestamp, 0)
+		if info.Type == string(git.ObjTag) {
+			ts = peelCommitTime(store, info.Oid)
+		}
+		if ts.IsZero() || (!latest.IsZero() && !ts.After(latest)) {
+			continue
+		}
+		latest = ts
+	}
+	return latest
+}
+
+// peelCommitTime 从任意对象出发逐层 peel 到 commit 并返回 committer 时间
+// （深度上限与 git 包 derefToTree 一致）；非 commit/tag 或解析失败返回零值。
+func peelCommitTime(store git.ObjectStore, oid git.Oid) time.Time {
+	const maxDepth = 16
+	cur := oid
+	for depth := 0; depth < maxDepth; depth++ {
+		obj, err := store.Read(cur)
+		if err != nil {
+			return time.Time{}
+		}
+		switch obj.Type {
+		case git.ObjCommit:
+			c, err := git.ParseCommit(obj.Content)
+			if err != nil {
+				return time.Time{}
+			}
+			return c.Committer.Time()
+		case git.ObjTag:
+			tg, err := git.ParseTag(obj.Content)
+			if err != nil {
+				return time.Time{}
+			}
+			cur = tg.Object
+			continue
+		default:
+			return time.Time{}
+		}
+	}
+	return time.Time{}
+}
 func (repo Repository) Commits(ref string, limit int) ([]Commit, error) {
 	commitOid, _, err := git.ResolveTreeIsh(repo.Path(), ref)
 	if err != nil {
