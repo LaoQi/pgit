@@ -177,4 +177,3 @@ Git 传输（`/{alias}.git/`，alias 可含斜杠，受 `HttpAuth` 鉴权）：
 
 - 默认分支 `master`（稳定）；`develop` 为重构分支。远程 `https://github.com/LaoQi/pgit.git`。
 - 提交较随意（多为 `WIP`）；不强制 conventional-commits。
-- 提交签名规则见全局 `~/.config/opencode/AGENTS.md`（以 LaoQi 身份提交时需 GPG 签名）。
