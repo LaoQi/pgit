@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +31,11 @@ type RepositoriesManager struct {
 	mu      sync.RWMutex
 	byName  map[string]*Repository
 	byAlias map[string]*Repository
+	// byRefFolded 是大小写折叠（小写）的 ref 索引，仅用于唯一性检测：
+	// 解析仍走 byName/byAlias 的精确匹配，git 路径的大小写敏感语义不变。
+	byRefFolded map[string]*Repository
+	// namingConflicts 记录启动扫描发现的重名冲突（涉及的仓库已全部禁用）。
+	namingConflicts []string
 }
 
 var ReposManager *RepositoriesManager
@@ -38,9 +45,10 @@ func InitReposManager(config *RepositoriesManagerConfig) {
 		GitRoot = config.GitRoot // 过渡兜底，见 Repository.Root()
 	}
 	ReposManager = &RepositoriesManager{
-		Config:  config,
-		byName:  map[string]*Repository{},
-		byAlias: map[string]*Repository{},
+		Config:      config,
+		byName:      map[string]*Repository{},
+		byAlias:     map[string]*Repository{},
+		byRefFolded: map[string]*Repository{},
 	}
 	ReposManager.CheckRepositories()
 }
@@ -53,13 +61,18 @@ func (r *RepositoriesManager) root() string {
 	return GitRoot // 过渡兜底
 }
 
+// CheckRepositories 扫描存储目录重建索引。
+//
+// 唯一性策略（ref 空间 = 仓库名 ∪ 别名，大小写不敏感）：某个 ref 被多个仓库声明时，
+// 涉及冲突的仓库**全部不进入索引**（即全部不可用），并逐条记 ERROR 日志等待人工修复；
+// 同仓库内部重复的 ref 只记 WARN 并去重。
 func (r *RepositoriesManager) CheckRepositories() {
 	files, err := os.ReadDir(r.root())
 	if err != nil {
 		panic(err)
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
+
+	loaded := make([]*Repository, 0, len(files))
 	for _, file := range files {
 		if !file.IsDir() || !strings.HasSuffix(file.Name(), ".git") {
 			continue
@@ -69,7 +82,60 @@ func (r *RepositoriesManager) CheckRepositories() {
 			slog.Error("load repository failed", "dir", file.Name(), "error", err)
 			continue
 		}
+		loaded = append(loaded, repo)
+	}
+	// 输出顺序稳定，便于日志比对与测试。
+	sort.Slice(loaded, func(i, j int) bool { return loaded[i].Name < loaded[j].Name })
+
+	owners := map[string][]*Repository{}
+	for _, repo := range loaded {
+		seen := map[string]bool{}
+		for _, ref := range refsOf(repo) {
+			k := refFolded(ref)
+			if seen[k] {
+				slog.Warn("duplicate ref in repository metadata", "repo", repo.Name, "ref", ref)
+				continue
+			}
+			seen[k] = true
+			owners[k] = append(owners[k], repo)
+		}
+	}
+
+	keys := make([]string, 0, len(owners))
+	for k := range owners {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	conflicted := map[string]bool{}
+	conflicts := make([]string, 0)
+	for _, k := range keys {
+		group := owners[k]
+		if len(group) < 2 {
+			continue
+		}
+		names := make([]string, 0, len(group))
+		for _, repo := range group {
+			conflicted[repo.Name] = true
+			names = append(names, repo.Name)
+		}
+		sort.Strings(names)
+		conflicts = append(conflicts, fmt.Sprintf("ref %q claimed by repositories: %s", k, strings.Join(names, ", ")))
+		slog.Error("naming conflict: repositories disabled", "ref", k, "repos", strings.Join(names, ", "))
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.namingConflicts = conflicts
+	for _, repo := range loaded {
+		if conflicted[repo.Name] {
+			continue
+		}
 		r.addRepository(repo)
+	}
+	if len(conflicts) > 0 {
+		slog.Error("repositories disabled due to naming conflicts",
+			"conflicts", len(conflicts), "disabled", len(conflicted))
 	}
 }
 
@@ -93,6 +159,10 @@ func (r *RepositoriesManager) loadRepo(dirName string) (*Repository, error) {
 	}
 	if len(repo.Aliases) == 0 {
 		repo.Aliases = []string{repo.Name}
+	} else if !repo.HasAlias(repo.Name) {
+		// 仓库名永远是一个 ref（git 传输只按 ref 解析），元数据缺失时在内存补齐。
+		slog.Warn("repository metadata missing name ref; registered in memory", "repo", repo.Name)
+		repo.Aliases = append([]string{repo.Name}, repo.Aliases...)
 	}
 	repo.root = r.root()
 	return &repo, nil
@@ -122,11 +192,50 @@ func (r *RepositoriesManager) migrateLegacyRepo(dirName string) (*Repository, er
 }
 
 // addRepository 写入双索引（调用方须持有 r.mu）。
+// refsOf 返回仓库占用的全部 ref（仓库名优先，随后是别名）。
+func refsOf(repo *Repository) []string {
+	refs := make([]string, 0, len(repo.Aliases)+1)
+	refs = append(refs, repo.Name)
+	for _, a := range repo.Aliases {
+		if a != repo.Name {
+			refs = append(refs, a)
+		}
+	}
+	return refs
+}
+
+// refFolded 返回唯一性比较用的大小写折叠键（解析仍按原始值精确匹配）。
+func refFolded(ref string) string { return strings.ToLower(ref) }
+
+// addRepository 把仓库的全部 ref 写入索引（调用方须持有 r.mu）。
 func (r *RepositoriesManager) addRepository(repo *Repository) {
 	r.byName[repo.Name] = repo
-	for _, alias := range repo.Aliases {
-		r.byAlias[alias] = repo
+	for _, ref := range refsOf(repo) {
+		r.byAlias[ref] = repo
+		r.byRefFolded[refFolded(ref)] = repo
 	}
+}
+
+// unregisterRefLocked 从索引移除仓库的全部 ref（调用方须持有 r.mu）。
+func (r *RepositoriesManager) unregisterRefLocked(repo *Repository) {
+	delete(r.byName, repo.Name)
+	for _, ref := range refsOf(repo) {
+		if cur, ok := r.byAlias[ref]; ok && cur.Name == repo.Name {
+			delete(r.byAlias, ref)
+		}
+		k := refFolded(ref)
+		if cur, ok := r.byRefFolded[k]; ok && cur.Name == repo.Name {
+			delete(r.byRefFolded, k)
+		}
+	}
+}
+
+// checkRefAvailableLocked 检查 ref 是否尚未被任何仓库占用（调用方须持有 r.mu）。
+func (r *RepositoriesManager) checkRefAvailableLocked(ref string) error {
+	if repo, ok := r.byRefFolded[refFolded(ref)]; ok {
+		return fmt.Errorf("%w: ref %q is already used by repository %q", ErrRefConflict, ref, repo.Name)
+	}
+	return nil
 }
 
 // List 返回全部仓库的元数据快照。
@@ -160,6 +269,28 @@ func (r *RepositoriesManager) GetByAlias(alias string) (*Repository, error) {
 		return nil, err
 	}
 	return repo.Snapshot(), nil
+}
+
+// Resolve 把 ref（仓库名或别名）解析为仓库元数据快照。
+//
+// 解析按原始值精确匹配（git 路径大小写敏感），不做大小写折叠；未命中返回 ErrRepoNotFound。
+func (r *RepositoriesManager) Resolve(ref string) (*Repository, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if repo, ok := r.byName[ref]; ok {
+		return repo.Snapshot(), nil
+	}
+	if repo, ok := r.byAlias[ref]; ok {
+		return repo.Snapshot(), nil
+	}
+	return nil, fmt.Errorf("%w: %s", ErrRepoNotFound, ref)
+}
+
+// NamingConflicts 返回启动扫描发现的重名冲突描述（只读快照）。
+func (r *RepositoriesManager) NamingConflicts() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return append([]string(nil), r.namingConflicts...)
 }
 
 // RepositoryExist 判断 name 是否已存在。
@@ -209,6 +340,9 @@ func (r *RepositoriesManager) CreateRepository(name string, description string, 
 	if r.repoExistsLocked(name) {
 		return fmt.Errorf("%w: %s", ErrRepoExist, name)
 	}
+	if err := r.checkRefAvailableLocked(name); err != nil {
+		return err
+	}
 	repo, err := InitBare(r.root(), name, description, defaultBranch)
 	if err != nil {
 		return err // InitBare 内部已回滚半成品目录
@@ -240,6 +374,9 @@ func (r *RepositoriesManager) CreateMirrorRepositoryWithBranch(name string, desc
 	defer r.mu.Unlock()
 	if r.repoExistsLocked(name) {
 		return fmt.Errorf("%w: %s", ErrRepoExist, name)
+	}
+	if err := r.checkRefAvailableLocked(name); err != nil {
+		return err
 	}
 	repo, err := InitBare(r.root(), name, description, defaultBranch)
 	if err != nil {
@@ -379,10 +516,7 @@ func (r *RepositoriesManager) DeleteRepository(name string) error {
 	if err := repo.Delete(); err != nil {
 		return err
 	}
-	delete(r.byName, repo.Name)
-	for _, alias := range repo.Aliases {
-		delete(r.byAlias, alias)
-	}
+	r.unregisterRefLocked(repo)
 	slog.Info("deleted repository", "repo", name)
 	return nil
 }
@@ -393,9 +527,6 @@ func (r *RepositoriesManager) AddAlias(name string, alias string) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, exist := r.byAlias[alias]; exist {
-		return fmt.Errorf("alias %s already in use", alias)
-	}
 	repo, err := r.getByNameLocked(name)
 	if err != nil {
 		return err
@@ -403,8 +534,13 @@ func (r *RepositoriesManager) AddAlias(name string, alias string) error {
 	if repo.HasAlias(alias) {
 		return fmt.Errorf("alias %s already bound to repository %s", alias, name)
 	}
+	// ref 空间唯一：别名不得与任何仓库名或别名（含大小写变体）冲突。
+	if err := r.checkRefAvailableLocked(alias); err != nil {
+		return err
+	}
 	repo.Aliases = append(repo.Aliases, alias)
 	r.byAlias[alias] = repo
+	r.byRefFolded[refFolded(alias)] = repo
 	return repo.SaveMetadata()
 }
 
@@ -428,47 +564,116 @@ func (r *RepositoriesManager) RemoveAlias(name string, alias string) error {
 		}
 	}
 	repo.Aliases = newAliases
-	delete(r.byAlias, alias)
+	if cur, ok := r.byAlias[alias]; ok && cur.Name == repo.Name {
+		delete(r.byAlias, alias)
+	}
+	k := refFolded(alias)
+	if cur, ok := r.byRefFolded[k]; ok && cur.Name == repo.Name {
+		delete(r.byRefFolded, k)
+	}
 	return repo.SaveMetadata()
 }
 
-func ValidateRepoName(name string) error {
-	if name == "" {
-		return fmt.Errorf("repository name is empty")
+// ref 规则：仓库名与别名共用同一套字符与长度约束，区别只在段数。
+//
+// 约束目标是「零编码往返」：ref 必须能直接出现在 URL 路径、查询参数与表单值中而
+// 无需百分号编码，也不会被 net/http 的路径归一化改写。
+const (
+	refMaxLen        = 100 // 整个 ref 的最大长度（字节）
+	refSegmentMaxLen = 64  // 单个段的最大长度（字节）
+	refMaxSegments   = 8   // 别名的最大段数（仓库名固定 1 段）
+)
+
+// refSegmentPattern 限定段的合法形态：首尾必须是字母/数字/下划线，中间可含 . - _。
+// 由此天然排除空段、"."、".."、段首尾的点与连字符，以及所有需要 URL 编码的字符。
+var refSegmentPattern = regexp.MustCompile(`^[A-Za-z0-9_]([A-Za-z0-9._-]*[A-Za-z0-9_])?$`)
+
+// exactReservedRefs 是精确保留的 ref（不区分大小写）：探针端点。
+var exactReservedRefs = []string{"healthz", "metrics"}
+
+// prefixReservedRefs 返回前缀保留清单（含实时读取的 WebUI 前缀）。
+//
+// /api/ 与 /{webuiPrefix}/ 的路由模式比 "/" 兜底更具体，同名 ref 会被遮蔽而永远不可达。
+func prefixReservedRefs() []string {
+	reserved := []string{"api"}
+	if Settings != nil {
+		if prefix, _ := Settings.WebUIConf(); strings.Trim(prefix, "/") != "" {
+			reserved = append(reserved, strings.Trim(prefix, "/"))
+		}
 	}
-	if strings.Contains(name, "/") {
-		return fmt.Errorf("repository name must not contain '/'")
+	return reserved
+}
+
+// IsReservedRef 判断 ref 是否与系统路由保留字冲突（不区分大小写）。
+func IsReservedRef(ref string) bool {
+	low := strings.ToLower(strings.Trim(ref, "/"))
+	if low == "" {
+		return false
 	}
-	if name == ".." || strings.Contains(name, "..") {
-		return fmt.Errorf("repository name must not contain '..'")
+	for _, r := range exactReservedRefs {
+		if low == r {
+			return true
+		}
 	}
-	if strings.HasPrefix(name, ".") {
-		return fmt.Errorf("repository name must not start with '.'")
+	for _, r := range prefixReservedRefs() {
+		r = strings.ToLower(r)
+		if low == r || strings.HasPrefix(low, r+"/") {
+			return true
+		}
 	}
-	if name == "api" {
-		return fmt.Errorf("repository name 'api' is reserved")
+	return false
+}
+
+// validateRefShape 校验 ref 的段结构（字符集、长度、段数、.git 结尾）。
+func validateRefShape(ref string, maxSegments int) error {
+	if ref == "" {
+		return fmt.Errorf("ref is empty")
+	}
+	if len(ref) > refMaxLen {
+		return fmt.Errorf("ref must be at most %d bytes", refMaxLen)
+	}
+	if strings.HasSuffix(strings.ToLower(ref), ".git") {
+		return fmt.Errorf("ref must not end with '.git'")
+	}
+	segments := strings.Split(ref, "/")
+	if len(segments) > maxSegments {
+		return fmt.Errorf("ref must have at most %d segments", maxSegments)
+	}
+	for _, seg := range segments {
+		if seg == "" {
+			return fmt.Errorf("ref must not contain empty segment")
+		}
+		if len(seg) > refSegmentMaxLen {
+			return fmt.Errorf("ref segment %q must be at most %d bytes", seg, refSegmentMaxLen)
+		}
+		if !refSegmentPattern.MatchString(seg) {
+			return fmt.Errorf("ref segment %q is invalid: allowed chars are A-Za-z0-9_-. with alphanumeric ends", seg)
+		}
 	}
 	return nil
 }
 
+// ValidateRepoName 校验仓库名（唯一标识，单段 ref）。
+func ValidateRepoName(name string) error {
+	if strings.Contains(name, "/") {
+		return fmt.Errorf("repository name must not contain '/'")
+	}
+	if err := validateRefShape(name, 1); err != nil {
+		return err
+	}
+	if IsReservedRef(name) {
+		return fmt.Errorf("repository name %q is reserved", name)
+	}
+	return nil
+}
+
+// ValidateAlias 校验别名（多段 ref）。
 func ValidateAlias(alias string) error {
-	if alias == "" {
-		return fmt.Errorf("alias is empty")
+	if err := validateRefShape(alias, refMaxSegments); err != nil {
+		return err
 	}
-	if strings.HasPrefix(alias, "/") {
-		return fmt.Errorf("alias must not start with '/'")
-	}
-	if strings.HasSuffix(alias, "/") {
-		return fmt.Errorf("alias must not end with '/'")
-	}
-	if strings.Contains(alias, "//") {
-		return fmt.Errorf("alias must not contain empty segment")
-	}
-	if strings.Contains(alias, "..") {
-		return fmt.Errorf("alias must not contain '..'")
-	}
-	if strings.HasPrefix(alias, "api/") || alias == "api" {
-		return fmt.Errorf("alias prefix 'api' is reserved")
+	if IsReservedRef(alias) {
+		return fmt.Errorf("alias %q is reserved", alias)
 	}
 	return nil
 }

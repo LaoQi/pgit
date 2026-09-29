@@ -230,7 +230,7 @@ func (h *HTTPHandler) createRepo(w http.ResponseWriter, r *http.Request) {
 			Proxy:        r.FormValue("mirrorProxy"),
 		}
 		if err := h.Manager.CreateMirrorRepository(name, description, mirror); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeError(w, refErrorStatus(err), err.Error())
 			return
 		}
 		repo, _ := h.Manager.GetRepository(name)
@@ -242,7 +242,7 @@ func (h *HTTPHandler) createRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Manager.CreateRepository(name, description, defaultBranch); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, refErrorStatus(err), err.Error())
 		return
 	}
 	repo, _ := h.Manager.GetRepository(name)
@@ -286,11 +286,19 @@ func (h *HTTPHandler) deleteRepo(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// refErrorStatus 把 ref 唯一性冲突映射为 409，其余校验错误映射为 400。
+func refErrorStatus(err error) int {
+	if errors.Is(err, pgs.ErrRefConflict) || errors.Is(err, pgs.ErrRepoExist) {
+		return http.StatusConflict
+	}
+	return http.StatusBadRequest
+}
+
 func (h *HTTPHandler) addAlias(w http.ResponseWriter, r *http.Request) {
 	name := pathParam(r, "name")
 	alias := r.FormValue("alias")
 	if err := h.Manager.AddAlias(name, alias); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, refErrorStatus(err), err.Error())
 		return
 	}
 	repo, _ := h.Manager.GetRepository(name)

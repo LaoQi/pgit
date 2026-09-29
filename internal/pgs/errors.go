@@ -14,6 +14,8 @@ var (
 	ErrSyncInProgress = errors.New("sync already in progress")
 	// ErrRepoExist 同名仓库已存在。
 	ErrRepoExist = errors.New("repository already exists")
+	// ErrRefConflict 目标 ref（仓库名或别名）已被其它仓库占用（唯一性冲突）。
+	ErrRefConflict = errors.New("ref already in use")
 	// ErrQueueFull 任务队列已满（任务被丢弃，稍后重试）。
 	ErrQueueFull = errors.New("task queue is full")
 	// ErrQueueClosed 任务队列已停止。

@@ -241,8 +241,27 @@ func (repo Repository) SetDefaultBranch(branch string) error {
 }
 
 // ValidateDefaultBranch 校验默认分支名合法性（与 alias 校验规则一致）。
+// ValidateDefaultBranch 校验默认分支名合法性。
+//
+// 分支名来自 git 客户端（可能含 @、+ 等别名规则之外的字符），因此这里保持宽松规则，
+// 不复用已收紧的 ref（仓库名/别名）规则。
 func ValidateDefaultBranch(branch string) error {
-	return ValidateAlias(branch)
+	if branch == "" {
+		return fmt.Errorf("branch is empty")
+	}
+	if strings.HasPrefix(branch, "/") {
+		return fmt.Errorf("branch must not start with '/'")
+	}
+	if strings.HasSuffix(branch, "/") {
+		return fmt.Errorf("branch must not end with '/'")
+	}
+	if strings.Contains(branch, "//") {
+		return fmt.Errorf("branch must not contain empty segment")
+	}
+	if strings.Contains(branch, "..") {
+		return fmt.Errorf("branch must not contain '..'")
+	}
+	return nil
 }
 
 func (repo Repository) Tree(treeIsh string, subtree string) ([]TreeNode, error) {
