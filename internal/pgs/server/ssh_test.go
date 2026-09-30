@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"pgit/internal/pgs"
 	"pgit/internal/pgs/git"
@@ -113,11 +116,17 @@ func writePGitMeta(t *testing.T, repoDir string) {
 // --- SSH 服务端启动 / 客户端连接辅助 ---
 
 func startSSH(t *testing.T, gitRoot string) (*SSHHandler, string) {
+	return startSSHRelay(t, gitRoot, nil)
+}
+
+// startSSHRelay 启动带中转管理器的 SSH 服务端（relayMgr 为 nil 时不做准入，
+// 与生产接线的差异仅此一处；中转用例必须传入真实 RelayManager）。
+func startSSHRelay(t *testing.T, gitRoot string, relayMgr *pgs.RelayManager) (*SSHHandler, string) {
 	t.Helper()
 	pgs.InitReposManager(&pgs.RepositoriesManagerConfig{GitRoot: gitRoot})
 
 	hostKeyPath := filepath.Join(t.TempDir(), "hostkey")
-	handler, err := NewSSHHandler(hostKeyPath, pgs.ReposManager)
+	handler, err := NewSSHHandler(hostKeyPath, pgs.ReposManager, relayMgr)
 	if err != nil {
 		t.Fatalf("NewSSHHandler: %v", err)
 	}
@@ -372,6 +381,130 @@ func TestSSHReceivePackMirrorDenied(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "mirror repository: push disabled") {
 		t.Errorf("stderr = %q, want mirror push disabled", stderr.String())
+	}
+}
+
+// --- 中转仓库（relay）：SSH push 必须经准入并触发转发 ---
+
+// TestSSHReceivePackRelayGate 验证 SSH 接线与 HTTP 一致：
+// 1) 与上游基线不符的 push（old=0 但上游已有 master）被准入拒绝且本地不更新；
+// 2) 通过准入的新分支本地更新并异步转发到上游。
+// 回归背景：SSHHandler.Relay 曾漏注入，导致 SSH push 完全绕过准入。
+func TestSSHReceivePackRelayGate(t *testing.T) {
+	// 上游：进程内 smart-http 服务端（等价真实 GitHub 的行为）
+	upstream, err := pgs.InitBare(t.TempDir(), "upstream", "upstream", "master")
+	if err != nil {
+		t.Fatalf("init upstream: %v", err)
+	}
+	base := testCommit(t, upstream.Path(), git.ZeroOid, "a.txt", "base\n")
+	testSetRef(t, upstream.Path(), "refs/heads/master", base)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/up.git/info/refs", func(w http.ResponseWriter, r *http.Request) {
+		service := r.URL.Query().Get("service")
+		w.Header().Set("Content-Type", "application/x-"+service+"-advertisement")
+		out, err := git.ServeInfoRefs(upstream.Path(), service)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(out)
+	})
+	mux.HandleFunc("/up.git/git-receive-pack", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
+		w.WriteHeader(http.StatusOK)
+		if _, err := git.HandleReceivePack(upstream.Path(), r.Body, w); err != nil {
+			t.Logf("upstream receive-pack: %v", err)
+		}
+	})
+	upSrv := httptest.NewServer(mux)
+	t.Cleanup(upSrv.Close)
+
+	// 中转仓库 + 注入 RelayManager 的 SSH 服务端
+	gitRoot := t.TempDir()
+	pgs.InitReposManager(&pgs.RepositoriesManagerConfig{GitRoot: gitRoot})
+	t.Cleanup(func() { pgs.ReposManager = nil })
+	mirror := &pgs.MirrorConfig{RemoteURL: upSrv.URL + "/up.git", AuthType: "none", Mode: pgs.MirrorModeRelay}
+	if err := pgs.ReposManager.CreateMirrorRepository("relay1", "relay repo", mirror); err != nil {
+		t.Fatalf("create relay repo: %v", err)
+	}
+	relayMgr := pgs.NewRelayManager(pgs.ReposManager)
+	t.Cleanup(relayMgr.Stop)
+
+	_, addr := startSSHRelay(t, gitRoot, relayMgr)
+	client := dialSSH(t, addr)
+	stdin, pr, session, _ := openExec(t, client, "git-receive-pack /relay1.git")
+	drainFlush(t, pr)
+
+	// 构造待推对象（新分支 feature 的独立提交链）
+	repoDir := filepath.Join(gitRoot, "relay1.git")
+	blob := makeBlobObj("relay over ssh\n")
+	tree := makeTreeObj(t, [][2]string{{"100644 r.txt", string(blob.Oid())}})
+	commit := makeCommitObj(t, tree.Oid())
+
+	// 一次 push 两条命令：master（stale base，须拒）+ feature（新分支，须放行）
+	cmd1 := fmt.Sprintf("%s %s refs/heads/master\x00report-status", git.ZeroOid, commit.Oid())
+	cmd2 := fmt.Sprintf("%s %s refs/heads/feature", git.ZeroOid, commit.Oid())
+	for _, cmd := range []string{cmd1, cmd2} {
+		if _, err := stdin.Write([]byte(fmt.Sprintf("%04x%s", len(cmd)+4, cmd))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := stdin.Write([]byte(git.PktFlush)); err != nil {
+		t.Fatal(err)
+	}
+	var packBuf bytes.Buffer
+	enc := git.NewPackEncoder(&packBuf)
+	if err := enc.WriteHeader(3); err != nil {
+		t.Fatal(err)
+	}
+	for _, obj := range []*git.RawObject{blob, tree, commit} {
+		if err := enc.WriteObject(obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := enc.WriteTrailer(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stdin.Write(packBuf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// report-status：master ng（stale base）、feature ok
+	status := strings.Join(drainFlush(t, pr), "")
+	if !strings.Contains(status, "ng refs/heads/master") || !strings.Contains(status, "stale base") {
+		t.Errorf("expected stale base rejection for master, got %q", status)
+	}
+	if !strings.Contains(status, "ok refs/heads/feature") {
+		t.Errorf("expected feature accepted, got %q", status)
+	}
+	if err := session.Wait(); err != nil {
+		t.Errorf("session exit: %v", err)
+	}
+
+	// 本地：feature 已更新，master 不得被污染
+	rs := git.NewRefStore(repoDir)
+	if got, err := rs.Get("refs/heads/feature"); err != nil || got != commit.Oid() {
+		t.Errorf("local feature = %s (err %v), want %s", got, err, commit.Oid())
+	}
+	if got, err := rs.Get("refs/heads/master"); err == nil && got != git.ZeroOid {
+		t.Errorf("local master must not be updated by rejected push, got %s", got)
+	}
+
+	// 异步转发：上游最终出现 feature
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, err := git.NewRefStore(upstream.Path()).Get("refs/heads/feature")
+		if err == nil && got == commit.Oid() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("upstream feature not forwarded in time: got %s (err %v), want %s", got, err, commit.Oid())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

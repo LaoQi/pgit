@@ -19,7 +19,7 @@ func TestPackSemaphoreLimitsConcurrency(t *testing.T) {
 	t.Cleanup(func() { pgs.ReposManager = nil })
 
 	settings := &pgs.Setting{MaxConcurrentPacks: 1}
-	h := NewHTTPHandler(pgs.ReposManager, settings, nil)
+	h := NewHTTPHandler(pgs.ReposManager, settings, nil, nil)
 
 	// 占满名额
 	if !h.acquirePack(context.Background()) {
@@ -71,7 +71,7 @@ func TestReceivePackOverLimitReturnsStatus(t *testing.T) {
 	}
 
 	settings := &pgs.Setting{MaxPushBytes: 1024, MaxConcurrentPacks: 2}
-	h := NewHTTPHandler(pgs.ReposManager, settings, nil)
+	h := NewHTTPHandler(pgs.ReposManager, settings, nil, nil)
 
 	body := strings.NewReader(strings.Repeat("x", 8192))
 	req := httptest.NewRequest(http.MethodPost, "/r.git/git-receive-pack", body)

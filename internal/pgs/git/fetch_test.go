@@ -438,3 +438,55 @@ func TestFetchRemote_ACKResponse(t *testing.T) {
 	assertObjectExists(t, localRoot, commit2.Oid())
 	assertRefEquals(t, localRoot, "refs/heads/master", commit2.Oid())
 }
+
+// appendCommitTo 向仓库追加一个提交（tree 含单文件，parent 为给定 oid），并更新 master ref。
+func appendCommitTo(t *testing.T, repoRoot string, parent Oid, name, content string) Oid {
+	t.Helper()
+	store := &LooseStore{Root: filepath.Join(repoRoot, "objects")}
+	blob := makeBlob(content)
+	tree := makeTree([]TreeEntry{{Mode: 0o100644, Name: name, Oid: blob.Oid()}})
+	var parents []Oid
+	if parent.Valid() && !parent.IsZero() {
+		parents = []Oid{parent}
+	}
+	commit := makeCommit(tree.Oid(), parents, name)
+	writeAll(t, store, blob, tree, commit)
+	rs := NewRefStore(repoRoot)
+	if _, err := rs.Update([]RefUpdate{{Name: "refs/heads/master", OldOid: parent, NewOid: commit.Oid()}}); err != nil {
+		t.Fatalf("update ref: %v", err)
+	}
+	return commit.Oid()
+}
+
+// TestFetchRemote_ProtectRefs: 中转仓库场景——本地领先（已准入未转发）的 ref
+// 不能被镜像语义的拉取回退到上游值，但上游对象照常拉取到本地。
+func TestFetchRemote_ProtectRefs(t *testing.T) {
+	upstream, upOids := pushSource(t, "base\n")
+	ts := newFetchTestServer(t, upstream)
+
+	local := makeEmptyLocalRepo(t)
+	if _, err := FetchRemote(ts.URL+"/repo.git", local, nil); err != nil {
+		t.Fatalf("initial clone: %v", err)
+	}
+	assertRefEquals(t, local, "refs/heads/master", upOids[0])
+
+	// 本地多出一个提交（模拟下游推送已准入、尚未转发上游）
+	localOid := appendCommitTo(t, local, upOids[0], "downstream.txt", "downstream\n")
+	// 上游同时前进（模拟其它来源推动上游）
+	upOid2 := appendCommitTo(t, upstream, upOids[0], "upstream.txt", "upstream\n")
+
+	// 受保护：本地 ref 保持不动，但上游新对象被拉下来
+	if _, err := FetchRemoteWithOptions(ts.URL+"/repo.git", local, nil, FetchOptions{
+		ProtectRefs: []string{"refs/heads/master"},
+	}); err != nil {
+		t.Fatalf("fetch with ProtectRefs: %v", err)
+	}
+	assertRefEquals(t, local, "refs/heads/master", localOid)
+	assertObjectExists(t, local, upOid2)
+
+	// 不受保护：镜像语义回退到上游值
+	if _, err := FetchRemote(ts.URL+"/repo.git", local, nil); err != nil {
+		t.Fatalf("fetch without ProtectRefs: %v", err)
+	}
+	assertRefEquals(t, local, "refs/heads/master", upOid2)
+}

@@ -327,11 +327,22 @@ func ServeUploadPack(repoRoot string, in io.Reader, out io.Writer) error {
 	return nil
 }
 
+// ReceivePackOptions 是 receive-pack 的可选扩展点。
+type ReceivePackOptions struct {
+	// PreRefs 在对象已落盘、ref 更新之前调用，做准入校验。
+	// 返回与 updates 等长的切片：nil 元素表示放行，非 nil 表示拒绝该 ref
+	// （Reason 会作为 ng 原因回给客户端，ref 不会被更新）。
+	// 长度不足或整体为 nil 时视为全部放行。
+	// 中转仓库用它实现「必须与上游基线一致才能推送」的准入。
+	PreRefs func(updates []RefUpdate) []*RefUpdateResult
+}
+
 // ServeReceivePack 处理 receive-pack 请求（push）。
 // in: ref updates（pkt-line）+ flush + packfile 二进制。
 // out: report-status（sideband ch1 或直接 pkt-line）。
-// push 仅 CAS（old-oid 校验），不做可达性检查，逐对象 SHA1 校验。
-func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
+// push 仅 CAS（old-oid 校验）+ 可选准入（opts.PreRefs），不做可达性检查，逐对象 SHA1 校验。
+// 返回逐 ref 的更新结果（含被准入拒绝的），供调用方（如中转转发）决定后续动作。
+func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer, opts ...ReceivePackOptions) ([]RefUpdateResult, error) {
 	// bufio 包装：既能给 PktReader 精确读帧，又可在 ref 更新结束后 peek 是否还有 pack。
 	br, ok := in.(*bufio.Reader)
 	if !ok {
@@ -343,20 +354,20 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 	// 1. 读首行 ref update + caps
 	first, isFlush, err := pr.ReadPkt()
 	if err != nil {
-		return fmt.Errorf("receive-pack: read first update: %w", err)
+		return nil, fmt.Errorf("receive-pack: read first update: %w", err)
 	}
 	// 首帧为 flush：空命令列表请求（body 仅含 flush-pkt，无 ref 更新、无 packfile）。
 	// 与 cgit 一致，返回空 report-status（unpack ok + flush-pkt）而非错误。
 	if isFlush {
 		slog.Info("receive-pack empty command list")
 		if err := pw.WritePktString("unpack ok\n"); err != nil {
-			return fmt.Errorf("receive-pack: write unpack status: %w", err)
+			return nil, fmt.Errorf("receive-pack: write unpack status: %w", err)
 		}
-		return pw.WriteFlush()
+		return nil, pw.WriteFlush()
 	}
 	firstUpdate, clientCaps, ok := parseUpdateLine(string(first))
 	if !ok {
-		return fmt.Errorf("receive-pack: bad first line %q", first)
+		return nil, fmt.Errorf("receive-pack: bad first line %q", first)
 	}
 	updates := []RefUpdate{firstUpdate}
 
@@ -364,7 +375,7 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 	for {
 		payload, isFlush, err := pr.ReadPkt()
 		if err != nil {
-			return fmt.Errorf("receive-pack: read updates: %w", err)
+			return nil, fmt.Errorf("receive-pack: read updates: %w", err)
 		}
 		if isFlush {
 			break
@@ -392,17 +403,48 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 		for _, u := range updates {
 			rejected = append(rejected, RefUpdateResult{Name: u.Name})
 		}
-		return writeReportStatus(out, clientCaps, rejected, packErr)
+		return rejected, writeReportStatus(out, clientCaps, rejected, packErr)
 	}
 	if received > 0 {
 		slog.Info("receive-pack received objects", "objects", received)
 	}
 
-	// 5. RefStore.Update（per-ref 原子 CAS）
+	// 5. 准入校验（可选）：拒绝的 ref 不参与更新，但原因要如实回给客户端。
+	var preResults []*RefUpdateResult
+	if len(opts) > 0 && opts[0].PreRefs != nil {
+		preResults = opts[0].PreRefs(updates)
+	}
+	allowed := make([]RefUpdate, 0, len(updates))
+	for i, u := range updates {
+		if i < len(preResults) && preResults[i] != nil {
+			continue
+		}
+		allowed = append(allowed, u)
+	}
+
+	// 5.1 RefStore.Update（per-ref 原子 CAS，仅对通过准入的 ref）
 	rs := NewRefStore(repoRoot)
-	results, err := rs.Update(updates)
+	updated, err := rs.Update(allowed)
 	if err != nil {
-		return fmt.Errorf("receive-pack: update refs: %w", err)
+		return nil, fmt.Errorf("receive-pack: update refs: %w", err)
+	}
+	// 按原始顺序合并：被准入拒绝的用 gate 给出的结果，其余用 CAS 结果。
+	results := make([]RefUpdateResult, len(updates))
+	ai := 0
+	for i, u := range updates {
+		if i < len(preResults) && preResults[i] != nil {
+			results[i] = *preResults[i]
+			if results[i].Name == "" {
+				results[i].Name = u.Name
+			}
+			continue
+		}
+		if ai < len(updated) {
+			results[i] = updated[ai]
+			ai++
+		} else {
+			results[i] = RefUpdateResult{Name: u.Name, Reason: "not updated"}
+		}
 	}
 
 	// 5.5 日志：记录每个 ref 更新结果，标记 force-push（非快进推送）
@@ -421,7 +463,10 @@ func ServeReceivePack(repoRoot string, in io.Reader, out io.Writer) error {
 	}
 
 	// 6. 回 report-status
-	return writeReportStatus(out, clientCaps, results, nil)
+	if err := writeReportStatus(out, clientCaps, results, nil); err != nil {
+		return results, err
+	}
+	return results, nil
 }
 
 // writeReportStatus 输出 report-status（unpack 行 + 每 ref 结果 + flush）。
@@ -506,7 +551,11 @@ func parseWantLine(line string) (oid Oid, caps string, ok bool) {
 }
 
 // parseUpdateLine 解析 receive-pack 的 ref update 行。
-// 格式："<old> <new> <refname>\0<caps>"（首行）或 "<old> <new> <refname>"（后续）。
+// 格式："[+]<old> <new> <refname>\0<caps>"（首行）或 "[+]<old> <new> <refname>"（后续）。
+// 行首的 "+" 是 git 的 force 语义标记（客户端请求覆盖非快进更新），必须剥离：
+// 否则 old oid 会解析成 "+<hex>" 这样的非法值，CAS 必然失败，
+// 使真实 git 客户端的 force push 被误判为冲突拒绝。
+// 剥离后 CAS 语义不变（仍要求 old 匹配），force 仅体现在允许非快进。
 func parseUpdateLine(line string) (u RefUpdate, caps string, ok bool) {
 	line = strings.TrimRight(line, "\n")
 	var main, capPart string
@@ -518,8 +567,9 @@ func parseUpdateLine(line string) (u RefUpdate, caps string, ok bool) {
 	}
 	fields := strings.Fields(main)
 	if len(fields) >= 3 {
+		old := strings.TrimPrefix(fields[0], "+")
 		u = RefUpdate{
-			OldOid: Oid(fields[0]),
+			OldOid: Oid(old),
 			NewOid: Oid(fields[1]),
 			Name:   fields[2],
 		}
@@ -536,10 +586,19 @@ func oidShort(o Oid) string {
 	return string(o)
 }
 
+// IsFastForward 判断 ancestor 是否为 descendant 的祖先（即该更新是快进）。
+// 中转仓库准入用它校验「下游推送是否基于上游基线且可直通转发」。
+func IsFastForward(store ObjectStore, ancestor, descendant Oid) bool {
+	return isFastForward(store, ancestor, descendant)
+}
+
 // isFastForward 检查 ancestor 是否是 descendant 的祖先（快进推送）。
 // 从 descendant 沿 parent 链 BFS，若能到达 ancestor 则为快进。
 // 任一对象读取失败视为非快进（保守策略，不影响推送本身）。
 func isFastForward(store ObjectStore, ancestor, descendant Oid) bool {
+	if !ancestor.Valid() || !descendant.Valid() {
+		return false // 畸形 oid：保守判为非快进（仅审计标记，不影响推送本身）
+	}
 	visited := make(map[Oid]bool)
 	queue := []Oid{descendant}
 	for len(queue) > 0 {
@@ -548,7 +607,7 @@ func isFastForward(store ObjectStore, ancestor, descendant Oid) bool {
 		if oid == ancestor {
 			return true
 		}
-		if visited[oid] {
+		if visited[oid] || !oid.Valid() {
 			continue
 		}
 		visited[oid] = true
@@ -564,7 +623,7 @@ func isFastForward(store ObjectStore, ancestor, descendant Oid) bool {
 			continue
 		}
 		for _, p := range c.Parents {
-			if !p.IsZero() {
+			if !p.IsZero() && p.Valid() {
 				queue = append(queue, p)
 			}
 		}

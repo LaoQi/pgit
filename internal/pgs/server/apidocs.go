@@ -449,6 +449,113 @@ ref=my-mirror&description=Updated&mirrorRemoteUrl=https://github.com/user/repo.g
 			},
 		},
 		{
+			Method:  "POST",
+			Path:    "/api/v1/repos/relay/push",
+			Summary: "Manually forward a relay repository to its upstream",
+			Params: []apiDocParam{
+				{Name: "ref", In: "form", Required: true, Example: "relay-repo", Desc: "Repository reference: canonical name or alias"},
+			},
+			ResponseExample: `{
+  "ok": true,
+  "relay": {
+    "timestamp": "2026-09-30T10:00:00Z",
+    "duration": 42,
+    "trigger": "manual",
+    "success": true,
+    "objects": 3,
+    "packSize": 512,
+    "refsPushed": 1,
+    "refsDeleted": 0,
+    "refsRejected": 0,
+    "refs": ["refs/heads/main"]
+  }
+}`,
+			Curl: `curl -X POST -d "ref=relay-repo" http://localhost:3000/api/v1/repos/relay/push`,
+			Notes: []string{
+				"Relay repositories mirror an upstream as the baseline and forward downstream pushes to it.",
+				"Manual forward first reconciles refs that are locally ahead of the upstream baseline, then pushes them.",
+				"Returns 400 for non-relay repos, 409 when a forward task is already queued/running, 502 when upstream is unreachable.",
+			},
+		},
+		{
+			Method:  "GET",
+			Path:    "/api/v1/repos/relay-status",
+			Summary: "Get relay forwarding status (baseline, pending refs, last push)",
+			Params: []apiDocParam{
+				{Name: "ref", In: "query", Required: true, Example: "relay-repo", Desc: "Repository reference: canonical name or alias"},
+			},
+			ResponseExample: `{
+  "repo": "relay-repo",
+  "upstream": "https://github.com/user/repo.git",
+  "queued": false,
+  "pushing": false,
+  "pendingRefs": [],
+  "lastPush": "2026-09-30T10:00:00Z",
+  "lastPushError": "",
+  "baseRefs": 3,
+  "baseAt": "2026-09-30T10:00:00Z",
+  "differ": []
+}`,
+			Curl: `curl "http://localhost:3000/api/v1/repos/relay-status?ref=relay-repo"`,
+			Notes: []string{
+				"baseRefs/baseAt describe the last upstream baseline calibration (ls-remote); baseAt is zero before the first calibration.",
+				"pendingRefs are refs that passed admission but are not yet pushed to upstream (persisted across restarts).",
+				"differ lists refs whose local value differs from the upstream baseline; run a sync (POST /api/v1/repos/sync) before pushing them.",
+				"Non-relay repos return 400; unknown repos return 404.",
+			},
+		},
+		{
+			Method:  "GET",
+			Path:    "/api/v1/repos/relay-log",
+			Summary: "Read relay forwarding log entries (newest first)",
+			Params: []apiDocParam{
+				{Name: "ref", In: "query", Required: true, Example: "relay-repo", Desc: "Repository reference: canonical name or alias"},
+				{Name: "limit", In: "query", Required: false, Example: "50", Desc: "Maximum entries (default 50)"},
+			},
+			ResponseExample: `{
+  "entries": [
+    {
+      "timestamp": "2026-09-30T10:00:00Z",
+      "duration": 42,
+      "trigger": "push",
+      "success": true,
+      "refsPushed": 1,
+      "refsDeleted": 0,
+      "refsRejected": 0,
+      "refs": ["refs/heads/main"]
+    }
+  ]
+}`,
+			Curl: `curl "http://localhost:3000/api/v1/repos/relay-log?ref=relay-repo&limit=10"`,
+			Notes: []string{
+				"Log file is <gitRoot>/<name>.git/pgit-relay.jsonl (JSONL, one entry per forward attempt).",
+				"trigger is one of push (downstream push), manual (API), retry (background retry), startup (resume after restart).",
+				"Returns 400 for non-relay repos.",
+			},
+		},
+		{
+			Method:  "POST",
+			Path:    "/api/v1/repos/relay/align",
+			Summary: "Force local refs to match the upstream baseline and drop pending forwards (dangerous)",
+			Params: []apiDocParam{
+				{Name: "ref", In: "form", Required: true, Example: "relay-repo", Desc: "Repository reference: canonical name or alias"},
+				{Name: "confirm", In: "form", Required: true, Example: "relay-repo", Desc: "Must equal the canonical repository name"},
+			},
+			ResponseExample: `{
+  "baseRefs": 3,
+  "updated": 1,
+  "deleted": 0,
+  "aligned": ["refs/heads/main"]
+}`,
+			Curl: `curl -X POST -d "ref=relay-repo" -d "confirm=relay-repo" http://localhost:3000/api/v1/repos/relay/align`,
+			Notes: []string{
+				"Escape hatch for permanently failing forwards (protected branch upstream, insufficient token scope).",
+				"Local refs are reset to the upstream baseline; commits that were only local lose their ref pointer (objects stay on disk, no GC).",
+				"Pending forward set and last forward error are cleared afterwards.",
+				"confirm must equal the canonical name; non-relay repos return 400.",
+			},
+		},
+		{
 			Method:  "GET",
 			Path:    "/api/v1/github/repos",
 			Summary: "Discover repositories of a GitHub account (read-only, no local changes)",

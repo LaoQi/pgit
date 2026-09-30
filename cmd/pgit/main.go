@@ -81,9 +81,14 @@ func main() {
 	pgs.InitReposManager(&pgs.RepositoriesManagerConfig{GitRoot: pgs.Settings.GitRoot})
 
 	syncMgr := pgs.NewSyncManager(pgs.ReposManager)
+	relayMgr := pgs.NewRelayManager(pgs.ReposManager)
 	for _, repo := range pgs.ReposManager.List() {
 		if repo.IsMirror() {
 			syncMgr.Register(repo)
+		}
+		if repo.IsRelay() {
+			// 启动补推上次未完成的转发，并异步校准上游基线
+			relayMgr.Bootstrap(repo)
 		}
 	}
 
@@ -95,12 +100,12 @@ func main() {
 
 	var sshHandler *server.SSHHandler
 	if pgs.Settings.EnableSSH {
-		sshHandler, err = server.NewSSHHandler(pgs.Settings.SSHHostKey, pgs.ReposManager)
+		sshHandler, err = server.NewSSHHandler(pgs.Settings.SSHHostKey, pgs.ReposManager, relayMgr)
 		if err != nil {
 			slog.Error("ssh handler init failed", "error", err)
 		}
 	}
-	httpHandler := server.NewHTTPHandler(pgs.ReposManager, pgs.Settings, syncMgr)
+	httpHandler := server.NewHTTPHandler(pgs.ReposManager, pgs.Settings, syncMgr, relayMgr)
 
 	mux := server.NewMuxServer(ln, pgs.Settings.EnableSSH, sshHandler, httpHandler)
 	slog.Info("pgit listening", "listen", pgs.Settings.Listen, "ssh", pgs.Settings.EnableSSH, "version", Version)
@@ -119,6 +124,7 @@ func main() {
 			slog.Warn("graceful shutdown incomplete", "error", err)
 		}
 		syncMgr.Stop()
+		relayMgr.Stop()
 		slog.Info("shutdown complete")
 		os.Exit(NoError)
 	}()
@@ -135,8 +141,10 @@ func main() {
 				continue
 			}
 			slog.Info("config reloaded", "path", *config)
-			// 同步任务并发度（mirrorMaxConcurrentSyncs）热生效
+			// 同步任务并发度（mirrorMaxConcurrentSyncs）与中转转发并发度
+			// （relayMaxConcurrentPushes）热生效
 			syncMgr.SetConcurrency(pgs.Settings.LimitConcurrentSyncs())
+			relayMgr.SetConcurrency(pgs.Settings.LimitConcurrentPushes())
 			if len(restartNeeded) > 0 {
 				slog.Warn("config fields require restart to take effect", "fields", restartNeeded)
 			}

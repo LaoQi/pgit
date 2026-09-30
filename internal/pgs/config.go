@@ -43,6 +43,11 @@ type Setting struct {
 	MirrorRetryAttempts int `json:"mirrorRetryAttempts"`
 	// MirrorRetryBaseDelaySec 重试退避基数（秒），0 = 默认 1。
 	MirrorRetryBaseDelaySec int `json:"mirrorRetryBaseDelaySec"`
+	// RelayMaxConcurrentPushes 中转仓库转发任务并发度，0 = 默认 5。
+	RelayMaxConcurrentPushes int `json:"relayMaxConcurrentPushes"`
+	// RelayPendingRetryIntervalSec 存在未转发成功的 ref 时的后台重试间隔（秒）：
+	// 0 = 默认 60，负数 = 关闭后台重试（仅下一次 push 或手动触发时重试）。
+	RelayPendingRetryIntervalSec int `json:"relayPendingRetryIntervalSec"`
 	// MirrorMaxConcurrentSyncs 镜像同步任务的并发上限（任务队列 worker 数），0 = 默认 5。
 	MirrorMaxConcurrentSyncs int `json:"mirrorMaxConcurrentSyncs"`
 }
@@ -53,6 +58,10 @@ const (
 	DefaultMaxConcurrentPacks       = 4
 	// DefaultMaxConcurrentSyncs 镜像同步任务队列的默认并发度。
 	DefaultMaxConcurrentSyncs = 5
+	// DefaultMaxConcurrentPushes 中转仓库转发任务队列的默认并发度。
+	DefaultMaxConcurrentPushes = 5
+	// DefaultRelayPendingRetryInterval 未转发成功的 ref 的后台重试默认间隔。
+	DefaultRelayPendingRetryInterval = 60 * time.Second
 )
 
 // LimitPushBytes 返回生效的单次 push 上限。
@@ -104,6 +113,38 @@ func (s *Setting) LimitConcurrentSyncs() int {
 	return v
 }
 
+// LimitConcurrentPushes 返回生效的中转转发任务并发上限（队列 worker 数）。
+func (s *Setting) LimitConcurrentPushes() int {
+	if s == nil {
+		return DefaultMaxConcurrentPushes
+	}
+	s.mu.RLock()
+	v := s.RelayMaxConcurrentPushes
+	s.mu.RUnlock()
+	if v <= 0 {
+		return DefaultMaxConcurrentPushes
+	}
+	return v
+}
+
+// RelayRetryInterval 返回待转发 ref 的后台重试间隔：
+// 0 为默认 60s，负值表示关闭后台重试（<=0 的返回值语义见调用方）。
+func (s *Setting) RelayRetryInterval() time.Duration {
+	if s == nil {
+		return DefaultRelayPendingRetryInterval
+	}
+	s.mu.RLock()
+	v := s.RelayPendingRetryIntervalSec
+	s.mu.RUnlock()
+	if v < 0 {
+		return -1
+	}
+	if v == 0 {
+		return DefaultRelayPendingRetryInterval
+	}
+	return time.Duration(v) * time.Second
+}
+
 // LimitConcurrentPacks 返回生效的并发 pack 传输上限。
 func (s *Setting) LimitConcurrentPacks() int {
 	if s == nil {
@@ -127,20 +168,22 @@ func (s *Setting) Snapshot() *SettingView {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	v := &SettingView{
-		Listen:             s.Listen,
-		EnableSSH:          s.EnableSSH,
-		SSHHostKey:         s.SSHHostKey,
-		SSHPublicKey:       s.SSHPublicKey,
-		GitRoot:            s.GitRoot,
-		HttpAuth:           s.HttpAuth,
-		SSHAuthType:        s.SSHAuthType,
-		WebUIPrefix:        s.WebUIPrefix,
-		WebUIAssets:        s.WebUIAssets,
-		LogLevel:           s.LogLevel,
-		LogFormat:          s.LogFormat,
-		MaxPushBytes:       s.MaxPushBytes,
-		MaxConcurrentPacks: s.MaxConcurrentPacks,
-		MaxConcurrentSyncs: s.MirrorMaxConcurrentSyncs,
+		Listen:                s.Listen,
+		EnableSSH:             s.EnableSSH,
+		SSHHostKey:            s.SSHHostKey,
+		SSHPublicKey:          s.SSHPublicKey,
+		GitRoot:               s.GitRoot,
+		HttpAuth:              s.HttpAuth,
+		SSHAuthType:           s.SSHAuthType,
+		WebUIPrefix:           s.WebUIPrefix,
+		WebUIAssets:           s.WebUIAssets,
+		LogLevel:              s.LogLevel,
+		LogFormat:             s.LogFormat,
+		MaxPushBytes:          s.MaxPushBytes,
+		MaxConcurrentPacks:    s.MaxConcurrentPacks,
+		MaxConcurrentSyncs:    s.MirrorMaxConcurrentSyncs,
+		MaxConcurrentPushes:   s.RelayMaxConcurrentPushes,
+		RelayRetryIntervalSec: s.RelayPendingRetryIntervalSec,
 	}
 	if s.Credentials != nil {
 		v.Credentials = make(map[string]string, len(s.Credentials))
@@ -153,21 +196,23 @@ func (s *Setting) Snapshot() *SettingView {
 
 // SettingView 是 Setting 的无锁只读快照。
 type SettingView struct {
-	Listen             string
-	EnableSSH          bool
-	SSHHostKey         string
-	SSHPublicKey       string
-	GitRoot            string
-	HttpAuth           bool
-	SSHAuthType        string
-	Credentials        map[string]string
-	WebUIPrefix        string
-	WebUIAssets        string
-	LogLevel           string
-	LogFormat          string
-	MaxPushBytes       int64
-	MaxConcurrentPacks int
-	MaxConcurrentSyncs int
+	Listen                string
+	EnableSSH             bool
+	SSHHostKey            string
+	SSHPublicKey          string
+	GitRoot               string
+	HttpAuth              bool
+	SSHAuthType           string
+	Credentials           map[string]string
+	WebUIPrefix           string
+	WebUIAssets           string
+	LogLevel              string
+	LogFormat             string
+	MaxPushBytes          int64
+	MaxConcurrentPacks    int
+	MaxConcurrentSyncs    int
+	MaxConcurrentPushes   int
+	RelayRetryIntervalSec int
 }
 
 // CredentialsCopy 返回凭据表的副本（鉴权中间件每请求调用，避免与热加载竞态）。
@@ -232,6 +277,9 @@ func (s *Setting) hotReloadFrom(src *Setting) []string {
 	s.MirrorRetryBaseDelaySec = src.MirrorRetryBaseDelaySec
 	// 同步任务并发度：调用方在 HotReload 后据此调整 SyncManager 的 worker 数
 	s.MirrorMaxConcurrentSyncs = src.MirrorMaxConcurrentSyncs
+	// 中转转发并发度与重试间隔：调用方在 HotReload 后调整 RelayManager
+	s.RelayMaxConcurrentPushes = src.RelayMaxConcurrentPushes
+	s.RelayPendingRetryIntervalSec = src.RelayPendingRetryIntervalSec
 	return restartNeeded
 }
 
@@ -303,6 +351,9 @@ func (s *Setting) reloadLocked() error {
 	}
 	if s.MirrorMaxConcurrentSyncs < 0 {
 		return fmt.Errorf("mirrorMaxConcurrentSyncs must be >= 0")
+	}
+	if s.RelayMaxConcurrentPushes < 0 {
+		return fmt.Errorf("relayMaxConcurrentPushes must be >= 0")
 	}
 	// 传输上限注入 git 包（pgs → git 单向，避免循环依赖）
 	// 注意：此处持有写锁，不能调用会取读锁的 LimitPushBytes（自死锁），直接读字段。

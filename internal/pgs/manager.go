@@ -429,6 +429,20 @@ func validateMirror(m *MirrorConfig) error {
 	if m.AuthType == "" {
 		m.AuthType = "none"
 	}
+	switch m.Mode {
+	case "", MirrorModePull, MirrorModeRelay:
+	default:
+		return fmt.Errorf("mirror mode must be %q or %q, got %q", MirrorModePull, MirrorModeRelay, m.Mode)
+	}
+	if m.Mode == MirrorModeRelay {
+		if err := validateRelayRefs(m.Refs); err != nil {
+			return err
+		}
+	} else {
+		// 非 relay 模式不携带 relay 配置（避免切换模式后残留脏元数据）
+		m.Refs = nil
+		m.AllowDelete = nil
+	}
 	return nil
 }
 
@@ -464,8 +478,18 @@ func (r *RepositoriesManager) UpdateRepositorySettings(name string, description 
 		if m.Password == "" {
 			m.Password = repo.Mirror.Password
 		}
+		// 运行态字段由服务自身维护，配置更新不得覆盖（否则会丢掉同步/转发历史与待补推队列）。
 		m.LastSync = repo.Mirror.LastSync
 		m.LastError = repo.Mirror.LastError
+		m.LastPush = repo.Mirror.LastPush
+		m.LastPushError = repo.Mirror.LastPushError
+		m.PendingRefs = repo.Mirror.PendingRefs
+		if m.Mode != MirrorModeRelay {
+			// 切回镜像/普通拉取模式：relay 运行态（待转发集合、转发结果）不再有意义。
+			m.LastPush = time.Time{}
+			m.LastPushError = ""
+			m.PendingRefs = nil
+		}
 		repo.Mirror = &m
 	}
 	repo.Description = description
@@ -499,7 +523,12 @@ func (r *RepositoriesManager) SyncRepository(name string) (*git.FetchResult, err
 	}
 
 	// 超时/重试策略来自全局配置（可经 SIGHUP 热加载）
-	result, fetchErr := git.FetchRemoteWithOptions(m.RemoteURL, repoPath, auth, Settings.MirrorFetchOptions())
+	opts := Settings.MirrorFetchOptions()
+	if m.Mode == MirrorModeRelay && len(m.PendingRefs) > 0 {
+		// 中转仓库：已准入但未转发上游的 ref 本地领先，不能被镜像语义的拉取回退/删除。
+		opts.ProtectRefs = append([]string(nil), m.PendingRefs...)
+	}
+	result, fetchErr := git.FetchRemoteWithOptions(m.RemoteURL, repoPath, auth, opts)
 
 	r.mu.Lock()
 	if repo, err := r.getByNameLocked(name); err == nil && repo.IsMirror() {
@@ -515,6 +544,35 @@ func (r *RepositoriesManager) SyncRepository(name string) (*git.FetchResult, err
 	}
 	r.mu.Unlock()
 	return result, fetchErr
+}
+
+// UpdateMirrorRuntime 在锁内更新仓库的远端运行态并落盘。
+// 回调拿到的是 Mirror 副本（切片/指针字段已深拷贝），返回后整体替换 ——
+// 调用方不得在锁外持有该指针，也不能通过它修改服务内部状态。
+func (r *RepositoriesManager) UpdateMirrorRuntime(name string, fn func(m *MirrorConfig)) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	repo, err := r.getByNameLocked(name)
+	if err != nil {
+		return err
+	}
+	if repo.Mirror == nil {
+		return fmt.Errorf("%w: %s", ErrNotMirror, name)
+	}
+	m := *repo.Mirror
+	if repo.Mirror.Refs != nil {
+		m.Refs = append([]string(nil), repo.Mirror.Refs...)
+	}
+	if repo.Mirror.PendingRefs != nil {
+		m.PendingRefs = append([]string(nil), repo.Mirror.PendingRefs...)
+	}
+	if repo.Mirror.AllowDelete != nil {
+		v := *repo.Mirror.AllowDelete
+		m.AllowDelete = &v
+	}
+	fn(&m)
+	repo.Mirror = &m
+	return repo.SaveMetadata()
 }
 
 // DeleteRepository 软删除：写入 pgit.deleted 标记并从内存索引注销（git 传输与管理

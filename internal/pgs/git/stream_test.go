@@ -193,7 +193,7 @@ func TestMaxReceivePackBytesLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := &bytes.Buffer{}
-	if err := ServeReceivePack(dir, bytes.NewReader(req.Bytes()), out); err != nil {
+	if _, err := ServeReceivePack(dir, bytes.NewReader(req.Bytes()), out); err != nil {
 		t.Fatalf("oversized pack should be rejected via report-status, got error: %v", err)
 	}
 	// 输出应包含 unpack error 与 ng

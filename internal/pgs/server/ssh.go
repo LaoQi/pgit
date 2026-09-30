@@ -21,10 +21,13 @@ import (
 type SSHHandler struct {
 	HostKey ssh.Signer
 	Manager *pgs.RepositoriesManager
+	Relay   *pgs.RelayManager
 }
 
-func NewSSHHandler(hostKeyPath string, manager *pgs.RepositoriesManager) (*SSHHandler, error) {
-	h := &SSHHandler{Manager: manager}
+// NewSSHHandler 构造 SSH 服务端。relayMgr 用于中转仓库的 push 准入与转发触发
+// （nil 时中转仓库的 receive-pack 不做准入——生产接线必须传入，测试可传 nil）。
+func NewSSHHandler(hostKeyPath string, manager *pgs.RepositoriesManager, relayMgr *pgs.RelayManager) (*SSHHandler, error) {
+	h := &SSHHandler{Manager: manager, Relay: relayMgr}
 	if err := h.LoadPrivateKey(hostKeyPath); err != nil {
 		return nil, err
 	}
@@ -149,8 +152,8 @@ func (s *SSHHandler) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 			repoPath := repo.Path()
 			slog.Info("ssh exec", "command", cmdName, "repo", repo.Name, "alias", alias)
 
-			// mirror 仓库禁止 push：拒绝 git-receive-pack。
-			if cmdName == "git-receive-pack" && repo.IsMirror() {
+			// 镜像仓库禁止 push：拒绝 git-receive-pack（中转仓库必须放行，准入由 RelayManager 把关）。
+			if cmdName == "git-receive-pack" && repo.IsMirror() && !repo.IsRelay() {
 				slog.Warn("ssh receive-pack denied for mirror repository", "repo", repo.Name, "alias", alias)
 				req.Reply(true, nil)
 				_, _ = io.WriteString(ch.Stderr(), "fatal: mirror repository: push disabled\n")
@@ -159,13 +162,24 @@ func (s *SSHHandler) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 			}
 
 			req.Reply(true, nil)
-			if err := git.HandleSSHSession(cmdName, repoPath, ch); err != nil {
+			var opts []git.ReceivePackOptions
+			if cmdName == "git-receive-pack" && repo.IsRelay() && s.Relay != nil {
+				opts = append(opts, git.ReceivePackOptions{
+					PreRefs: func(updates []git.RefUpdate) []*git.RefUpdateResult {
+						return s.Relay.Admit(repo, updates)
+					},
+				})
+			}
+			results, err := git.HandleSSHSession(cmdName, repoPath, ch, opts...)
+			if err != nil {
 				if errors.Is(err, git.ErrClientAborted) {
 					// 客户端读完 advertisement 即断开（如 git ls-remote 的收尾 flush）
 					slog.Debug("ssh session ended by client", "command", cmdName, "alias", alias)
 				} else {
 					slog.Error("ssh session failed", "command", cmdName, "alias", alias, "error", err)
 				}
+			} else if cmdName == "git-receive-pack" && repo.IsRelay() && s.Relay != nil {
+				s.Relay.OnRefsUpdated(repo, results)
 			}
 			ch.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
 			return

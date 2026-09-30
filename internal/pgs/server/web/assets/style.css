@@ -221,6 +221,7 @@ table th { font-weight: 600; color: var(--text-muted); background: var(--bg); }
 .badge-commit { background: #fff4d6; color: var(--orange); }
 .badge-tag { background: #dcffe4; color: var(--green); }
 .badge-mirror { background: #dcffe4; color: var(--green); }
+.badge-relay { background: #e0ecff; color: #1f6feb; }
 .badge-sync-ok { background: #dcffe4; color: var(--green); }
 .badge-sync-fail { background: #ffe6e6; color: var(--red); }
 .badge-sync-trigger { background: var(--code-bg); color: var(--text-muted); font-size: 10px; }

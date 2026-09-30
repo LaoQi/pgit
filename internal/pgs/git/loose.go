@@ -33,8 +33,13 @@ type LooseStore struct {
 
 var _ ObjectStore = (*LooseStore)(nil)
 
-// Path 返回 oid 对应的 loose 文件路径
+// Path 返回 oid 对应的 loose 文件路径。
+// 非法 oid（长度不足/非 hex，可能来自畸形对象或客户端输入）返回一个不可能存在的
+// 路径，而不是 panic —— 存储层对调用方始终是「安全失败」的。
 func (s *LooseStore) Path(oid Oid) string {
+	if !oid.Valid() {
+		return filepath.Join(s.Root, "invalid", "oid")
+	}
 	return filepath.Join(s.Root, string(oid[:2]), string(oid[2:]))
 }
 

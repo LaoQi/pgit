@@ -20,7 +20,7 @@ func newRouterHandler(t *testing.T, prefix string, auth bool) *HTTPHandler {
 		settings.HttpAuth = true
 		settings.Credentials = map[string]string{"u": "p"}
 	}
-	return NewHTTPHandler(pgs.ReposManager, settings, nil)
+	return NewHTTPHandler(pgs.ReposManager, settings, nil, nil)
 }
 
 func do(h *HTTPHandler, method, path string) *httptest.ResponseRecorder {

@@ -3,6 +3,61 @@
 pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；变更过程、缺陷修复、
 性能调优与历史决策收录于此。条目按时间倒序，括注提交短 hash。
 
+## 2026-09-30
+
+**feat(relay): 新增中转仓库类型（上游为基线，下游推送自动转发上游）**
+- 数据模型：`MirrorConfig` 扩展 `mode`（空/`pull` = 镜像，`relay` = 中转）与 relay 专用字段
+  `refs`（转发白名单前缀，默认 `refs/heads/` + `refs/tags/`）、`allowDelete`（*bool，默认允许）、
+  `lastPush`/`lastPushError`/`pendingRefs`（运行态）。老 `pgit.json` 零迁移：缺 `mode` 即镜像。
+- 准入（新增，核心）：receive-pack 在「对象已落盘、ref 更新前」回调 `PreRefs`
+  （`git.ReceivePackOptions`），由 `RelayManager.Admit` 用**实时 `ls-remote` 基线**逐 ref 判定：
+  上游无该 ref 且 old=0 → 新建放行；`old != 上游 oid` → `relay: stale base (...)`;
+  非快进 → 拒绝；删除需 `allowDelete`；白名单外拒绝。被拒 ref 不更新本地、不转发，
+  真实 git 客户端看到 `[remote rejected] ... (relay: stale base ...)`。
+- 转发：新增纯 Go smart-http receive-pack 客户端 `git/push.go`（`PushRemote`）——
+  广告 CAS、`WalkReachable` 增量对象（haves = 上游 refs，无需先 fetch）、
+  `io.Pipe` 流式请求体、`report-status` 解析（新增 `SidebandReader` 重组 ch1）、
+  上游无 `ofs-delta` 时退化全量编码；传输层从 fetch 抽出公共件（`remote.go`：会话/看门狗/广告解析）。
+- 运行时：`RelayManager`（与 `SyncManager` 对称）：待转发 ref 落盘 `pendingRefs`（权威集合）+
+  有界任务队列（`relayMaxConcurrentPushes`，默认 5）+ 每轮最多 3 轮合并并发 push +
+  网络失败按 `relayPendingRetryIntervalSec`（默认 60s，退避至 10min）后台重试 +
+  上游 ng/策略拒绝即放弃重试（记 `lastPushError`）+ 重启 `Bootstrap` 补推 + 转发日志 `pgit-relay.jsonl` +
+  指标 `pgit_relay_*`。
+- 拉取方向：relay 的 `SyncRepository` 传 `FetchOptions.ProtectRefs = pendingRefs`，
+  避免「已准入未转发」的本地领先提交被镜像语义的 pull 回退/删除；其余 ref 仍严格镜像。
+- 传输：mirror 仓库 push 拦截条件改为 `IsMirror() && !IsRelay()`（HTTP/SSH 两处），
+  relay 天然放行；`HandleReceivePack`/`HandleSSHSession` 返回逐 ref 结果并在成功后触发转发。
+- API：创建/设置支持 `mirrorMode` + `relayRefs`/`relayAllowDelete`（设置未显式给 mode 时保持原模式）；
+  新增 `POST /repos/relay/push`、`POST /repos/relay/align`（需 confirm）、
+  `GET /repos/relay-status`、`GET /repos/relay-log`（文档 17 → 21 端点），
+  `/healthz` 增加 relayQueue，`/metrics` 增加 relay 队列与转发指标。
+- 配置（可热加载）：`relayMaxConcurrentPushes`（默认 5）、`relayPendingRetryIntervalSec`
+  （0=60s，负值=关闭后台重试）；远端传输超时/重试复用 `mirror*` 三项。
+- WebUI：创建表单改为类型选择（Normal / Mirror / Relay）+ relay 字段；首页 `relay` 徽标；
+  详情页新增 Relay 面板（基线校准时间、pending、differ、last push/error）+ Forward Now /
+  Align to upstream + 转发日志表；设置卡片支持 relay refs 与 allow delete。
+- 顺带加固（本次改动路径触发的真实缺陷）：
+  - `parseUpdateLine` 现在剥离命令行 `+` 前缀（原先 force push 会把 old 解析成 `+<hex>`，
+    CAS 必然失败 → 真实 git 客户端的 force push 会被误判为冲突）；
+  - `WalkReachable`/`refsOf`/`isFastForward` 拒绝形状非法的 oid，
+    `LooseStore.Path` 对非法 oid 返回不存在路径而非 panic（畸形对象/命令行不再能触发 panic）；
+  - 广告中缺失的 ref 归一化为 `ZeroOid`（原先得到空 `Oid("")`，会污染 oid 比较与可达性遍历）。
+- 测试：`git/push_test.go`、`git/fetch_test.go`（ProtectRefs 用例）、`pgs/relay_test.go`（准入矩阵等）、
+  `pgs/relay_forward_test.go`（转发端到端）、`server/relay_api_test.go`（API + HTTP 接线端到端）、
+  `server/ssh_test.go`（SSH 接线回归：relay push 必须经准入并触发转发）；
+  `docs/relay-design.md` 记录设计与验证；AGENTS.md 同步当前架构。
+- 评审修复（提交前自查）：
+  - **SSH 漏注入 RelayManager**：`NewSSHHandler` 增加 relay 参数并由 main 传入——此前 SSH push 到
+    relay 仓库会完全绕过准入（force/stale/白名单外全部落盘）且永不转发；`TestSSHReceivePackRelayGate` 回归。
+  - **`RelayManager.baseFor` 数据竞争**：`rm.bases` 的读写未持锁（`go test -race` 可复现），
+    拆 `baseForLocked` 修复（`Status` 持锁路径用 locked 版本避免重入）。
+  - **push 错误分类顺序**：上游不读请求体就早响应（代理过载 502/503）且请求体大时，
+    编码 goroutine 的管道错误会抢在 HTTP 状态之前被判为 permanent、丢失重试；改为
+    传输失败 → HTTP 状态 → 请求体构建错误的顺序，200+构建失败按可重试（ref 更新是 CAS，重放安全）；
+    `TestPushRemote_EarlyStatusResponseKeepsRetryable`（48MB 伪随机 body）回归。
+  - **settings 静默重置 relay 字段**：只改描述等无关设置时 `relayRefs`/`relayAllowDelete`
+    被重置为默认；改为「未提供=保留原值」（与 `mirrorPassword` 一致）。
+
 ## 2026-09-29（晚二）
 
 **feat(api): 仓库删除改为软删除（打标记，不做物理删除）**

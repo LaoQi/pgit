@@ -22,7 +22,7 @@ func startMux(t *testing.T, gitRoot string) (addr string, mux *MuxServer, shutdo
 	t.Cleanup(func() { pgs.ReposManager = nil })
 
 	settings := &pgs.Setting{}
-	h := NewHTTPHandler(pgs.ReposManager, settings, nil)
+	h := NewHTTPHandler(pgs.ReposManager, settings, nil, nil)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestMuxServeReturnsOnListenerClose(t *testing.T) {
 	dir := t.TempDir()
 	pgs.InitReposManager(&pgs.RepositoriesManagerConfig{GitRoot: dir})
 	t.Cleanup(func() { pgs.ReposManager = nil })
-	h := NewHTTPHandler(pgs.ReposManager, &pgs.Setting{}, nil)
+	h := NewHTTPHandler(pgs.ReposManager, &pgs.Setting{}, nil, nil)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -162,7 +162,7 @@ func TestMuxShutdownWaitsForInflightRequest(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("done"))
 	})
-	handler := NewHTTPHandler(pgs.ReposManager, &pgs.Setting{}, nil)
+	handler := NewHTTPHandler(pgs.ReposManager, &pgs.Setting{}, nil, nil)
 	m := NewMuxServer(newTestListener(t), false, nil, handler)
 	m.httpSrv.Handler = mux // 用一个可控的慢 handler
 

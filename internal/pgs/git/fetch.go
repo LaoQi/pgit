@@ -11,7 +11,6 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -59,6 +58,11 @@ type FetchOptions struct {
 	// RetryBaseDelay / RetryMaxDelay 重试退避区间。
 	RetryBaseDelay time.Duration
 	RetryMaxDelay  time.Duration
+	// ProtectRefs 列出不参与本地 ref 更新的 ref（对象照常拉取）。
+	// 中转仓库用它保护「已通过准入但尚未转发到上游」的 ref：这些 ref 本地领先上游，
+	// 镜像语义的 fetch 会把它们回退到上游值（上游没有则删除），必须跳过，
+	// 否则下游刚推上来的提交会被一次拉取抹掉。
+	ProtectRefs []string
 }
 
 func (o FetchOptions) withDefaults() FetchOptions {
@@ -252,47 +256,15 @@ func fetchOnce(remoteURL, repoRoot string, auth *FetchAuth, o FetchOptions) (*Fe
 	fetchStart := time.Now()
 	remoteURL = strings.TrimRight(remoteURL, "/")
 
-	ctx := context.Background()
-	if o.TotalTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, o.TotalTimeout)
-		defer cancel()
+	// 会话（分层超时 + 停滞看门狗 + 代理/认证）由 remote.go 的公共实现提供。
+	session, err := newRemoteSession(auth, o)
+	if err != nil {
+		return nil, permanentErr("fetch: %v", err)
 	}
-	ctx, cancelStall := context.WithCancel(ctx)
-	defer cancelStall()
+	defer session.Close()
+	ctx, client, touch := session.Ctx, session.Client, session.Touch
 
-	// 停滞看门狗：stallTimer 每收到数据重置；到期未重置即取消请求。
-	stallTimer := time.AfterFunc(o.StallTimeout, cancelStall)
-	touch := func() { stallTimer.Reset(o.StallTimeout) }
-	defer stallTimer.Stop()
-
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   defaultFetchDialTimeout,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout:   defaultFetchTLSHandshake,
-		ResponseHeaderTimeout: o.ResponseHeaderTimeout,
-		IdleConnTimeout:       defaultFetchIdleConn,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-	if auth != nil && auth.Proxy != "" {
-		proxyURL, err := url.Parse(auth.Proxy)
-		if err != nil {
-			return nil, fmt.Errorf("fetch: invalid proxy URL: %w", err)
-		}
-		if proxyURL.Scheme != "http" && proxyURL.Scheme != "https" {
-			return nil, fmt.Errorf("fetch: proxy URL must be http or https, got %q", proxyURL.Scheme)
-		}
-		transport.Proxy = http.ProxyURL(proxyURL)
-	}
-	// 注意：不设置 client.Timeout —— 整体超时会掐断大仓库的 body 读取，
-	// 改由 StallTimeout（停滞检测）与 ResponseHeaderTimeout 保护。
-	client := &http.Client{Transport: transport}
-	defer transport.CloseIdleConnections()
-
-	remoteRefs, serverCaps, err := fetchInfoRefs(ctx, client, remoteURL, auth, touch)
+	remoteRefs, serverCaps, err := fetchRefAdvertisement(ctx, client, remoteURL, "git-upload-pack", auth, touch)
 	if err != nil {
 		slog.Warn("fetch info/refs failed", "url", remoteURL, "error", err)
 		return nil, err
@@ -470,9 +442,22 @@ func fetchOnce(remoteURL, repoRoot string, auth *FetchAuth, o FetchOptions) (*Fe
 		packSize = int64(objectsWritten)
 	}
 
+	// 受保护的 ref（中转仓库的 pending ref）完全不参与本地更新：
+	// 既不回退/删除本地领先的 ref，也不把上游新出现的同名 ref 拉回来。
+	protected := make(map[string]bool, len(o.ProtectRefs))
+	for _, name := range o.ProtectRefs {
+		if name != "" {
+			protected[name] = true
+		}
+	}
+
 	var updates []RefUpdate
 	for name, remoteOid := range remoteRefs {
 		if name == "HEAD" {
+			continue
+		}
+		if protected[name] {
+			slog.Debug("fetch skip protected ref", "ref", name)
 			continue
 		}
 		if localOid, ok := localRefs[name]; ok {
@@ -482,7 +467,7 @@ func fetchOnce(remoteURL, repoRoot string, auth *FetchAuth, o FetchOptions) (*Fe
 		}
 	}
 	for name, localOid := range localRefs {
-		if _, ok := remoteRefs[name]; !ok {
+		if _, ok := remoteRefs[name]; !ok && !protected[name] {
 			updates = append(updates, RefUpdate{Name: name, OldOid: localOid, NewOid: ZeroOid})
 		}
 	}
@@ -541,79 +526,6 @@ func fetchOnce(remoteURL, repoRoot string, auth *FetchAuth, o FetchOptions) (*Fe
 		Haves:          len(haveOids),
 		PackSize:       packSize,
 	}, nil
-}
-
-// fetchInfoRefs 获取并解析 smart-http ref advertisement，返回 remoteRefs 与 serverCaps。
-func fetchInfoRefs(ctx context.Context, client *http.Client, remoteURL string, auth *FetchAuth, touch func()) (map[string]Oid, string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", remoteURL+"/info/refs?service=git-upload-pack", nil)
-	if err != nil {
-		return nil, "", fmt.Errorf("fetch: new info/refs request: %w", err)
-	}
-	req.Header.Set("Accept", "application/x-git-upload-pack-advertisement")
-	if auth != nil && auth.Type == "basic" {
-		req.SetBasicAuth(auth.Username, auth.Password)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, "", wrapTransportErr("fetch info/refs request", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", httpStatusErr("fetch info/refs", resp.StatusCode)
-	}
-
-	pr := NewPktReader(&stallReader{r: resp.Body, touch: touch})
-	svc, isFlush, err := pr.ReadPkt()
-	if err != nil {
-		return nil, "", fmt.Errorf("fetch: read service frame: %w", err)
-	}
-	if isFlush {
-		return nil, "", fmt.Errorf("fetch: unexpected flush for service frame")
-	}
-	if !strings.Contains(string(svc), "git-upload-pack") {
-		return nil, "", fmt.Errorf("fetch: unexpected service frame %q", svc)
-	}
-	_, isFlush, err = pr.ReadPkt()
-	if err != nil {
-		return nil, "", fmt.Errorf("fetch: read flush after service: %w", err)
-	}
-	if !isFlush {
-		return nil, "", fmt.Errorf("fetch: expected flush after service frame")
-	}
-
-	remoteRefs := make(map[string]Oid)
-	var serverCaps string
-	firstRef := true
-	for {
-		payload, isFlush, err := pr.ReadPkt()
-		if err != nil {
-			return nil, "", fmt.Errorf("fetch: read ref advertisement: %w", err)
-		}
-		if isFlush {
-			break
-		}
-		line := string(payload)
-		var main, capPart string
-		if i := strings.IndexByte(line, 0); i >= 0 {
-			main = line[:i]
-			capPart = line[i+1:]
-		} else {
-			main = line
-		}
-		main = strings.TrimRight(main, "\n")
-		if firstRef {
-			serverCaps = strings.TrimRight(capPart, "\n")
-			firstRef = false
-		}
-		if strings.Contains(main, "capabilities^{}") {
-			continue
-		}
-		fields := strings.Fields(main)
-		if len(fields) >= 2 {
-			remoteRefs[fields[1]] = Oid(fields[0])
-		}
-	}
-	return remoteRefs, serverCaps, nil
 }
 
 // countingReader 作为 io.Writer 统计（Tee 过来的）pack 字节数。

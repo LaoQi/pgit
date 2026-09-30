@@ -3,6 +3,8 @@ package git
 import (
 	"fmt"
 	"io"
+	"log/slog"
+	"strings"
 )
 
 // pkt-line 协议：4 字节 hex 长度前缀（含自身 4 字节）后跟 payload。
@@ -130,4 +132,64 @@ func WriteSidebandProgress(pw *PktWriter, msg string) error {
 	sw := NewSidebandWriter(pw, SidebandProgress)
 	_, err := sw.Write([]byte(msg))
 	return err
+}
+
+// SidebandReader 把 sideband-64k 多路流重组为 ch1 数据流（pack 或 report-status）。
+// 实现 io.Reader：ch1 数据按序读出；ch2（progress）丢弃或交给回调；ch3（远端错误）
+// 返回错误；flush 视为流结束（io.EOF）。
+// 用途：receive-pack 客户端把 report-status 从 sideband 里重组出来后，仍需再用
+// PktReader 在其上解析 pkt-line（服务端把 report-status 的 pkt-line 帧装在 ch1 内）。
+type SidebandReader struct {
+	pr       *PktReader
+	progress func(string)
+	buf      []byte
+	err      error
+	done     bool
+}
+
+func NewSidebandReader(pr *PktReader) *SidebandReader { return &SidebandReader{pr: pr} }
+
+// SetProgressHandler 设置 ch2 进度消息回调（nil 时走 debug 日志）。
+func (r *SidebandReader) SetProgressHandler(fn func(string)) { r.progress = fn }
+
+func (r *SidebandReader) Read(p []byte) (int, error) {
+	for len(r.buf) == 0 {
+		if r.err != nil {
+			return 0, r.err
+		}
+		if r.done {
+			return 0, io.EOF
+		}
+		payload, isFlush, err := r.pr.ReadPkt()
+		if err != nil {
+			r.err = err
+			return 0, err
+		}
+		if isFlush {
+			r.done = true
+			return 0, io.EOF
+		}
+		if len(payload) == 0 {
+			continue
+		}
+		switch payload[0] {
+		case SidebandPack:
+			r.buf = payload[1:]
+		case SidebandProgress:
+			msg := strings.TrimSpace(string(payload[1:]))
+			if r.progress != nil {
+				r.progress(msg)
+			} else {
+				slog.Debug("remote progress", "message", msg)
+			}
+		case SidebandError:
+			r.err = fmt.Errorf("remote error: %s", strings.TrimSpace(string(payload[1:])))
+			return 0, r.err
+		default:
+			slog.Debug("unknown sideband channel", "channel", payload[0])
+		}
+	}
+	n := copy(p, r.buf)
+	r.buf = r.buf[n:]
+	return n, nil
 }

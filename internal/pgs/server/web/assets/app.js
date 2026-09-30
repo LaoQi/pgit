@@ -175,7 +175,11 @@ function viewRepos(app) {
             + '<div class="toggle-form">'
             + '<div class="form-group"><label>Name</label><input id="repoName" placeholder="my-repo" autocomplete="off"></div>'
             + '<div class="form-group"><label>Description</label><input id="repoDesc" placeholder="optional" autocomplete="off"></div>'
-            + '<div class="form-group"><label class="checkbox-label"><input type="checkbox" id="repoIsMirror"> Mirror Repository</label></div>'
+            + '<div class="form-group"><label>Repository Type</label><select id="repoType">'
+            + '<option value="normal">Normal</option>'
+            + '<option value="mirror">Mirror (pull from upstream)</option>'
+            + '<option value="relay">Relay (upstream baseline + forward pushes)</option>'
+            + '</select></div>'
             + '<div id="normalFields">'
             + '<div class="form-group"><label>Default Branch</label><input id="repoDefaultBranch" value="master" placeholder="master" autocomplete="off"></div>'
             + '</div>'
@@ -188,6 +192,10 @@ function viewRepos(app) {
             + '<div class="form-group"><label>Password / Token</label><input id="mirrorPassword" type="password" placeholder="password or token" autocomplete="off"></div>'
             + '</div>'
             + '<div class="form-group"><label>Proxy (optional)</label><input id="mirrorProxy" placeholder="http://user:pass@host:port" autocomplete="off"></div>'
+            + '<div id="relayFields" style="display:none">'
+            + '<div class="form-group"><label>Forwarded refs (prefixes, comma separated)</label><input id="relayRefs" placeholder="refs/heads/, refs/tags/" autocomplete="off"></div>'
+            + '<div class="form-group"><label class="checkbox-label"><input type="checkbox" id="relayAllowDelete" checked> Allow deleting upstream refs</label></div>'
+            + '</div>'
             + '</div>'
             + '<button class="btn btn-primary btn-sm" id="createRepoBtn">Create</button>'
             + '</div></div>';
@@ -209,7 +217,9 @@ function viewRepos(app) {
                 var httpClone = window.location.protocol + '//' + host + '/' + primaryRef + '.git';
                 var sshClone = 'ssh://' + host + '/' + primaryRef + '.git';
                 var link = repoUrl(primaryRef);
-                var mirrorBadge = r.mirror ? ' <span class="badge badge-mirror">mirror</span>' : '';
+                var mirrorBadge = r.mirror
+                    ? (r.mirror.mode === 'relay' ? ' <span class="badge badge-relay">relay</span>' : ' <span class="badge badge-mirror">mirror</span>')
+                    : '';
                 var haystack = (r.name + ' ' + (r.description || '') + ' ' + aliases.join(' ')).toLowerCase();
                 html += '<div class="repo-card" data-search="' + escAttr(haystack) + '">'
                     + '<div class="name"><a href="' + escAttr(link) + '" data-link="' + escAttr(link) + '">' + esc(primaryRef) + '</a>' + mirrorBadge + '</div>'
@@ -246,10 +256,11 @@ function viewRepos(app) {
             var form = document.getElementById('newRepoForm');
             form.style.display = form.style.display === 'none' ? 'block' : 'none';
         });
-        document.getElementById('repoIsMirror').addEventListener('change', function() {
-            var isMirror = this.checked;
-            document.getElementById('normalFields').style.display = isMirror ? 'none' : 'block';
-            document.getElementById('mirrorFields').style.display = isMirror ? 'block' : 'none';
+        document.getElementById('repoType').addEventListener('change', function() {
+            var type = this.value;
+            document.getElementById('normalFields').style.display = type === 'normal' ? 'block' : 'none';
+            document.getElementById('mirrorFields').style.display = type === 'normal' ? 'none' : 'block';
+            document.getElementById('relayFields').style.display = type === 'relay' ? 'block' : 'none';
         });
         document.getElementById('mirrorAuthType').addEventListener('change', function() {
             document.getElementById('mirrorAuthFields').style.display = this.value === 'basic' ? 'block' : 'none';
@@ -258,11 +269,11 @@ function viewRepos(app) {
             var name = document.getElementById('repoName').value.trim();
             var desc = document.getElementById('repoDesc').value.trim();
             if (!name) { showToast('Name is required', 'error'); return; }
-            var isMirror = document.getElementById('repoIsMirror').checked;
-            if (isMirror) {
+            var repoType = document.getElementById('repoType').value;
+            if (repoType !== 'normal') {
                 var mirrorUrl = document.getElementById('mirrorUrl').value.trim();
                 if (!mirrorUrl) { showToast('Remote URL is required', 'error'); return; }
-                var params = { name: name, description: desc, mirrorUrl: mirrorUrl };
+                var params = { name: name, description: desc, mirrorUrl: mirrorUrl, mirrorMode: repoType === 'relay' ? 'relay' : 'pull' };
                 var interval = document.getElementById('mirrorInterval').value.trim();
                 if (interval) params.mirrorInterval = interval;
                 var authType = document.getElementById('mirrorAuthType').value;
@@ -273,8 +284,15 @@ function viewRepos(app) {
                 }
                 var proxy = document.getElementById('mirrorProxy').value.trim();
                 if (proxy) params.mirrorProxy = proxy;
+                if (repoType === 'relay') {
+                    var refs = document.getElementById('relayRefs').value.trim();
+                    if (refs) params.relayRefs = refs;
+                    params.relayAllowDelete = document.getElementById('relayAllowDelete').checked ? 'true' : 'false';
+                }
                 apiForm('POST', API + '/repos', params).then(function() {
-                    showToast('Mirror repository created, sync will start shortly');
+                    showToast(repoType === 'relay'
+                        ? 'Relay repository created: pushes are accepted on the upstream baseline and forwarded upstream'
+                        : 'Mirror repository created, sync will start shortly');
                     navigate(repoUrl(name));
                 }).catch(function(err) { showToast(err.message, 'error'); });
             } else {
@@ -310,6 +328,7 @@ function viewRepoDetail(app, ref) {
              + '<p class="text-sm text-muted mt-8">Created: ' + esc(fmtDate(repo.createdAt)) + '</p>'
              + '<p class="text-sm text-muted mt-4">Default Branch: <strong>' + esc(data.defaultBranch || 'master') + '</strong></p></div>';
 
+         var isRelay = !!(repo.mirror && repo.mirror.mode === 'relay');
          if (repo.mirror) {
              var m = repo.mirror;
              var intervalText = m.syncInterval > 0 ? 'Every ' + m.syncInterval + 's' : 'Manual only';
@@ -317,14 +336,29 @@ function viewRepoDetail(app, ref) {
              var errorHtml = m.lastError ? '<p class="text-sm mt-4" style="color:var(--red)">Last Error: ' + esc(m.lastError) + '</p>' : '';
              var authText = m.authType === 'basic' ? 'Basic Auth (' + esc(m.username || '') + ')' : 'None';
              var proxyText = m.proxy ? esc(m.proxy) : 'Direct (no proxy)';
-             html += '<div class="card"><h3>Mirror</h3>'
+             html += '<div class="card"><h3>' + (isRelay ? 'Relay upstream (baseline)' : 'Mirror') + '</h3>'
                  + '<p class="text-sm text-muted">Remote: <code>' + esc(m.remoteUrl) + '</code></p>'
-                 + '<p class="text-sm text-muted mt-4">Sync: ' + esc(intervalText) + '</p>'
+                 + '<p class="text-sm text-muted mt-4">Pull: ' + esc(intervalText) + '</p>'
                  + '<p class="text-sm text-muted mt-4">Auth: ' + esc(authText) + '</p>'
                  + '<p class="text-sm text-muted mt-4">Proxy: ' + proxyText + '</p>'
                  + '<p class="text-sm text-muted mt-4">Last Sync: ' + esc(lastSyncText) + '</p>'
                  + errorHtml
-                 + '<button class="btn btn-primary btn-sm mt-8" id="syncNowBtn">Sync Now</button></div>';
+                 + (isRelay
+                     ? '<p class="text-sm text-muted mt-4">Forwarded refs: <code>' + esc((m.refs && m.refs.length ? m.refs.join(', ') : 'refs/heads/, refs/tags/')) + '</code></p>'
+                       + '<p class="text-sm text-muted mt-4">Delete upstream refs: ' + (m.allowDelete === false ? 'disabled' : 'allowed') + '</p>'
+                     : '')
+                 + '<button class="btn btn-primary btn-sm mt-8" id="syncNowBtn">' + (isRelay ? 'Pull upstream (calibrate baseline)' : 'Sync Now') + '</button></div>';
+         }
+
+         if (isRelay) {
+             html += '<div class="card"><h3>Relay Forwarding</h3>'
+                 + '<p class="text-sm text-muted">Downstream pushes are accepted only when they continue the upstream baseline, then forwarded upstream automatically.</p>'
+                 + '<div id="relayStatusBox" class="mt-8"><div class="loading">Loading relay status...</div></div>'
+                 + '<button class="btn btn-primary btn-sm mt-8" id="relayPushBtn">Forward Now</button> '
+                 + '<button class="btn btn-danger btn-sm mt-8" id="relayAlignBtn">Align to upstream</button>'
+                 + '</div>';
+             html += '<div class="card"><h3>Forward Log</h3>'
+                 + '<div id="relayLogList" class="sync-log-list"><div class="loading">Loading forward log...</div></div></div>';
          }
 
          // 一组 HTTP/SSH 克隆框 + 别名下拉切换（多别名时），不逐别名罗列；
@@ -425,6 +459,10 @@ function viewRepoDetail(app, ref) {
                  + '<div class="form-group"><label>Password / Token</label><input id="setMirrorPassword" type="password" placeholder="leave blank to keep current" autocomplete="off"></div>'
                  + '</div>'
                  + '<div class="form-group"><label>Proxy (optional)</label><input id="setMirrorProxy" value="' + escAttr(sm.proxy || '') + '" placeholder="http://user:pass@host:port"></div>';
+             if (isRelay) {
+                 html += '<div class="form-group"><label>Forwarded refs (prefixes, comma separated)</label><input id="setRelayRefs" value="' + escAttr((sm.refs || []).join(', ')) + '" placeholder="refs/heads/, refs/tags/"></div>'
+                     + '<div class="form-group"><label class="checkbox-label"><input type="checkbox" id="setRelayAllowDelete"' + (sm.allowDelete === false ? '' : ' checked') + '> Allow deleting upstream refs</label></div>';
+             }
          }
          html += '<button class="btn btn-primary btn-sm mt-8" id="saveSettingsBtn">Save Settings</button></div>';
 
@@ -495,6 +533,11 @@ function viewRepoDetail(app, ref) {
                           params.mirrorUsername = document.getElementById('setMirrorUsername').value.trim();
                           var pw = document.getElementById('setMirrorPassword').value;
                           if (pw) params.mirrorPassword = pw;
+                      }
+                      params.mirrorMode = repo.mirror.mode === 'relay' ? 'relay' : 'pull';
+                      if (repo.mirror.mode === 'relay') {
+                          params.relayRefs = document.getElementById('setRelayRefs').value.trim();
+                          params.relayAllowDelete = document.getElementById('setRelayAllowDelete').checked ? 'true' : 'false';
                       }
                   }
                   apiForm('POST', API + '/repos/settings', params).then(function() {
@@ -589,6 +632,101 @@ function viewRepoDetail(app, ref) {
                  syncLogContainer.innerHTML = html;
              }).catch(function() {
                  syncLogContainer.innerHTML = '<div class="empty">Failed to load sync log.</div>';
+             });
+         }
+
+         // --- 中转仓库：转发状态 / 手动转发 / 对齐 / 转发日志 ---
+         var relayStatusBox = document.getElementById('relayStatusBox');
+         if (relayStatusBox) {
+             apiJSON(API + '/repos/relay-status?ref=' + enc(repo.name)).then(function(st) {
+                 var rows = [];
+                 rows.push('Upstream: <code>' + esc(st.upstream || '') + '</code>');
+                 rows.push('Upstream baseline: ' + (st.baseAt ? esc(st.baseRefs + ' refs @ ' + fmtDate(st.baseAt)) : 'not calibrated yet'));
+                 rows.push('Pending forwards: ' + (st.pendingRefs && st.pendingRefs.length
+                     ? esc(st.pendingRefs.join(', ')) + ' <span class="badge badge-sync-fail">pending</span>'
+                     : 'none'));
+                 rows.push('State: ' + esc(st.pushing ? 'forwarding...' : (st.queued ? 'queued' : 'idle')));
+                 rows.push('Last forward: ' + (st.lastPush ? esc(fmtDate(st.lastPush)) : 'never'));
+                 if (st.differ && st.differ.length) {
+                     rows.push('<span style="color:var(--red)">Out of sync with upstream: ' + esc(st.differ.join(', ')) + ' &mdash; pull before pushing</span>');
+                 }
+                 if (st.lastPushError) {
+                     rows.push('<span style="color:var(--red)">Last forward error: ' + esc(st.lastPushError) + '</span>');
+                 }
+                 relayStatusBox.innerHTML = rows.map(function(r) { return '<p class="text-sm text-muted mt-4">' + r + '</p>'; }).join('');
+             }).catch(function(err) {
+                 relayStatusBox.innerHTML = '<div class="empty">Failed to load relay status: ' + esc(err.message) + '</div>';
+             });
+         }
+
+         var relayPushBtn = document.getElementById('relayPushBtn');
+         if (relayPushBtn) {
+             relayPushBtn.addEventListener('click', function() {
+                 relayPushBtn.disabled = true;
+                 relayPushBtn.textContent = 'Forwarding...';
+                 apiForm('POST', API + '/repos/relay/push', { ref: repo.name }).then(function(data) {
+                     var r = data.relay || {};
+                     if (r.success) {
+                         showToast('Forwarded: ' + (r.refsPushed || 0) + ' pushed, ' + (r.refsDeleted || 0) + ' deleted');
+                     } else {
+                         showToast('Forward failed: ' + (r.error || 'unknown error'), 'error');
+                     }
+                     viewRepoDetail(app, ref);
+                 }).catch(function(err) {
+                     showToast(err.message, 'error');
+                     relayPushBtn.disabled = false;
+                     relayPushBtn.textContent = 'Forward Now';
+                 });
+             });
+         }
+
+         var relayAlignBtn = document.getElementById('relayAlignBtn');
+         if (relayAlignBtn) {
+             relayAlignBtn.addEventListener('click', function() {
+                 var input = prompt('Align local refs to the upstream baseline and DROP all pending forwards?\nType the repository name to confirm:', '');
+                 if (input !== repo.name) { showToast('Confirmation mismatch', 'error'); return; }
+                 apiForm('POST', API + '/repos/relay/align', { ref: repo.name, confirm: repo.name }).then(function(data) {
+                     showToast('Aligned to upstream: ' + (data.updated || 0) + ' updated, ' + (data.deleted || 0) + ' deleted');
+                     viewRepoDetail(app, ref);
+                 }).catch(function(err) { showToast(err.message, 'error'); });
+             });
+         }
+
+         var relayLogContainer = document.getElementById('relayLogList');
+         if (relayLogContainer) {
+             apiJSON(API + '/repos/relay-log?ref=' + enc(repo.name) + '&limit=20').then(function(data) {
+                 var entries = data.entries || [];
+                 if (entries.length === 0) {
+                     relayLogContainer.innerHTML = '<div class="empty">No forward history yet.</div>';
+                     return;
+                 }
+                 var html = '';
+                 entries.forEach(function(e) {
+                     var statusBadge = e.success
+                         ? '<span class="badge badge-sync-ok">OK</span>'
+                         : '<span class="badge badge-sync-fail">FAIL</span>';
+                     var triggerBadge = '<span class="badge badge-sync-trigger">' + esc(e.trigger) + '</span>';
+                     var detailParts = [];
+                     if (e.refs && e.refs.length) detailParts.push(e.refs.join(', '));
+                     if (e.refsPushed > 0) detailParts.push(e.refsPushed + ' pushed');
+                     if (e.refsDeleted > 0) detailParts.push(e.refsDeleted + ' deleted');
+                     if (e.refsRejected > 0) detailParts.push(e.refsRejected + ' rejected');
+                     if (e.upToDate) detailParts.push('up-to-date');
+                     if (e.objects > 0) detailParts.push(e.objects + ' objects');
+                     if (e.packSize > 0) detailParts.push(fmtBytes(e.packSize));
+                     if (e.duration > 0) detailParts.push(e.duration + 'ms');
+                     var detail = detailParts.length > 0 ? esc(detailParts.join(', ')) : '';
+                     var errorHtml = e.error ? '<div class="sync-log-error">' + esc(e.error) + '</div>' : '';
+                     html += '<div class="sync-log-entry">'
+                         + '<div class="sync-log-header">' + statusBadge + triggerBadge
+                         + '<span class="sync-log-time">' + esc(fmtDate(e.timestamp)) + '</span></div>'
+                         + (detail ? '<div class="sync-log-detail">' + detail + '</div>' : '')
+                         + errorHtml
+                         + '</div>';
+                 });
+                 relayLogContainer.innerHTML = html;
+             }).catch(function() {
+                 relayLogContainer.innerHTML = '<div class="empty">Failed to load forward log.</div>';
              });
          }
      }).catch(function(err) {

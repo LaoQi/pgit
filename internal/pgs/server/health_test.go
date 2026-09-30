@@ -21,7 +21,7 @@ func newTestHandler(t *testing.T, withSync bool) *HTTPHandler {
 		syncMgr = pgs.NewSyncManager(pgs.ReposManager)
 		t.Cleanup(syncMgr.Stop)
 	}
-	return NewHTTPHandler(pgs.ReposManager, settings, syncMgr)
+	return NewHTTPHandler(pgs.ReposManager, settings, syncMgr, nil)
 }
 
 func TestHealthzOK(t *testing.T) {
@@ -56,7 +56,7 @@ func TestHealthzDegradedOnMissingGitRoot(t *testing.T) {
 	pgs.InitReposManager(&pgs.RepositoriesManagerConfig{GitRoot: dir})
 	t.Cleanup(func() { pgs.ReposManager = nil })
 	settings := &pgs.Setting{}
-	h := NewHTTPHandler(pgs.ReposManager, settings, nil)
+	h := NewHTTPHandler(pgs.ReposManager, settings, nil, nil)
 
 	// 让仓库根失效
 	pgs.ReposManager.Config.GitRoot = dir + "/does-not-exist"
@@ -104,7 +104,7 @@ func TestHealthAndMetricsBypassBasicAuth(t *testing.T) {
 	pgs.InitReposManager(&pgs.RepositoriesManagerConfig{GitRoot: dir})
 	t.Cleanup(func() { pgs.ReposManager = nil })
 	settings := &pgs.Setting{HttpAuth: true, Credentials: map[string]string{"u": "p"}}
-	h := NewHTTPHandler(pgs.ReposManager, settings, nil)
+	h := NewHTTPHandler(pgs.ReposManager, settings, nil, nil)
 
 	for _, path := range []string{"/healthz", "/metrics"} {
 		rec := httptest.NewRecorder()

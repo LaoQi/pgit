@@ -60,7 +60,7 @@ func newGithubTestHandler(t *testing.T) (*HTTPHandler, *pgs.RepositoriesManager,
 	t.Cleanup(func() { pgs.ReposManager = nil })
 	syncMgr := pgs.NewSyncManager(pgs.ReposManager)
 	settings := &pgs.Setting{WebUIPrefix: "__webui"}
-	h := NewHTTPHandler(pgs.ReposManager, settings, syncMgr)
+	h := NewHTTPHandler(pgs.ReposManager, settings, syncMgr, nil)
 	t.Cleanup(syncMgr.Stop)
 	return h, pgs.ReposManager, syncMgr
 }

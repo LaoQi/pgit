@@ -27,17 +27,20 @@ type HTTPHandler struct {
 	Manager  *pgs.RepositoriesManager
 	Settings *pgs.Setting
 	Sync     *pgs.SyncManager
-	router   http.Handler
+	// Relay 管理中转仓库的 push 准入与转发上游（可为 nil，表示未启用中转能力）。
+	Relay  *pgs.RelayManager
+	router http.Handler
 
 	// packSem 限制并发的 pack 传输（clone/push），避免并发大仓库请求耗尽内存/fd。
 	packSem chan struct{}
 }
 
-func NewHTTPHandler(manager *pgs.RepositoriesManager, settings *pgs.Setting, syncMgr *pgs.SyncManager) *HTTPHandler {
+func NewHTTPHandler(manager *pgs.RepositoriesManager, settings *pgs.Setting, syncMgr *pgs.SyncManager, relayMgr *pgs.RelayManager) *HTTPHandler {
 	h := &HTTPHandler{
 		Manager:  manager,
 		Settings: settings,
 		Sync:     syncMgr,
+		Relay:    relayMgr,
 		packSem:  make(chan struct{}, settings.LimitConcurrentPacks()),
 	}
 	h.router = h.buildRouter()
@@ -85,6 +88,10 @@ func (h *HTTPHandler) buildRouter() http.Handler {
 	api.HandleFunc("POST /api/v1/repos/sync", h.syncRepo)
 	api.HandleFunc("GET /api/v1/repos/sync-log", h.syncLog)
 	api.HandleFunc("GET /api/v1/repos/mirror-status", h.mirrorStatus)
+	api.HandleFunc("POST /api/v1/repos/relay/push", h.relayPush)
+	api.HandleFunc("POST /api/v1/repos/relay/align", h.relayAlign)
+	api.HandleFunc("GET /api/v1/repos/relay-status", h.relayStatus)
+	api.HandleFunc("GET /api/v1/repos/relay-log", h.relayLog)
 	api.HandleFunc("GET /api/v1/github/repos", h.githubRepos)
 	api.HandleFunc("POST /api/v1/github/import", h.githubImport)
 
@@ -166,6 +173,10 @@ func (h *HTTPHandler) healthz(w http.ResponseWriter, r *http.Request) {
 		st := h.Sync.QueueStats()
 		checks["syncQueue"] = fmt.Sprintf("workers=%d queued=%d running=%d dropped=%d", st.Workers, st.Queued, st.Running, st.Dropped)
 	}
+	if h.Relay != nil {
+		st := h.Relay.QueueStats()
+		checks["relayQueue"] = fmt.Sprintf("workers=%d queued=%d running=%d dropped=%d", st.Workers, st.Queued, st.Running, st.Dropped)
+	}
 
 	body := map[string]any{"status": "ok", "checks": checks}
 	if status != http.StatusOK {
@@ -179,6 +190,9 @@ func (h *HTTPHandler) metrics(w http.ResponseWriter, r *http.Request) {
 	pgs.DefaultRegistry().Gauge("pgit_pack_inflight", "当前进行中的 pack 传输数。").Set(float64(pgs.InflightPacks()))
 	if h.Sync != nil {
 		h.Sync.QueueStats() // 采集同步任务队列的瞬时指标
+	}
+	if h.Relay != nil {
+		h.Relay.QueueStats() // 采集中转转发任务队列的瞬时指标
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -267,6 +281,16 @@ func (h *HTTPHandler) createRepo(w http.ResponseWriter, r *http.Request) {
 			Username:     r.FormValue("mirrorUsername"),
 			Password:     r.FormValue("mirrorPassword"),
 			Proxy:        r.FormValue("mirrorProxy"),
+			Mode:         r.FormValue("mirrorMode"),
+		}
+		if mirror.Mode == pgs.MirrorModeRelay {
+			refs, err := parseRefPrefixes(r.FormValue("relayRefs"))
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			mirror.Refs = refs
+			mirror.AllowDelete = formBoolPtr(r, "relayAllowDelete")
 		}
 		if err := h.Manager.CreateMirrorRepository(name, description, mirror); err != nil {
 			writeError(w, refErrorStatus(err), err.Error())
@@ -319,6 +343,9 @@ func (h *HTTPHandler) deleteRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.Sync != nil {
 		h.Sync.Unregister(repo.Name)
+	}
+	if h.Relay != nil {
+		h.Relay.Unregister(repo.Name)
 	}
 	if err := h.Manager.DeleteRepository(repo.Name); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -562,6 +589,116 @@ func (h *HTTPHandler) mirrorStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
+// --- 中转仓库（relay）---
+
+func (h *HTTPHandler) relayManager(w http.ResponseWriter) (*pgs.RelayManager, bool) {
+	if h.Relay == nil {
+		writeError(w, http.StatusInternalServerError, "relay manager not initialized")
+		return nil, false
+	}
+	return h.Relay, true
+}
+
+// relayPush 手动触发一次转发（把本地领先于上游基线的 ref 推给上游）。
+func (h *HTTPHandler) relayPush(w http.ResponseWriter, r *http.Request) {
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
+		return
+	}
+	rm, ok := h.relayManager(w)
+	if !ok {
+		return
+	}
+	entry, err := rm.RelayNow(repo.Name)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgs.ErrNotRelay):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, pgs.ErrSyncInProgress):
+			writeError(w, http.StatusConflict, err.Error())
+		default:
+			writeError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":    entry != nil && entry.Success,
+		"relay": entry,
+	})
+}
+
+// relayStatus 返回中转仓库的基线/待转发/最近转发状态。
+func (h *HTTPHandler) relayStatus(w http.ResponseWriter, r *http.Request) {
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
+		return
+	}
+	rm, ok := h.relayManager(w)
+	if !ok {
+		return
+	}
+	st, err := rm.Status(repo.Name)
+	if err != nil {
+		if errors.Is(err, pgs.ErrNotRelay) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// relayLog 返回最近的转发日志（最新在前）。
+func (h *HTTPHandler) relayLog(w http.ResponseWriter, r *http.Request) {
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
+		return
+	}
+	if !repo.IsRelay() {
+		writeError(w, http.StatusBadRequest, "not a relay repository")
+		return
+	}
+	limit := 50
+	if v := r.FormValue("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	entries, err := pgs.ReadRelayLog(repo.Path(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"entries": entries})
+}
+
+// relayAlign 危险操作：把本地 refs 强制对齐上游基线并丢弃待转发集合（需 confirm=仓库名）。
+func (h *HTTPHandler) relayAlign(w http.ResponseWriter, r *http.Request) {
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
+		return
+	}
+	if !repo.IsRelay() {
+		writeError(w, http.StatusBadRequest, "not a relay repository")
+		return
+	}
+	if strings.TrimSpace(r.FormValue("confirm")) != repo.Name {
+		writeError(w, http.StatusBadRequest, "confirm must equal the repository name")
+		return
+	}
+	rm, ok := h.relayManager(w)
+	if !ok {
+		return
+	}
+	result, err := rm.AlignToUpstream(repo.Name)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 // --- GitHub 导入（一次性发现 + 勾选生成镜像仓库）---
 
 // githubToken 从表单或 X-Github-Token 头取 Token（头传递可避免 Token 出现在 URL）。
@@ -584,6 +721,41 @@ func formBool(r *http.Request, name string, def bool) bool {
 	default:
 		return def
 	}
+}
+
+// formBoolPtr 解析可选布尔字段：字段缺失时返回 nil（表示「未提供，沿用默认/原值」）。
+func formBoolPtr(r *http.Request, name string) *bool {
+	if strings.TrimSpace(r.FormValue(name)) == "" {
+		return nil
+	}
+	v := formBool(r, name, true)
+	return &v
+}
+
+// parseRefPrefixes 解析 relay 的 ref 前缀白名单：接受逗号/空白/换行分隔；空表示使用默认值。
+func parseRefPrefixes(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == ' ' || r == '\t'
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		if !strings.HasPrefix(f, "refs/") {
+			return nil, fmt.Errorf("relayRefs entry %q must start with \"refs/\"", f)
+		}
+		out = append(out, f)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 // writeGithubError 把发现/导入错误映射为 HTTP 状态码：
@@ -713,6 +885,10 @@ func (h *HTTPHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		if authType == "" {
 			authType = "none"
 		}
+		mode := r.FormValue("mirrorMode")
+		if mode == "" {
+			mode = repo.Mirror.Mode // 未显式指定时保持原模式（避免改描述就把 relay 降级为镜像）
+		}
 		mirrorUpdates = &pgs.MirrorConfig{
 			RemoteURL:    r.FormValue("mirrorRemoteUrl"),
 			SyncInterval: interval,
@@ -720,6 +896,26 @@ func (h *HTTPHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
 			Username:     r.FormValue("mirrorUsername"),
 			Password:     r.FormValue("mirrorPassword"),
 			Proxy:        r.FormValue("mirrorProxy"),
+			Mode:         mode,
+		}
+		if mode == pgs.MirrorModeRelay {
+			// relay 字段「未提供=保留原值」：与 mirrorPassword 语义一致，
+			// 只改描述等无关设置时不得把白名单/删除开关静默重置为默认。
+			if strings.TrimSpace(r.FormValue("relayRefs")) == "" {
+				mirrorUpdates.Refs = repo.Mirror.Refs
+			} else {
+				refs, err := parseRefPrefixes(r.FormValue("relayRefs"))
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+				mirrorUpdates.Refs = refs
+			}
+			if strings.TrimSpace(r.FormValue("relayAllowDelete")) == "" {
+				mirrorUpdates.AllowDelete = repo.Mirror.AllowDelete
+			} else {
+				mirrorUpdates.AllowDelete = formBoolPtr(r, "relayAllowDelete")
+			}
 		}
 	}
 
@@ -736,6 +932,12 @@ func (h *HTTPHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		if oldInterval != updated.Mirror.SyncInterval {
 			h.Sync.Unregister(repo.Name)
 			h.Sync.Register(updated)
+		}
+	}
+	// 中转运行态跟随模式：切走 relay 时注销（清掉重试定时器与基线），切到 relay 时重置状态
+	if h.Relay != nil && updated != nil {
+		if !updated.IsRelay() {
+			h.Relay.Unregister(repo.Name)
 		}
 	}
 
@@ -767,8 +969,10 @@ func (h *HTTPHandler) gitTransport(w http.ResponseWriter, r *http.Request) {
 	}
 	repoPath := repo.Path()
 
-	// mirror 仓库禁止 push：拒绝 receive-pack 的广告(info/refs)与实际推送(git-receive-pack)。
-	if repo.IsMirror() {
+	// 镜像仓库禁止 push：拒绝 receive-pack 的广告(info/refs)与实际推送(git-receive-pack)。
+	// 中转仓库（relay）同样属于「带远端配置」的仓库，但它的核心能力就是接收下游推送，
+	// 因此必须放行；真正的准入由 RelayManager 在 ref 更新前把关。
+	if repo.IsMirror() && !repo.IsRelay() {
 		service := ""
 		if sub == "info/refs" {
 			service = r.FormValue("service")
@@ -786,7 +990,7 @@ func (h *HTTPHandler) gitTransport(w http.ResponseWriter, r *http.Request) {
 	case sub == "info/refs":
 		h.infoRefs(w, r, repoPath)
 	case strings.HasPrefix(sub, "git-"):
-		h.gitCommand(w, r, repoPath, strings.TrimPrefix(sub, "git-"))
+		h.gitCommand(w, r, repo, strings.TrimPrefix(sub, "git-"))
 	default:
 		http.NotFound(w, r)
 	}
@@ -809,7 +1013,8 @@ func (h *HTTPHandler) infoRefs(w http.ResponseWriter, r *http.Request, repoPath 
 	slog.Info("info-refs ok", "requestId", requestID(r.Context()), "service", service)
 }
 
-func (h *HTTPHandler) gitCommand(w http.ResponseWriter, r *http.Request, repoPath string, command string) {
+func (h *HTTPHandler) gitCommand(w http.ResponseWriter, r *http.Request, repo *pgs.Repository, command string) {
+	repoPath := repo.Path()
 	// receive-pack 请求体上限（含 packfile）；upload-pack 请求体小，无需限制。
 	if command == "receive-pack" && h.Settings.LimitPushBytes() > 0 {
 		r.Body = http.MaxBytesReader(w, r.Body, h.Settings.LimitPushBytes())
@@ -853,11 +1058,24 @@ func (h *HTTPHandler) gitCommand(w http.ResponseWriter, r *http.Request, repoPat
 			pgs.ObserveGitOperation("upload-pack", "success")
 		}
 	case "receive-pack":
-		if err := git.HandleReceivePack(repoPath, body, w); err != nil {
+		var opts []git.ReceivePackOptions
+		if repo.IsRelay() && h.Relay != nil {
+			opts = append(opts, git.ReceivePackOptions{
+				PreRefs: func(updates []git.RefUpdate) []*git.RefUpdateResult {
+					return h.Relay.Admit(repo, updates)
+				},
+			})
+		}
+		results, err := git.HandleReceivePack(repoPath, body, w, opts...)
+		if err != nil {
 			pgs.ObserveGitOperation("receive-pack", "failure")
 			slog.Error("receive-pack failed", "requestId", requestID(r.Context()), "error", err)
 		} else {
 			pgs.ObserveGitOperation("receive-pack", "success")
+			if repo.IsRelay() && h.Relay != nil {
+				// 已通过准入并更新成功的 ref 记入待转发集合（非阻塞，异步转发上游）
+				h.Relay.OnRefsUpdated(repo, results)
+			}
 		}
 	default:
 		http.Error(w, "unknown command", http.StatusBadRequest)

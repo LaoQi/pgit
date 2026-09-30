@@ -24,31 +24,39 @@ type SyncLogEntry struct {
 	PackSize     int64     `json:"packSize"`
 }
 
-func AppendSyncLog(repoPath string, entry SyncLogEntry) error {
-	path := filepath.Join(repoPath, "pgit-sync.jsonl")
+// syncLogFile / relayLogFile 是仓库目录内的 JSONL 日志文件名。
+const (
+	syncLogFile  = "pgit-sync.jsonl"
+	relayLogFile = "pgit-relay.jsonl"
+)
+
+// appendJSONL 以 JSON 行追加到 <repoPath>/<name>。
+func appendJSONL(repoPath, name string, v any) error {
+	path := filepath.Join(repoPath, name)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return json.NewEncoder(f).Encode(entry)
+	return json.NewEncoder(f).Encode(v)
 }
 
-func ReadSyncLog(repoPath string, limit int) ([]SyncLogEntry, error) {
-	path := filepath.Join(repoPath, "pgit-sync.jsonl")
-	data, err := os.ReadFile(path)
+// readJSONL 读取 <repoPath>/<name> 的 JSON 行，最新在前，最多 limit 条（limit<=0 表示不限）。
+// 文件不存在返回空切片；无法解析的行跳过（容忍半行写入）。
+func readJSONL[T any](repoPath, name string, limit int) ([]T, error) {
+	data, err := os.ReadFile(filepath.Join(repoPath, name))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []SyncLogEntry{}, nil
+			return []T{}, nil
 		}
 		return nil, err
 	}
-	entries := make([]SyncLogEntry, 0)
+	entries := make([]T, 0)
 	for _, line := range bytes.Split(data, []byte("\n")) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
-		var entry SyncLogEntry
+		var entry T
 		if err := json.Unmarshal(line, &entry); err != nil {
 			continue
 		}
@@ -61,4 +69,12 @@ func ReadSyncLog(repoPath string, limit int) ([]SyncLogEntry, error) {
 		entries = entries[:limit]
 	}
 	return entries, nil
+}
+
+func AppendSyncLog(repoPath string, entry SyncLogEntry) error {
+	return appendJSONL(repoPath, syncLogFile, entry)
+}
+
+func ReadSyncLog(repoPath string, limit int) ([]SyncLogEntry, error) {
+	return readJSONL[SyncLogEntry](repoPath, syncLogFile, limit)
 }

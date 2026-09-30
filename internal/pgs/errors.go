@@ -10,6 +10,8 @@ var (
 	ErrAliasNotFound = errors.New("repository alias not found")
 	// ErrNotMirror 目标仓库不是镜像仓库。
 	ErrNotMirror = errors.New("repository is not a mirror")
+	// ErrNotRelay 目标仓库不是中转仓库。
+	ErrNotRelay = errors.New("repository is not a relay")
 	// ErrSyncInProgress 已有同步在跑（或在队列中排队）。
 	ErrSyncInProgress = errors.New("sync already in progress")
 	// ErrRepoExist 同名仓库已存在。

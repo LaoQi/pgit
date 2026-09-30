@@ -163,7 +163,9 @@ func WalkReachable(store ObjectStore, rootOids []Oid, haveOids []Oid, visit func
 	if len(haveOids) > 0 {
 		queue := make([]Oid, 0, len(haveOids))
 		for _, oid := range haveOids {
-			if !oid.IsZero() {
+			// 只接受合法非零 oid：畸形输入（空串/长度不对）直接忽略，
+			// 否则 ObjectStore 实现会因非法 oid 出错甚至 panic。
+			if !oid.IsZero() && oid.Valid() {
 				queue = append(queue, oid)
 			}
 		}
@@ -189,7 +191,7 @@ func WalkReachable(store ObjectStore, rootOids []Oid, haveOids []Oid, visit func
 	for len(pending) > 0 {
 		oid := pending[0]
 		pending = pending[1:]
-		if oid.IsZero() || visited[oid] || exclude[oid] {
+		if oid.IsZero() || !oid.Valid() || visited[oid] || exclude[oid] {
 			continue
 		}
 		objType, size, err := store.Stat(oid)
@@ -225,6 +227,10 @@ func WalkReachable(store ObjectStore, rootOids []Oid, haveOids []Oid, visit func
 
 // refsOf 返回对象引用的子对象 oid（commit 的 tree/parents、tree 的 entries、tag 的 object）。
 // 解析失败或无引用时返回 nil（遍历不因此中止）。
+//
+// 只接受形状合法的非零 oid：畸形对象（例如 "parent <空>" 的伪造 commit，
+// 客户端 push 上来不受 fsck 约束）不得把空/非法 oid 带进可达性遍历，
+// 否则 ObjectStore 会在非法 oid 上失败。
 func refsOf(obj *RawObject) []Oid {
 	var out []Oid
 	switch obj.Type {
@@ -233,13 +239,9 @@ func refsOf(obj *RawObject) []Oid {
 		if err != nil {
 			return nil
 		}
-		if !c.Tree.IsZero() {
-			out = append(out, c.Tree)
-		}
+		out = appendRef(out, c.Tree)
 		for _, p := range c.Parents {
-			if !p.IsZero() {
-				out = append(out, p)
-			}
+			out = appendRef(out, p)
 		}
 	case ObjTree:
 		tr, err := ParseTree(obj.Content)
@@ -247,18 +249,25 @@ func refsOf(obj *RawObject) []Oid {
 			return nil
 		}
 		for _, e := range tr.Entries {
-			if e.Mode != gitlinkMode && !e.Oid.IsZero() {
-				out = append(out, e.Oid)
+			if e.Mode == gitlinkMode {
+				continue
 			}
+			out = appendRef(out, e.Oid)
 		}
 	case ObjTag:
 		tg, err := ParseTag(obj.Content)
 		if err != nil {
 			return nil
 		}
-		if !tg.Object.IsZero() {
-			out = append(out, tg.Object)
-		}
+		out = appendRef(out, tg.Object)
 	}
 	return out
+}
+
+// appendRef 仅在 oid 形状合法且非零时追加（ZeroOid 是合法 hex，但表示「无引用」）。
+func appendRef(out []Oid, oid Oid) []Oid {
+	if oid.IsZero() || !oid.Valid() {
+		return out
+	}
+	return append(out, oid)
 }

@@ -103,7 +103,7 @@ func TestListReposSortedByLastCommitTime(t *testing.T) {
 
 	pgs.InitReposManager(&pgs.RepositoriesManagerConfig{GitRoot: dir})
 	t.Cleanup(func() { pgs.ReposManager = nil })
-	h := NewHTTPHandler(pgs.ReposManager, &pgs.Setting{WebUIPrefix: "__webui"}, nil)
+	h := NewHTTPHandler(pgs.ReposManager, &pgs.Setting{WebUIPrefix: "__webui"}, nil, nil)
 
 	rec := do(h, http.MethodGet, "/api/v1/repos")
 	if rec.Code != http.StatusOK {

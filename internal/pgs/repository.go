@@ -16,6 +16,13 @@ import (
 
 var GitRoot string
 
+// MirrorConfig 描述仓库的远端配置，被两种模式共用：
+//
+//   - 镜像仓库（Mode 为空或 "pull"，默认）：按 SyncInterval 从上游拉取，禁止 push
+//   - 中转仓库（Mode == "relay"）：以上游为基线，允许下游快进推送并转发到上游
+//
+// 两种模式共用 RemoteURL/Auth/Proxy/LastSync/LastError；relay 额外使用
+// Refs/AllowDelete/LastPush/LastPushError/PendingRefs。
 type MirrorConfig struct {
 	RemoteURL    string    `json:"remoteUrl"`
 	SyncInterval int       `json:"syncInterval"`
@@ -25,6 +32,21 @@ type MirrorConfig struct {
 	Proxy        string    `json:"proxy,omitempty"`
 	LastSync     time.Time `json:"lastSync,omitempty"`
 	LastError    string    `json:"lastError,omitempty"`
+
+	// Mode 见类型注释；缺省（空）等价 "pull"，老元数据因此无需迁移。
+	Mode string `json:"mode,omitempty"`
+
+	// --- 以下仅中转仓库（relay）使用 ---
+
+	// Refs 是准入与转发的 ref 前缀白名单，空表示默认（refs/heads/ + refs/tags/）。
+	Refs []string `json:"refs,omitempty"`
+	// AllowDelete 控制是否允许把下游的 ref 删除转发到上游，nil 表示允许（默认）。
+	AllowDelete *bool `json:"allowDelete,omitempty"`
+	// LastPush/LastPushError 是最近一次转发上游的结果（与拉取侧的 LastSync/LastError 分开）。
+	LastPush      time.Time `json:"lastPush,omitempty"`
+	LastPushError string    `json:"lastPushError,omitempty"`
+	// PendingRefs 是已通过准入但尚未成功转发到上游的 ref，落盘以便重启后补推。
+	PendingRefs []string `json:"pendingRefs,omitempty"`
 }
 
 type Repository struct {
@@ -55,6 +77,16 @@ func (repo *Repository) Snapshot() *Repository {
 	}
 	if repo.Mirror != nil {
 		m := *repo.Mirror
+		if repo.Mirror.Refs != nil {
+			m.Refs = append([]string(nil), repo.Mirror.Refs...)
+		}
+		if repo.Mirror.PendingRefs != nil {
+			m.PendingRefs = append([]string(nil), repo.Mirror.PendingRefs...)
+		}
+		if repo.Mirror.AllowDelete != nil {
+			v := *repo.Mirror.AllowDelete
+			m.AllowDelete = &v
+		}
 		c.Mirror = &m
 	}
 	return &c

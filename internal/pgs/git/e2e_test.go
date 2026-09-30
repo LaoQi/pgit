@@ -334,7 +334,7 @@ func TestGitFetchHTTPIncrementalE2E(t *testing.T) {
 	mux.HandleFunc("/repo.git/git-receive-pack", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
 		w.WriteHeader(http.StatusOK)
-		if err := HandleReceivePack(gitRoot, r.Body, w); err != nil {
+		if _, err := HandleReceivePack(gitRoot, r.Body, w); err != nil {
 			t.Logf("receive-pack: %v", err)
 		}
 	})

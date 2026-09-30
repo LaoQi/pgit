@@ -276,6 +276,60 @@ func SetSyncQueueStats(st QueueStats) {
 	reg.Gauge("pgit_sync_queue_capacity", "镜像同步任务队列容量。").Set(float64(st.Capacity))
 }
 
+// ObserveRelayAdmit 记录中转仓库一次 push 准入判定的结果（accepted/rejected/error）。
+func ObserveRelayAdmit(repo, result string) {
+	DefaultRegistry().Counter(
+		"pgit_relay_admit_total",
+		"中转仓库 push 准入判定总次数，按仓库与结果分类。",
+		"repo", "result",
+	).Inc(repo, result)
+}
+
+// ObserveRelayPush 记录一次转发上游的结果。
+func ObserveRelayPush(repo string, ok bool, pushed, deleted, rejected, objects int, durationMs, packSize int64) {
+	result := "failure"
+	if ok {
+		result = "success"
+	}
+	reg := DefaultRegistry()
+	reg.Counter("pgit_relay_pushes_total", "中转仓库转发上游总次数，按仓库与结果分类。", "repo", "result").Inc(repo, result)
+	reg.Counter("pgit_relay_refs_total", "中转仓库处置（推送成功/删除成功/被拒）的 ref 累计数，按仓库与动作分类。", "repo", "action").
+		Add(float64(pushed), repo, "pushed")
+	reg.Counter("pgit_relay_refs_total", "中转仓库处置（推送成功/删除成功/被拒）的 ref 累计数，按仓库与动作分类。", "repo", "action").
+		Add(float64(deleted), repo, "deleted")
+	reg.Counter("pgit_relay_refs_total", "中转仓库处置（推送成功/删除成功/被拒）的 ref 累计数，按仓库与动作分类。", "repo", "action").
+		Add(float64(rejected), repo, "rejected")
+	reg.Counter("pgit_relay_objects_total", "中转仓库转发上游累计发送对象数。", "repo").Add(float64(objects), repo)
+	reg.Gauge("pgit_relay_push_duration_ms", "最近一次转发上游的耗时（毫秒）。", "repo").Set(float64(durationMs), repo)
+	reg.Gauge("pgit_relay_push_pack_bytes", "最近一次转发上游的 pack 字节数。", "repo").Set(float64(packSize), repo)
+	if ok {
+		reg.Gauge("pgit_relay_last_push_timestamp_seconds", "最近一次转发成功的时间戳（Unix 秒）。", "repo").
+			Set(float64(time.Now().Unix()), repo)
+	}
+}
+
+// ObserveRelayPending 记录中转仓库当前待转发的 ref 数。
+func ObserveRelayPending(repo string, n int) {
+	DefaultRegistry().Gauge("pgit_relay_pending_refs", "中转仓库待转发（尚未成功推送到上游）的 ref 数。", "repo").Set(float64(n), repo)
+}
+
+// ObserveRelayTaskDropped 记录未执行即被丢弃的转发任务（队列满或队列已停止）。
+func ObserveRelayTaskDropped(trigger string) {
+	DefaultRegistry().Counter(
+		"pgit_relay_tasks_dropped_total",
+		"未执行即被丢弃的中转转发任务总数，按触发来源分类。",
+		"trigger",
+	).Inc(trigger)
+}
+
+// SetRelayQueueStats 刷新中转转发任务队列的瞬时指标。
+func SetRelayQueueStats(st QueueStats) {
+	reg := DefaultRegistry()
+	reg.Gauge("pgit_relay_queue_depth", "中转转发任务队列中等待执行的任务数。").Set(float64(st.Queued))
+	reg.Gauge("pgit_relay_tasks_running", "当前正在执行的中转转发任务数。").Set(float64(st.Running))
+	reg.Gauge("pgit_relay_workers", "中转转发任务队列的 worker 数（并发上限）。").Set(float64(st.Workers))
+}
+
 // SetReposTotal 记录仓库总数。
 func SetReposTotal(n int) {
 	DefaultRegistry().Gauge("pgit_repositories_total", "仓库总数。").Set(float64(n))

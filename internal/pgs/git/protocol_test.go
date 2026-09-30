@@ -394,7 +394,7 @@ func TestServeReceivePackRoundTrip(t *testing.T) {
 
 	// ServeReceivePack
 	var outBuf bytes.Buffer
-	if err := ServeReceivePack(dir, &inBuf, &outBuf); err != nil {
+	if _, err := ServeReceivePack(dir, &inBuf, &outBuf); err != nil {
 		t.Fatalf("ServeReceivePack: %v", err)
 	}
 
@@ -470,7 +470,7 @@ func TestServeReceivePackNoSideband(t *testing.T) {
 	inBuf.Write(packBuf.Bytes())
 
 	var outBuf bytes.Buffer
-	if err := ServeReceivePack(dir, &inBuf, &outBuf); err != nil {
+	if _, err := ServeReceivePack(dir, &inBuf, &outBuf); err != nil {
 		t.Fatalf("ServeReceivePack: %v", err)
 	}
 
@@ -515,7 +515,7 @@ func TestServeReceivePackDeleteRef(t *testing.T) {
 	inw.WriteFlush()
 
 	var outBuf bytes.Buffer
-	if err := ServeReceivePack(dir, &inBuf, &outBuf); err != nil {
+	if _, err := ServeReceivePack(dir, &inBuf, &outBuf); err != nil {
 		t.Fatalf("ServeReceivePack: %v", err)
 	}
 
@@ -567,7 +567,7 @@ func TestServeUploadPackClientAborted(t *testing.T) {
 	}
 
 	// SSH 单连接入口同样透传该哨兵（advertise 已由调用方写出）
-	err = HandleSSHSession("git-upload-pack", dir, &flushOnlyConn{})
+	_, err = HandleSSHSession("git-upload-pack", dir, &flushOnlyConn{})
 	if !errors.Is(err, ErrClientAborted) {
 		t.Fatalf("HandleSSHSession err = %v, want ErrClientAborted", err)
 	}
@@ -590,7 +590,7 @@ func TestHandleSSHSessionUnsupportedArchive(t *testing.T) {
 	dir, _ := makeRepoWithCommit(t)
 
 	// git-upload-archive 本版不支持，应返回错误
-	err := HandleSSHSession("git-upload-archive", dir, nil)
+	_, err := HandleSSHSession("git-upload-archive", dir, nil)
 	if err == nil {
 		t.Fatal("git-upload-archive should return error")
 	}
@@ -599,7 +599,7 @@ func TestHandleSSHSessionUnsupportedArchive(t *testing.T) {
 func TestHandleSSHSessionUnknownService(t *testing.T) {
 	dir, _ := makeRepoWithCommit(t)
 
-	err := HandleSSHSession("git-unknown-pack", dir, nil)
+	_, err := HandleSSHSession("git-unknown-pack", dir, nil)
 	if err == nil {
 		t.Fatal("unknown service should return error")
 	}
@@ -773,7 +773,7 @@ func TestServeReceivePackReportStatusFlush(t *testing.T) {
 			inBuf.Write(packBuf.Bytes())
 
 			var outBuf bytes.Buffer
-			if err := ServeReceivePack(dir, &inBuf, &outBuf); err != nil {
+			if _, err := ServeReceivePack(dir, &inBuf, &outBuf); err != nil {
 				t.Fatalf("ServeReceivePack: %v", err)
 			}
 
@@ -849,7 +849,7 @@ func TestServeReceivePackEmptyCommandList(t *testing.T) {
 	}
 
 	var outBuf bytes.Buffer
-	if err := ServeReceivePack(dir, &inBuf, &outBuf); err != nil {
+	if _, err := ServeReceivePack(dir, &inBuf, &outBuf); err != nil {
 		t.Fatalf("ServeReceivePack empty command list: %v", err)
 	}
 
