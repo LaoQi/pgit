@@ -3,6 +3,23 @@
 pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；变更过程、缺陷修复、
 性能调优与历史决策收录于此。条目按时间倒序，括注提交短 hash。
 
+## 2026-10-14
+
+**feat(docs): 新增内建 markdown 文档端点 `GET /api/v1/guide.md`（面向 agent 的接口与用法说明）**
+- 新增 `internal/pgs/server/guide.md`（内容真源，`go:embed` 嵌入）与 `guide.go`（`GuidePath` + `serveGuide`）：
+  端点返回 markdown 原文（`Content-Type: text/markdown; charset=utf-8`、`Cache-Control: no-cache`），
+  不做 HTML 渲染，供 agent 一次读取即掌握「服务是什么 / 最短上手 / git 访问 / 管理 API / 限制 / 故障排查」。
+- 只读、随二进制发布：磁盘上没有可写的副本，也没有写接口；文档描述的就是当前运行的这份软件，
+  改内容须改源码并重新构建部署（与 tower 的内建 `tower.md` 同思路）。
+- 路由挂在管理 API mux（`http.go`），与 `/api/v1/` 共用中间件（请求 ID、请求日志、`httpAuth` 开启时的
+  Basic 鉴权）；因路径在 `/api/v1/` 子树内，不存在与 `{alias}.git` 兜底路由的冲突。
+- 文档内容：三种仓库形态与写纪律（镜像禁 push；relay「先 fetch 再 push」的准入规则、`stale base` /
+  非快进 / 白名单 / 删除语义与异步转发）、git URL 形态与认证假设、管理 API 分组速查 + 常用与危险示例
+  （含 GitHub 导入的命名与 Token 落盘规则）、运维端点、WebUI 路由、限制项与存储布局、故障排查表。
+- 防漂移测试 `guide_test.go`：正文必须等于 embed 原文；文档里出现的每个 `/api/v1/*` 路径都拿去打真实路由，
+  命中 404 即失败（抽样验证：故意改坏一个路径会报 `guide mentions ... does not exist`）；
+  `httpAuth` 下未带凭据返回 401；`router_test.go` 补一条该端点的路由命中用例。
+
 ## 2026-09-30
 
 **feat(relay): 新增中转仓库类型（上游为基线，下游推送自动转发上游）**

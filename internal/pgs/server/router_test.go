@@ -37,6 +37,7 @@ func TestRouterAdminRoutesNotFallingThrough(t *testing.T) {
 		wantNot404   bool
 	}{
 		{http.MethodGet, "/api/v1/", true},
+		{http.MethodGet, "/api/v1/guide.md", true},
 		{http.MethodGet, "/api/v1/repos", true},
 		{http.MethodPost, "/api/v1/repos", true},
 		{http.MethodGet, "/api/v1/repos/info?ref=r1", true},

@@ -70,6 +70,8 @@ func (h *HTTPHandler) buildRouter() http.Handler {
 	// 这样多段别名（owner/repo）与含斜杠的别名在全部接口上都不需要百分号编码。
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/{$}", h.serveAPIDocs)
+	// 内建 markdown 文档（接口 + 用法），供 agent 直接读取；与 /api/v1/ 同一组中间件。
+	api.HandleFunc("GET "+GuidePath, h.serveGuide)
 	api.HandleFunc("GET /api/v1/repos", h.listRepos)
 	api.HandleFunc("POST /api/v1/repos", h.createRepo)
 	api.HandleFunc("GET /api/v1/repos/info", h.getRepo)
