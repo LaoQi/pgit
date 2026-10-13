@@ -14,7 +14,7 @@ personal git server
 * Pure Go git wire protocol v0 (clone/push over HTTP smart-http + SSH), no `git` binary required
 * Path mapping: decouple git access URLs from storage directories via aliases
 * Built-in WebUI (embedded, exportable to disk for customization)
-* Built-in markdown guide for agents (`GET /api/v1/guide.md`: interfaces, usage, limits)
+* Built-in markdown guide for agents (`GET /api/v1/guide.md`: interfaces, usage)
 * Mirror repositories: scheduled/manual sync from remote HTTP/HTTPS repos with JSONL sync log
 * Repository browsing API (tree/blob/archive/commits) in pure Go
 * HTTP Basic Auth optional
