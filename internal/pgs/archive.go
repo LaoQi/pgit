@@ -217,7 +217,7 @@ func (am *ArchiveManager) Snapshots(repoName string) ([]ArchiveRecord, error) {
 	entries, err := os.ReadDir(repoDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return []ArchiveRecord{}, nil // 空数组而非 null：调用方无需判空即可遍历
 		}
 		return nil, err
 	}
