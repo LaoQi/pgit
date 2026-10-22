@@ -94,6 +94,11 @@ func (h *HTTPHandler) buildRouter() http.Handler {
 	api.HandleFunc("POST /api/v1/repos/relay/align", h.relayAlign)
 	api.HandleFunc("GET /api/v1/repos/relay-status", h.relayStatus)
 	api.HandleFunc("GET /api/v1/repos/relay-log", h.relayLog)
+	api.HandleFunc("GET /api/v1/repos/archives", h.listArchives)
+	api.HandleFunc("POST /api/v1/repos/archives", h.createArchive)
+	api.HandleFunc("DELETE /api/v1/repos/archives", h.deleteArchive)
+	api.HandleFunc("GET /api/v1/repos/archives/bundle", h.downloadArchive)
+	api.HandleFunc("POST /api/v1/repos/archives/restore", h.restoreArchive)
 	api.HandleFunc("GET /api/v1/github/repos", h.githubRepos)
 	api.HandleFunc("POST /api/v1/github/import", h.githubImport)
 
@@ -1246,4 +1251,174 @@ func requestLogger(next http.Handler) http.Handler {
 			slog.Info("http request", attrs...)
 		}
 	})
+}
+
+// --- 镜像归档（bundle 快照）---
+
+// listArchives 列出某仓库的归档包（镜像/中转仓库在上游删除 ref 或非快进覆盖前生成）。
+func (h *HTTPHandler) listArchives(w http.ResponseWriter, r *http.Request) {
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
+		return
+	}
+	am := h.Manager.Archive()
+	if am == nil {
+		writeError(w, http.StatusInternalServerError, "archive manager not initialized")
+		return
+	}
+	records, err := am.Snapshots(repo.Name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	enabled, dir, keep, maxBytes := h.Settings.ArchiveConf()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"repo":     repo.Name,
+		"enabled":  enabled,
+		"dir":      dir,
+		"keep":     keep,
+		"maxBytes": maxBytes,
+		"total":    len(records),
+		"archives": records,
+	})
+}
+
+// restoreArchive 把某个归档包的 refs/对象恢复到目标仓库（危险操作：会覆盖同名 ref）。
+// 要求 confirm == 仓库 canonical name；归档包必须位于本实例的归档目录内。
+func (h *HTTPHandler) restoreArchive(w http.ResponseWriter, r *http.Request) {
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
+		return
+	}
+	am := h.Manager.Archive()
+	if am == nil {
+		writeError(w, http.StatusInternalServerError, "archive manager not initialized")
+		return
+	}
+	id := strings.TrimSpace(r.FormValue("archive"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "archive is required")
+		return
+	}
+	if confirm := strings.TrimSpace(r.FormValue("confirm")); confirm != repo.Name {
+		writeError(w, http.StatusBadRequest, "confirm must equal repository name: "+repo.Name)
+		return
+	}
+	res, rec, err := am.Restore(repo.Path(), repo.Name, id)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgs.ErrArchiveNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+		default:
+			writeError(w, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+	out := map[string]interface{}{
+		"ok":       true,
+		"restored": res,
+		"archive":  rec,
+	}
+	if repo.IsMirror() {
+		out["note"] = "restored refs can be overwritten again by the next mirror sync " +
+			"if upstream still has the rewritten history; fix upstream or set mirrorInterval=0 to pause syncing"
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// createArchive 立即为仓库生成一份完整快照（手动归档，需 mirrorArchive 关闭也可用）。
+func (h *HTTPHandler) createArchive(w http.ResponseWriter, r *http.Request) {
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
+		return
+	}
+	am := h.Manager.Archive()
+	if am == nil {
+		writeError(w, http.StatusInternalServerError, "archive manager not initialized")
+		return
+	}
+	rec, err := am.SnapshotManual(repo.Name, repo.Path())
+	if err != nil {
+		if errors.Is(err, pgs.ErrArchiveNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "archive": rec})
+}
+
+// downloadArchive 下载归档 bundle 文件（application/octet-stream，支持 Range）。
+func (h *HTTPHandler) downloadArchive(w http.ResponseWriter, r *http.Request) {
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
+		return
+	}
+	am := h.Manager.Archive()
+	if am == nil {
+		writeError(w, http.StatusInternalServerError, "archive manager not initialized")
+		return
+	}
+	id := strings.TrimSpace(r.FormValue("archive"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "archive is required")
+		return
+	}
+	_, path, err := am.Find(repo.Name, id)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgs.ErrArchiveNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+		default:
+			writeError(w, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", repo.Name+"-"+id+".bundle"))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeContent(w, r, "", st.ModTime(), f)
+}
+
+// deleteArchive 删除单个归档包（危险操作：需 confirm == canonical name）。
+func (h *HTTPHandler) deleteArchive(w http.ResponseWriter, r *http.Request) {
+	repo, _, ok := h.resolveRepo(w, r)
+	if !ok {
+		return
+	}
+	am := h.Manager.Archive()
+	if am == nil {
+		writeError(w, http.StatusInternalServerError, "archive manager not initialized")
+		return
+	}
+	id := strings.TrimSpace(r.FormValue("archive"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "archive is required")
+		return
+	}
+	if confirm := strings.TrimSpace(r.FormValue("confirm")); confirm != repo.Name {
+		writeError(w, http.StatusBadRequest, "confirm must equal repository name: "+repo.Name)
+		return
+	}
+	if err := am.Delete(repo.Name, id); err != nil {
+		if errors.Is(err, pgs.ErrArchiveNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "deleted": id})
 }

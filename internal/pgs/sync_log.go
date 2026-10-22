@@ -22,6 +22,12 @@ type SyncLogEntry struct {
 	Wants        int       `json:"wants"`
 	Haves        int       `json:"haves"`
 	PackSize     int64     `json:"packSize"`
+	// Archived 是本次被归档（随后仍会覆盖本地 ref）的破坏性 ref。
+	Archived []string `json:"archived,omitempty"`
+	// ArchivedSkipped 是因归档失败而被拒绝更新的破坏性 ref（本地 ref 保持原值）。
+	ArchivedSkipped []string `json:"archivedSkipped,omitempty"`
+	// ArchiveError 是归档失败原因（非空时 ArchivedSkipped 非空）。
+	ArchiveError string `json:"archiveError,omitempty"`
 }
 
 // syncLogFile / relayLogFile 是仓库目录内的 JSONL 日志文件名。

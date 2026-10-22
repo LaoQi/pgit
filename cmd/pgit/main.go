@@ -16,7 +16,7 @@ import (
 	"pgit/internal/pgs/server"
 )
 
-const Version = "1.0.0"
+const Version = "1.1.0"
 
 // shutdownGrace 是优雅关闭的最长等待时间（超过则强制断开残留连接）。
 const shutdownGrace = 30 * time.Second
@@ -41,6 +41,8 @@ func main() {
 	version := parser.Flag("v", "version", &argparse.Options{Help: "show version"})
 	output := parser.Flag("d", "default", &argparse.Options{Help: "print default config, eg: `pgit -d > config.json`"})
 	exportWeb := parser.String("w", "export-webui", &argparse.Options{Default: "", Help: "export embedded webui files to dir, eg: `pgit -w ./webui`"})
+	restore := parser.String("", "restore", &argparse.Options{Default: "", Help: "restore a repository from a bundle snapshot, eg: `pgit -c config.json --restore /path/x.bundle --repo my-repo`"})
+	restoreRepo := parser.String("", "repo", &argparse.Options{Default: "", Help: "target repository (canonical name or alias) for --restore"})
 	err := parser.Parse(os.Args)
 	if err != nil {
 		fmt.Print(parser.Usage(err))
@@ -79,6 +81,29 @@ func main() {
 	}
 
 	pgs.InitReposManager(&pgs.RepositoriesManagerConfig{GitRoot: pgs.Settings.GitRoot})
+
+	// 归档恢复（离线运维入口）：--restore <bundle> --repo <name|alias>
+	// 行为与 HTTP 的 POST /api/v1/repos/archives/restore 同一条代码路径：
+	// 对象解包合并（幂等）+ 归档中的 refs 覆盖写回 + HEAD 指向归档记录的默认分支。
+	if *restore != "" {
+		if *restoreRepo == "" {
+			fmt.Println("--restore requires --repo <name|alias>")
+			os.Exit(ConfigError)
+		}
+		repo, err := pgs.ReposManager.Resolve(*restoreRepo)
+		if err != nil {
+			fmt.Printf("resolve repository %q failed: %s\n", *restoreRepo, err)
+			os.Exit(Failed)
+		}
+		res, err := pgs.RestoreBundleToRepo(repo, *restore)
+		if err != nil {
+			fmt.Printf("restore failed: %s\n", err)
+			os.Exit(Failed)
+		}
+		fmt.Printf("restored %s from %s: objects=%d refs=%v head=%s\n",
+			repo.Name, *restore, res.Objects, res.Refs, res.Head)
+		os.Exit(NoError)
+	}
 
 	syncMgr := pgs.NewSyncManager(pgs.ReposManager)
 	relayMgr := pgs.NewRelayManager(pgs.ReposManager)

@@ -36,6 +36,8 @@ type RepositoriesManager struct {
 	byRefFolded map[string]*Repository
 	// namingConflicts 记录启动扫描发现的重名冲突（涉及的仓库已全部禁用）。
 	namingConflicts []string
+	// archive 为镜像/中转仓库的破坏性更新归档器（配置关闭时不生成任何文件）。
+	archive *ArchiveManager
 }
 
 var ReposManager *RepositoriesManager
@@ -49,8 +51,17 @@ func InitReposManager(config *RepositoriesManagerConfig) {
 		byName:      map[string]*Repository{},
 		byAlias:     map[string]*Repository{},
 		byRefFolded: map[string]*Repository{},
+		archive:     NewArchiveManager(Settings),
 	}
 	ReposManager.CheckRepositories()
+}
+
+// Archive 返回归档管理器（用于归档列表/恢复接口；未初始化时为 nil）。
+func (r *RepositoriesManager) Archive() *ArchiveManager {
+	if r == nil {
+		return nil
+	}
+	return r.archive
 }
 
 // root 返回本 manager 使用的存储根目录。
@@ -510,6 +521,7 @@ func (r *RepositoriesManager) SyncRepository(name string) (*git.FetchResult, err
 	}
 	m := *repo.Mirror
 	repoPath := repo.Path()
+	repoName := repo.Name // 归档目录用它（canonical name），不用调用方传入的 ref
 	r.mu.RUnlock()
 
 	var auth *git.FetchAuth
@@ -528,14 +540,26 @@ func (r *RepositoriesManager) SyncRepository(name string) (*git.FetchResult, err
 		// 中转仓库：已准入但未转发上游的 ref 本地领先，不能被镜像语义的拉取回退/删除。
 		opts.ProtectRefs = append([]string(nil), m.PendingRefs...)
 	}
+	if r.archive != nil && r.archive.Enabled() {
+		// 破坏性更新（上游删 ref / 非快进覆盖）前先归档：归档失败则这些 ref 不更新。
+		// 回调在 fetch 内、写 ref 之前执行，此时本地 ref 仍是覆盖前的值。
+		opts.OnDestructive = func(ev git.DestructiveEvent) error {
+			_, err := r.archive.Snapshot(repoName, repoPath, ev)
+			return err
+		}
+	}
 	result, fetchErr := git.FetchRemoteWithOptions(m.RemoteURL, repoPath, auth, opts)
 
 	r.mu.Lock()
 	if repo, err := r.getByNameLocked(name); err == nil && repo.IsMirror() {
 		repo.Mirror.LastSync = time.Now()
-		if fetchErr != nil {
+		switch {
+		case fetchErr != nil:
 			repo.Mirror.LastError = fetchErr.Error()
-		} else {
+		case result != nil && result.ArchiveError != "":
+			// 归档失败 → 破坏性 ref 保持不变，需要显式告警（否则看起来是"同步成功"）
+			repo.Mirror.LastError = "archive failed, destructive refs kept unchanged: " + result.ArchiveError
+		default:
 			repo.Mirror.LastError = ""
 		}
 		if err := repo.SaveMetadata(); err != nil {

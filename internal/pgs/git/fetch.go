@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -63,6 +64,26 @@ type FetchOptions struct {
 	// 镜像语义的 fetch 会把它们回退到上游值（上游没有则删除），必须跳过，
 	// 否则下游刚推上来的提交会被一次拉取抹掉。
 	ProtectRefs []string
+
+	// OnDestructive 在写入「会丢弃本地历史」的 ref 更新（删除 / 非快进覆盖）之前回调，
+	// 供调用方先把当前仓库快照归档。返回 error 表示归档失败：这些 ref 保持本地原值
+	// （fail-safe），其余 ref 照常更新；结果经 FetchResult.DestructiveSkipped/ArchiveError 回报。
+	OnDestructive func(DestructiveEvent) error
+}
+
+// DestructiveRef 是一次会丢弃本地历史的 ref 更新。
+type DestructiveRef struct {
+	Name   string `json:"name"`
+	OldOid Oid    `json:"oldOid"`
+	NewOid Oid    `json:"newOid,omitempty"`
+	// Reason 为 "delete"（上游删除了该 ref）或 "non-fast-forward"（上游历史被重写）。
+	Reason string `json:"reason"`
+}
+
+// DestructiveEvent 是 OnDestructive 的载荷：Refs 为本次将被覆盖/删除的 ref 列表。
+type DestructiveEvent struct {
+	RepoRoot string
+	Refs     []DestructiveRef
 }
 
 func (o FetchOptions) withDefaults() FetchOptions {
@@ -112,6 +133,13 @@ type FetchResult struct {
 	Wants          int   // want oid 数
 	Haves          int   // have oid 数
 	PackSize       int64 // pack 数据字节数
+
+	// Destructive 是已归档并放行的破坏性更新（删除 / 非快进覆盖）。
+	Destructive []DestructiveRef
+	// DestructiveSkipped 是因归档失败而被拒绝执行的破坏性更新（本地 ref 保持原值）。
+	DestructiveSkipped []DestructiveRef
+	// ArchiveError 是归档失败原因（非空时 DestructiveSkipped 非空）。
+	ArchiveError string
 }
 
 // FetchRemote 从 remoteURL 拉取仓库到 repoRoot（smart-http upload-pack 客户端），
@@ -472,6 +500,36 @@ func fetchOnce(remoteURL, repoRoot string, auth *FetchAuth, o FetchOptions) (*Fe
 		}
 	}
 
+	// 破坏性更新（删除 / 非快进覆盖）在写 ref 之前先给调用方一次归档机会。
+	// 归档失败时这些 ref 一律不更新（本地保持原值，下轮同步会再次尝试并再归档），
+	// 其余 ref 照常更新；结果经 FetchResult 回报给调用方记录日志。
+	destructive := classifyDestructive(store, updates)
+	var archived, skipped []DestructiveRef
+	archiveErr := ""
+	if len(destructive) > 0 && o.OnDestructive != nil {
+		if err := o.OnDestructive(DestructiveEvent{RepoRoot: repoRoot, Refs: destructive}); err != nil {
+			archiveErr = err.Error()
+			skipped = destructive
+			skip := make(map[string]bool, len(destructive))
+			for _, d := range destructive {
+				skip[d.Name] = true
+			}
+			kept := make([]RefUpdate, 0, len(updates))
+			for _, u := range updates {
+				if !skip[u.Name] {
+					kept = append(kept, u)
+				}
+			}
+			updates = kept
+			slog.Warn("fetch destructive refs held back (archive failed)",
+				"repo", repoRoot, "refs", len(skipped), "error", err)
+		} else {
+			archived = destructive
+			slog.Warn("fetch destructive refs will be overwritten (snapshot archived)",
+				"repo", repoRoot, "refs", len(archived))
+		}
+	}
+
 	results, err := rs.Update(updates)
 	if err != nil {
 		return nil, fmt.Errorf("fetch: update refs: %w", err)
@@ -518,13 +576,16 @@ func fetchOnce(remoteURL, repoRoot string, auth *FetchAuth, o FetchOptions) (*Fe
 		"packSize", packSize, "durationMs", duration)
 
 	return &FetchResult{
-		ObjectsWritten: objectsWritten,
-		RefsUpdated:    refsUpdated,
-		RefsDeleted:    refsDeleted,
-		UpToDate:       false,
-		Wants:          len(wantOids),
-		Haves:          len(haveOids),
-		PackSize:       packSize,
+		ObjectsWritten:     objectsWritten,
+		RefsUpdated:        refsUpdated,
+		RefsDeleted:        refsDeleted,
+		UpToDate:           false,
+		Wants:              len(wantOids),
+		Haves:              len(haveOids),
+		PackSize:           packSize,
+		Destructive:        archived,
+		DestructiveSkipped: skipped,
+		ArchiveError:       archiveErr,
 	}, nil
 }
 
@@ -539,4 +600,28 @@ func (c *countingReader) Write(p []byte) (int, error) {
 // isUpToDate 判断解码失败是否属于「无 pack 数据」（服务端仅回 NAK+flush）。
 func isUpToDate(err error) bool {
 	return strings.Contains(err.Error(), "too short") || strings.Contains(err.Error(), "read header") || errors.Is(err, io.EOF)
+}
+
+// classifyDestructive 找出会丢弃本地历史的 ref 更新：删除（new 为零）与非快进覆盖。
+// 新建 ref、快进更新不算破坏性。annotated tag 的更新会被 IsFastForward 判为非快进
+// （tag 对象不是 commit），属于保守判定——多留一份快照比漏归档安全。
+func classifyDestructive(store ObjectStore, updates []RefUpdate) []DestructiveRef {
+	var out []DestructiveRef
+	for _, u := range updates {
+		if u.OldOid == ZeroOid || !u.OldOid.Valid() {
+			continue // 新建 ref：不丢历史
+		}
+		if u.NewOid == ZeroOid {
+			out = append(out, DestructiveRef{Name: u.Name, OldOid: u.OldOid, Reason: "delete"})
+			continue
+		}
+		if !u.NewOid.Valid() {
+			continue
+		}
+		if !isFastForward(store, u.OldOid, u.NewOid) {
+			out = append(out, DestructiveRef{Name: u.Name, OldOid: u.OldOid, NewOid: u.NewOid, Reason: "non-fast-forward"})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }

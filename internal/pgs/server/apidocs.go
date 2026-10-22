@@ -557,6 +557,121 @@ ref=my-mirror&description=Updated&mirrorRemoteUrl=https://github.com/user/repo.g
 		},
 		{
 			Method:  "GET",
+			Path:    "/api/v1/repos/archives",
+			Summary: "List bundle snapshots archived before destructive mirror updates",
+			Params: []apiDocParam{
+				{Name: "ref", In: "query", Required: true, Example: "LaoQi/tanya", Desc: "Repository reference: canonical name or alias"},
+			},
+			ResponseExample: `{
+  "repo": "LaoQi_tanya",
+  "enabled": true,
+  "dir": "pgit-archive",
+  "keep": 3,
+  "maxBytes": 2147483648,
+  "total": 1,
+  "archives": [
+    {
+      "id": "1792515963663-non-fast-forward-master",
+      "repo": "LaoQi_tanya",
+      "time": "2026-10-21T02:06:03+08:00",
+      "reason": "non-fast-forward",
+      "bundle": "1792515963663-non-fast-forward-master.bundle",
+      "sizeBytes": 17090000,
+      "objects": 3191,
+      "durationMs": 4600,
+      "refs": [{"name": "refs/heads/master", "oldOid": "881ebc816f...", "newOid": "860d3433bb...", "reason": "non-fast-forward"}],
+      "head": "refs/heads/master"
+    }
+  ]
+}`,
+			Curl: "curl 'http://localhost:3000/api/v1/repos/archives?ref=LaoQi/tanya'",
+			Notes: []string{
+				"Snapshots are created by mirror sync before it deletes a local ref (upstream deleted it) or rewinds a ref (upstream history was rewritten).",
+				"Each snapshot is a standard git bundle (complete history) plus a sidecar JSON; `git bundle verify <file>` / `git clone <file>` work as-is.",
+				"Archiving is off unless mirrorArchive=true; when archiving fails the destructive refs are NOT updated (fail-safe) and lastError records why.",
+			},
+		},
+		{
+			Method:  "POST",
+			Path:    "/api/v1/repos/archives",
+			Summary: "Take a full-history snapshot of a repository right now (manual archive)",
+			Params: []apiDocParam{
+				{Name: "ref", In: "form", Required: true, Example: "my-repo", Desc: "Repository reference: canonical name or alias"},
+			},
+			ResponseExample: `{
+  "ok": true,
+  "archive": {
+    "id": "1792683159086-manual-master",
+    "repo": "my-repo",
+    "time": "2026-10-22T23:32:39+08:00",
+    "reason": "manual",
+    "bundle": "1792683159086-manual-master.bundle",
+    "sizeBytes": 663,
+    "objects": 8,
+    "refs": [{"name": "refs/heads/master", "oldOid": "...", "reason": "manual"}],
+    "head": "refs/heads/master"
+  }
+}`,
+			Curl: `curl -X POST -d "ref=my-repo" http://localhost:3000/api/v1/repos/archives`,
+			Notes: []string{
+				"Works even when mirrorArchive=false: this is an explicit on-demand snapshot.",
+				"Snapshot is a standard git bundle of every ref (complete history) plus a sidecar JSON; empty repositories (no refs) return 400.",
+			},
+		},
+		{
+			Method:  "DELETE",
+			Path:    "/api/v1/repos/archives",
+			Summary: "Delete one archive snapshot (dangerous: files are removed permanently)",
+			Params: []apiDocParam{
+				{Name: "ref", In: "form", Required: true, Example: "my-repo", Desc: "Repository reference: canonical name or alias"},
+				{Name: "archive", In: "form", Required: true, Example: "1792683159086-manual-master", Desc: "Archive id"},
+				{Name: "confirm", In: "form", Required: true, Example: "my-repo", Desc: "Must equal the canonical repository name"},
+			},
+			ResponseExample: `{"ok": true, "deleted": "1792683159086-manual-master"}`,
+			Curl:            `curl -X DELETE "http://localhost:3000/api/v1/repos/archives?ref=my-repo&archive=1792683159086-manual-master&confirm=my-repo"`,
+			Notes: []string{
+				"Removes both the .bundle and its sidecar JSON. Unknown id returns 404; unsafe id (path separators, ..) returns 400.",
+				"Retention (mirrorArchiveKeep / mirrorArchiveMaxBytes) also deletes the oldest snapshots automatically.",
+			},
+		},
+		{
+			Method:  "GET",
+			Path:    "/api/v1/repos/archives/bundle",
+			Summary: "Download an archive bundle file (standard git bundle, supports Range)",
+			Params: []apiDocParam{
+				{Name: "ref", In: "query", Required: true, Example: "my-repo", Desc: "Repository reference: canonical name or alias"},
+				{Name: "archive", In: "query", Required: true, Example: "1792683159086-manual-master", Desc: "Archive id"},
+			},
+			Curl: "curl -OJ 'http://localhost:3000/api/v1/repos/archives/bundle?ref=my-repo&archive=1792683159086-manual-master'",
+			Notes: []string{
+				"Response is application/octet-stream with Content-Disposition attachment; file name is <repo>-<id>.bundle.",
+				"The file is a normal git bundle: git bundle verify / git ls-remote / git clone all work without pgit.",
+			},
+		},
+		{
+			Method:  "POST",
+			Path:    "/api/v1/repos/archives/restore",
+			Summary: "Restore an archive snapshot into a repository (dangerous: overwrites same-named refs)",
+			Params: []apiDocParam{
+				{Name: "ref", In: "form", Required: true, Example: "LaoQi_tanya", Desc: "Target repository: canonical name or alias"},
+				{Name: "archive", In: "form", Required: true, Example: "1792515963663-non-fast-forward-master", Desc: "Archive id (without .bundle/.json)"},
+				{Name: "confirm", In: "form", Required: true, Example: "LaoQi_tanya", Desc: "Must equal the canonical repository name"},
+			},
+			ResponseExample: `{
+  "ok": true,
+  "restored": {"objects": 3191, "refs": ["refs/heads/master"], "head": "refs/heads/master"},
+  "archive": {"id": "1792515963663-non-fast-forward-master", "...": "..."},
+  "note": "restored refs can be overwritten again by the next mirror sync ..."
+}`,
+			Curl: `curl -X POST -d "ref=LaoQi/tanya" -d "archive=1792515963663-non-fast-forward-master" -d "confirm=LaoQi_tanya" http://localhost:3000/api/v1/repos/archives/restore`,
+			Notes: []string{
+				"Objects are unpacked into loose storage (idempotent, content-addressed) and the archived refs are written back, overwriting current values.",
+				"Restoring a mirror repository only works until the next sync: if upstream still has the rewritten history it will be archived again and overwritten. Fix upstream or pause the mirror (mirrorInterval=0).",
+				"CLI equivalent on the server: pgit -c config.json -restore <bundle path> -repo <repo name>.",
+			},
+		},
+		{
+			Method:  "GET",
 			Path:    "/api/v1/github/repos",
 			Summary: "Discover repositories of a GitHub account (read-only, no local changes)",
 			Params: []apiDocParam{

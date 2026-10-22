@@ -267,6 +267,15 @@ func (sm *SyncManager) runSync(name string, trigger string, queueWait time.Durat
 		entry.Wants = result.Wants
 		entry.Haves = result.Haves
 		entry.PackSize = result.PackSize
+		entry.Archived = destructiveNames(result.Destructive)
+		entry.ArchivedSkipped = destructiveNames(result.DestructiveSkipped)
+		entry.ArchiveError = result.ArchiveError
+		if len(entry.ArchivedSkipped) > 0 {
+			// 同步本身成功（对象已拉取），但这些 ref 按 fail-safe 未更新：单列一条告警，
+			// Success 保持 fetch 语义，细节见 archivedSkipped/archiveError 与 lastError。
+			slog.Warn("mirror sync archived refs kept unchanged", "repo", name,
+				"trigger", trigger, "refs", entry.ArchivedSkipped, "error", entry.ArchiveError)
+		}
 	}
 	SetMirrorSyncResult(name, err == nil, entry.ObjectsFetch, entry.Duration)
 	ObserveSyncTask(trigger, map[bool]string{true: "success", false: "failure"}[err == nil])

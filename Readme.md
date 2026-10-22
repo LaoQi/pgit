@@ -16,6 +16,8 @@ personal git server
 * Built-in WebUI (embedded, exportable to disk for customization)
 * Built-in markdown guide for agents (`GET /api/v1/guide.md`: interfaces, usage)
 * Mirror repositories: scheduled/manual sync from remote HTTP/HTTPS repos with JSONL sync log
+* Relay repositories: downstream pushes gated on the live upstream baseline, forwarded upstream asynchronously
+* Mirror archive: standard git bundle snapshots taken *before* an upstream deletion/force-push is mirrored (fail-safe, restorable via API/CLI)
 * Repository browsing API (tree/blob/archive/commits) in pure Go
 * HTTP Basic Auth optional
 

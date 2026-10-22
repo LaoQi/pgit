@@ -50,6 +50,18 @@ type Setting struct {
 	RelayPendingRetryIntervalSec int `json:"relayPendingRetryIntervalSec"`
 	// MirrorMaxConcurrentSyncs 镜像同步任务的并发上限（任务队列 worker 数），0 = 默认 5。
 	MirrorMaxConcurrentSyncs int `json:"mirrorMaxConcurrentSyncs"`
+
+	// MirrorArchive 是否为镜像/中转仓库的破坏性更新生成归档包：
+	// 上游删除 ref（镜像会随之删除本地 ref）或非快进覆盖（历史被重写、本地将回退）。
+	// 归档发生在写 ref 之前；归档失败时这些 ref 不更新（本地保持原值）。
+	MirrorArchive bool `json:"mirrorArchive"`
+	// MirrorArchiveDir 归档根目录，默认 "pgit-archive"（相对进程工作目录）。
+	// 每个仓库一个子目录，内放 <id>.bundle 与同名 .json（sidecar）。
+	MirrorArchiveDir string `json:"mirrorArchiveDir"`
+	// MirrorArchiveKeep 每个仓库保留的归档份数，0 = 默认 3，负数 = 不限。
+	MirrorArchiveKeep int `json:"mirrorArchiveKeep"`
+	// MirrorArchiveMaxBytes 归档目录总容量上限（字节），0 = 默认 2GiB，负数 = 不限。
+	MirrorArchiveMaxBytes int64 `json:"mirrorArchiveMaxBytes"`
 }
 
 // 传输上限默认值。
@@ -62,6 +74,12 @@ const (
 	DefaultMaxConcurrentPushes = 5
 	// DefaultRelayPendingRetryInterval 未转发成功的 ref 的后台重试默认间隔。
 	DefaultRelayPendingRetryInterval = 60 * time.Second
+	// DefaultArchiveDir 镜像归档根目录默认值。
+	DefaultArchiveDir = "pgit-archive"
+	// DefaultArchiveKeep 每个仓库默认保留的归档份数。
+	DefaultArchiveKeep = 3
+	// DefaultArchiveMaxBytes 归档目录默认总容量上限（2 GiB）。
+	DefaultArchiveMaxBytes int64 = 2 << 30
 )
 
 // LimitPushBytes 返回生效的单次 push 上限。
@@ -97,6 +115,29 @@ func (s *Setting) MirrorFetchOptions() git.FetchOptions {
 		o.RetryBaseDelay = time.Duration(base) * time.Second
 	}
 	return o
+}
+
+// ArchiveConf 返回归档配置（热加载安全）。
+// keep 与 maxBytes 为负数时表示不限；dir 为空时取默认 "pgit-archive"。
+func (s *Setting) ArchiveConf() (enabled bool, dir string, keep int, maxBytes int64) {
+	if s == nil {
+		return false, DefaultArchiveDir, DefaultArchiveKeep, DefaultArchiveMaxBytes
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	dir = s.MirrorArchiveDir
+	if dir == "" {
+		dir = DefaultArchiveDir
+	}
+	keep = s.MirrorArchiveKeep
+	if keep == 0 {
+		keep = DefaultArchiveKeep
+	}
+	maxBytes = s.MirrorArchiveMaxBytes
+	if maxBytes == 0 {
+		maxBytes = DefaultArchiveMaxBytes
+	}
+	return s.MirrorArchive, dir, keep, maxBytes
 }
 
 // LimitConcurrentSyncs 返回生效的镜像同步任务并发上限（队列 worker 数）。
@@ -280,6 +321,11 @@ func (s *Setting) hotReloadFrom(src *Setting) []string {
 	// 中转转发并发度与重试间隔：调用方在 HotReload 后调整 RelayManager
 	s.RelayMaxConcurrentPushes = src.RelayMaxConcurrentPushes
 	s.RelayPendingRetryIntervalSec = src.RelayPendingRetryIntervalSec
+	// 镜像归档：下一次同步即生效（含开关、目录、保留策略）
+	s.MirrorArchive = src.MirrorArchive
+	s.MirrorArchiveDir = src.MirrorArchiveDir
+	s.MirrorArchiveKeep = src.MirrorArchiveKeep
+	s.MirrorArchiveMaxBytes = src.MirrorArchiveMaxBytes
 	return restartNeeded
 }
 
@@ -374,6 +420,16 @@ func (s *Setting) reloadLocked() error {
 	} else {
 		git.SetLogLevel(git.LogOff)
 	}
+	if s.MirrorArchiveDir != "" {
+		dir := filepath.Clean(s.MirrorArchiveDir)
+		if strings.HasSuffix(dir, ".git") {
+			return fmt.Errorf("invalid mirrorArchiveDir: must not end with .git (startup scan would treat it as a repository)")
+		}
+		if dir == filepath.Clean(s.GitRoot) {
+			return fmt.Errorf("invalid mirrorArchiveDir: must differ from gitRoot")
+		}
+	}
+
 	return nil
 }
 

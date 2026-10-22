@@ -3,6 +3,47 @@
 pgit 变更历史。`AGENTS.md` 只描述**当前**架构、约束与用法；变更过程、缺陷修复、
 性能调优与历史决策收录于此。条目按时间倒序，括注提交短 hash。
 
+## 2026-10-22
+
+**feat(archive): 镜像破坏性更新前自动打 git bundle 归档（fail-safe，可经 API/CLI 恢复）**
+- 触发：镜像/中转仓库拉取时，`fetch.go` 在写 ref 之前用 `classifyDestructive` 挑出「删除本地 ref」
+  （上游删分支/标签）与「非快进覆盖」（上游 force push / rebase 重写历史）。annotated tag 的更新会被
+  `isFastForward` 保守判为非快进，一并归档（多留快照比漏归档安全）。
+- 归档：`git.WriteBundle` 用现有 `WalkReachable` + `encodePack` 生成 **v2 git bundle**（完整历史，
+  头部含 `HEAD` 行），`ArchiveManager.Snapshot` 以 `tmp → fsync → rename` 落盘并写同名 sidecar JSON。
+  实测（一个 loose 31MB / 3371 对象的真实镜像仓库）：bundle 16.3MB、耗时 ~4.6s；产物通过
+  `git bundle verify`（"完整历史"）、`git clone`（211 提交）与 pgit 自身 `PackDecoder` 解包校验。
+  体积比 tar/zip 全量（≈31MB）小一半，但比真实 git 的 bundle（1.65MB）大一个数量级——
+  `encodePack` 只对 blob 配对做单层 delta，tree/commit 不 delta 化（已知取舍，不引入 git 二进制）。
+- fail-safe：`FetchOptions.OnDestructive` 回调失败时这些 ref **不更新**（本地保持原值，其余 ref 照常），
+  `SyncRepository` 把原因写进 `lastError`，同步日志新增 `archived` / `archivedSkipped` / `archiveError`。
+  未启用归档（`mirrorArchive=false`，默认）时不注入回调，行为与之前完全一致。
+- 配置（全部可 SIGHUP 热加载）：`mirrorArchive`、`mirrorArchiveDir`（默认 `pgit-archive`，
+  不能以 `.git` 结尾、不能等于 gitRoot）、`mirrorArchiveKeep`（默认 3）、`mirrorArchiveMaxBytes`（默认 2GiB）；
+  保留策略按「每仓库份数 + 全局容量」淘汰最旧。
+- 恢复：`git.RestoreBundle` 解包为 loose（逐对象 SHA1 + trailer 校验、内容寻址幂等）+ 归档 refs 覆盖写回 +
+  HEAD 恢复。入口两条：`POST /api/v1/repos/archives/restore`（`ref` + `archive` + `confirm`）与
+  `pgit -c config.json --restore <bundle> --repo <name|alias>`；列表看 `GET /api/v1/repos/archives`。
+  sidecar 不含镜像 token。
+- 文档：`guide.md` 新增「镜像归档与恢复」一节（触发矩阵、开关、目录布局、fail-safe、恢复后仍会被镜像
+  再次覆盖的注意事项），`/api/v1/` 增两个端点描述（21 → 23）。
+**feat(archive): 归档管理接口补全 + WebUI 归档页**
+- 新增接口（apidocs 21 → 26）：`POST /api/v1/repos/archives` 手动快照（不受 `mirrorArchive` 开关限制，
+  供 agent 在危险操作前主动备份；空仓库 400）、`GET /api/v1/repos/archives/bundle` 下载标准 bundle
+  （`application/octet-stream` + `Content-Disposition`，支持 Range）、`DELETE /api/v1/repos/archives`
+  删除单份（需 `confirm` = canonical name，先删 sidecar 再删 bundle）。
+  `ArchiveManager` 增加 `SnapshotManual`（reason=`manual`，记录每个 ref 的当前 oid）与 `Delete`。
+- WebUI：仓库详情页新增 **Snapshots** 卡片；新页面 `/archives?ref=`（History 路由）展示归档配置
+  （开关/目录/保留份数/容量）、快照列表（时间/原因/影响 ref 的 old→new/大小/对象数）与操作
+  （Take snapshot now、Download、Restore、Delete）；Restore/Delete 均要求输入仓库名二次确认，
+  恢复后展示"镜像可能再次覆盖"的提示。
+- 文档：guide 的归档一节补手动快照/下载/删除命令与 WebUI 路径；apidocs 增三条；AGENTS.md 路由与端点数同步。
+
+- 测试：`git/bundle_test.go`（往返/覆盖/损坏/不安全 ref 名/空仓库）、`git/fetch_destructive_test.go`
+  （非快进与删除触发、归档失败保持 ref、快进不触发）、`pgs/archive_test.go`（快照/列表/恢复/保留淘汰/
+  写入失败/配置校验/sidecar 无凭据）、`pgs/archive_sync_test.go`（同步接线端到端）、
+  `server/archive_api_test.go`（端点与错误码）。
+
 ## 2026-10-14
 
 **feat(docs): 新增内建 markdown 文档端点 `GET /api/v1/guide.md`（面向 agent 的接口与用法说明）**

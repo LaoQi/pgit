@@ -22,6 +22,10 @@ var (
 	ErrQueueFull = errors.New("task queue is full")
 	// ErrQueueClosed 任务队列已停止。
 	ErrQueueClosed = errors.New("task queue is closed")
+	// ErrArchiveNotFound 归档包不存在（id 或文件缺失）。
+	ErrArchiveNotFound = errors.New("archive not found")
+	// ErrArchiveDisabled 归档功能未启用。
+	ErrArchiveDisabled = errors.New("archive is disabled")
 	// ErrGithubNotFound 目标 GitHub 账号（用户或组织）不存在或不可见。
 	ErrGithubNotFound = errors.New("github owner not found")
 	// ErrGithubRateLimited GitHub API 触发速率限制。

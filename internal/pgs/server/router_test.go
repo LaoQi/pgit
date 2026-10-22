@@ -55,6 +55,11 @@ func TestRouterAdminRoutesNotFallingThrough(t *testing.T) {
 		{http.MethodPost, "/api/v1/repos/sync", true},
 		{http.MethodGet, "/api/v1/repos/sync-log?ref=r1", true},
 		{http.MethodGet, "/api/v1/repos/mirror-status?ref=r1", true},
+		{http.MethodGet, "/api/v1/repos/archives?ref=r1", true},
+		{http.MethodPost, "/api/v1/repos/archives", true},
+		{http.MethodDelete, "/api/v1/repos/archives?ref=r1&archive=a&confirm=r1", true},
+		{http.MethodGet, "/api/v1/repos/archives/bundle?ref=r1&archive=a", true},
+		{http.MethodPost, "/api/v1/repos/archives/restore", true},
 		{http.MethodGet, "/api/v1/github/repos", true},
 		{http.MethodPost, "/api/v1/github/import", true},
 	}

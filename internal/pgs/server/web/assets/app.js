@@ -139,6 +139,8 @@ function route() {
             subPath.split('/').map(decodeURIComponent).join('/'));
     } else if (path === '/import') {
         viewImport(app);
+    } else if (path === '/archives') {
+        viewArchives(app, query.get('ref') || '');
     } else if (path === '/api') {
         viewApiDocs(app);
     } else {
@@ -158,6 +160,16 @@ document.addEventListener('click', function(e) {
     el = e.target.closest('[data-remove-alias]');
     if (el) {
         removeAlias(el.getAttribute('data-remove-repo'), el.getAttribute('data-remove-alias'));
+        return;
+    }
+    el = e.target.closest('[data-restore-archive]');
+    if (el) {
+        restoreArchive(el.getAttribute('data-archive-repo'), el.getAttribute('data-restore-archive'));
+        return;
+    }
+    el = e.target.closest('[data-delete-archive]');
+    if (el) {
+        deleteArchive(el.getAttribute('data-archive-repo'), el.getAttribute('data-delete-archive'));
         return;
     }
 });
@@ -360,6 +372,10 @@ function viewRepoDetail(app, ref) {
              html += '<div class="card"><h3>Forward Log</h3>'
                  + '<div id="relayLogList" class="sync-log-list"><div class="loading">Loading forward log...</div></div></div>';
          }
+
+         html += '<div class="card"><h3>Snapshots</h3>'
+             + '<p class="text-sm text-muted">Full-history git bundle snapshots — taken automatically before a destructive mirror update (upstream ref deleted / history rewritten), or on demand. Each snapshot can be verified with <code>git bundle verify</code> and restored here.</p>'
+             + '<a class="btn btn-sm mt-8" href="' + escAttr('/archives?ref=' + enc(repo.name)) + '" data-link="' + escAttr('/archives?ref=' + enc(repo.name)) + '">Manage snapshots</a></div>';
 
          // 一组 HTTP/SSH 克隆框 + 别名下拉切换（多别名时），不逐别名罗列；
          // 默认选中末位别名（首选展示 ref），与首页克隆提示一致。
@@ -732,6 +748,111 @@ function viewRepoDetail(app, ref) {
      }).catch(function(err) {
         app.innerHTML = '<div class="error">' + esc(err.message) + '</div>';
     });
+}
+
+function archiveReasonBadge(reason) {
+    if (reason === 'delete') return '<span class="badge badge-sync-fail">delete</span>';
+    if (reason === 'manual') return '<span class="badge badge-sync-trigger">manual</span>';
+    return '<span class="badge badge-sync-fail">rewrite</span>';
+}
+
+// viewArchives 渲染某仓库的归档管理页：配置状态 + 列表（下载/恢复/删除）+ 手动快照。
+function viewArchives(app, ref) {
+    if (!ref) {
+        app.innerHTML = '<div class="error">Missing repository reference.</div>';
+        return;
+    }
+    Promise.all([
+        apiJSON(API + '/repos/info?ref=' + enc(ref)),
+        apiJSON(API + '/repos/archives?ref=' + enc(ref))
+    ]).then(function(res) {
+        var repo = (res[0] && res[0].metadata) || {};
+        var data = res[1] || {};
+        var archives = data.archives || [];
+        var repoName = repo.name || ref;
+
+        var html = '<div class="breadcrumb"><a href="." data-link="/">Repositories</a>'
+            + '<span class="sep">/</span><a href="' + escAttr(repoUrl(repoName)) + '" data-link="' + escAttr(repoUrl(repoName)) + '">' + esc(repoName) + '</a>'
+            + '<span class="sep">/</span><strong>Snapshots</strong></div>';
+
+        var enabledBadge = data.enabled
+            ? '<span class="badge badge-sync-ok">enabled</span>'
+            : '<span class="badge badge-sync-fail">disabled</span>';
+        var capText = (data.maxBytes == null || data.maxBytes < 0) ? 'unlimited' : fmtBytes(data.maxBytes);
+        html += '<div class="card"><h3>Archive Settings</h3>'
+            + '<p class="text-sm text-muted">Auto archive before destructive mirror updates: ' + enabledBadge + '</p>'
+            + '<p class="text-sm text-muted mt-4">Directory: <code>' + esc(data.dir || '') + '</code></p>'
+            + '<p class="text-sm text-muted mt-4">Keep: ' + esc(String(data.keep == null ? '' : data.keep)) + ' per repository &middot; Total cap: ' + esc(capText) + '</p>'
+            + (data.enabled ? '' : '<p class="text-sm mt-8" style="color:var(--red)">Auto archive is off (<code>mirrorArchive=false</code>). Manual snapshots still work.</p>')
+            + '<button class="btn btn-primary btn-sm mt-8" id="takeSnapshotBtn">Take snapshot now</button></div>';
+
+        html += '<div class="card"><h3>Snapshots (' + archives.length + ')</h3>';
+        if (archives.length === 0) {
+            html += '<div class="empty">No snapshots yet. They are created automatically before a destructive mirror update, or on demand.</div>';
+        } else {
+            html += '<table><thead><tr><th>Time</th><th>Reason</th><th>Refs</th><th>Size</th><th>Objects</th><th>Actions</th></tr></thead><tbody>';
+            archives.forEach(function(a) {
+                var refsHtml = (a.refs || []).map(function(r) {
+                    var from = (r.oldOid || '').slice(0, 8);
+                    var to = (r.newOid || '').slice(0, 8);
+                    return '<div class="text-sm"><code>' + esc(r.name) + '</code> ' + esc(from) + (to ? ' &rarr; ' + esc(to) : '') + '</div>';
+                }).join('');
+                var downloadUrl = API + '/repos/archives/bundle?ref=' + enc(repoName) + '&archive=' + enc(a.id);
+                html += '<tr>'
+                    + '<td class="text-muted text-sm">' + esc(fmtDate(a.time)) + '</td>'
+                    + '<td>' + archiveReasonBadge(a.reason) + '</td>'
+                    + '<td>' + refsHtml + '</td>'
+                    + '<td class="text-muted text-sm">' + esc(fmtBytes(a.sizeBytes || 0)) + '</td>'
+                    + '<td class="text-muted text-sm">' + esc(String(a.objects || 0)) + '</td>'
+                    + '<td><a class="btn btn-sm" download href="' + escAttr(downloadUrl) + '">Download</a> '
+                    + '<button class="btn btn-sm" data-archive-repo="' + escAttr(repoName) + '" data-restore-archive="' + escAttr(a.id) + '">Restore</button> '
+                    + '<button class="btn btn-sm btn-danger" data-archive-repo="' + escAttr(repoName) + '" data-delete-archive="' + escAttr(a.id) + '">Delete</button></td>'
+                    + '</tr>';
+            });
+            html += '</tbody></table>';
+        }
+        html += '</div>';
+        app.innerHTML = html;
+
+        var takeBtn = document.getElementById('takeSnapshotBtn');
+        if (takeBtn) {
+            takeBtn.addEventListener('click', function() {
+                takeBtn.disabled = true;
+                takeBtn.textContent = 'Archiving...';
+                apiForm('POST', API + '/repos/archives', { ref: repoName }).then(function(resp) {
+                    var rec = resp.archive || {};
+                    showToast('Snapshot created: ' + fmtBytes(rec.sizeBytes || 0) + ', ' + (rec.objects || 0) + ' objects');
+                    viewArchives(app, repoName);
+                }).catch(function(err) {
+                    showToast(err.message, 'error');
+                    takeBtn.disabled = false;
+                    takeBtn.textContent = 'Take snapshot now';
+                });
+            });
+        }
+    }).catch(function(err) {
+        app.innerHTML = '<div class="error">' + esc(err.message) + '</div>';
+    });
+}
+
+function restoreArchive(repoName, id) {
+    var input = prompt('Restore this snapshot? Current same-named refs and HEAD will be OVERWRITTEN.\nType the repository name to confirm:', '');
+    if (input !== repoName) { showToast('Confirmation mismatch', 'error'); return; }
+    apiForm('POST', API + '/repos/archives/restore', { ref: repoName, archive: id, confirm: repoName }).then(function(data) {
+        var r = data.restored || {};
+        showToast('Restored ' + (r.objects || 0) + ' objects; refs: ' + (((r.refs || []).join(', ')) || 'none'));
+        if (data.note) { window.alert(data.note); }
+        viewArchives(document.getElementById('app'), repoName);
+    }).catch(function(err) { showToast(err.message, 'error'); });
+}
+
+function deleteArchive(repoName, id) {
+    var input = prompt('Delete this snapshot permanently?\nType the repository name to confirm:', '');
+    if (input !== repoName) { showToast('Confirmation mismatch', 'error'); return; }
+    apiDelete(API + '/repos/archives?ref=' + enc(repoName) + '&archive=' + enc(id) + '&confirm=' + enc(repoName)).then(function() {
+        showToast('Snapshot deleted');
+        viewArchives(document.getElementById('app'), repoName);
+    }).catch(function(err) { showToast(err.message, 'error'); });
 }
 
 function removeAlias(repoName, alias) {
